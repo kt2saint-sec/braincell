@@ -1,0 +1,157 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""
+test_recall_cli.py — the `braincell recall` CLI subcommand (A1).
+
+The CLI recall path is a thin wrapper over ``server.recall_notes`` (the same engine
+the ``mcp__braincell__recall`` tool uses), so these tests assert the plumbing —
+brain/seed resolution, --json shape, scope validation, and FEDERATE on/off parity —
+not the ranking itself (covered by test_store / test_federate).
+
+No live Ollama: ``server.embed_query_async`` is monkeypatched to a deterministic
+fake vector, and notes are seeded with distinctive keywords so FTS retrieval is
+deterministic regardless of the fake vector ranking.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+
+import pytest
+
+from braincell.cli import main
+from braincell.config import get_db_path, get_project_id
+from braincell.project_registry import add_family_members
+from braincell.store import SqliteStore
+from tests.conftest import fake_vec
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _seed_project(root, notes: list[str]) -> str:
+    """Register `root` as a project, build its brain, seed `notes`. Return its ULID."""
+    root.mkdir(parents=True, exist_ok=True)
+    pid = get_project_id(root)  # mints + registers
+    db = get_db_path(pid)
+    db.parent.mkdir(parents=True, exist_ok=True)
+    store = SqliteStore(db)
+    store.assert_schema_version()
+
+    async def _go() -> None:
+        for i, text in enumerate(notes):
+            await store.remember(text, "note", pid, embedding=fake_vec(i + 1))
+
+    asyncio.run(_go())
+    store.close()
+    return pid
+
+
+@pytest.fixture(autouse=True)
+def _fast_embed_and_clean_env(monkeypatch):
+    """Patch the query embedder to a fast fake (no Ollama), and let monkeypatch own
+    BRAINCELL_PROJECT_ID so cmd_recall's direct os.environ write is undone per test."""
+    async def _fake_embed(text: str):
+        return fake_vec(0)
+
+    monkeypatch.setattr("braincell.server.embed_query_async", _fake_embed)
+    monkeypatch.delenv("BRAINCELL_PROJECT_ID", raising=False)
+    monkeypatch.delenv("BRAINCELL_FEDERATE", raising=False)
+
+
+# ── Tests ──────────────────────────────────────────────────────────────────────
+
+def test_recall_json_shape(tmp_path, capsys):
+    root = tmp_path / "repoR"
+    _seed_project(root, ["alpha zebra decision about caching"])
+
+    main(["recall", "zebra", "--path", str(root), "--json"])
+    out = capsys.readouterr().out
+    data = json.loads(out)
+
+    assert isinstance(data, list) and len(data) >= 1
+    note = data[0]
+    for key in ("id", "project_id", "scope", "kind", "content",
+                "tags", "confidence", "source_hint", "superseded_by",
+                "created_at", "expansion"):
+        assert key in note, f"missing key {key!r} in --json output"
+    assert "zebra" in note["content"]
+
+
+def test_recall_human_output(tmp_path, capsys):
+    root = tmp_path / "repoH"
+    _seed_project(root, ["gamma insight about vector search"])
+
+    main(["recall", "gamma", "--path", str(root)])
+    out = capsys.readouterr().out
+    assert "[note]" in out
+    assert "gamma insight" in out
+
+
+def test_recall_empty_result_human(tmp_path, capsys):
+    # A registered project with a built brain but ZERO notes → recall returns []
+    # deterministically → the empty notice prints (human path).
+    root = tmp_path / "repoE"
+    _seed_project(root, [])
+
+    main(["recall", "anything", "--path", str(root)])
+    out = capsys.readouterr().out
+    assert "(no matching notes)" in out
+
+
+def test_recall_unregistered_path_errors(tmp_path, capsys):
+    fresh = tmp_path / "never_built"
+    fresh.mkdir()
+
+    with pytest.raises(SystemExit) as exc:
+        main(["recall", "anything", "--path", str(fresh)])
+    assert exc.value.code == 1
+    assert "run `braincell build` first" in capsys.readouterr().err
+
+
+def test_recall_family_project_mode_without_federate_errors(tmp_path, capsys):
+    """scope='family' in project mode WITHOUT BRAINCELL_FEDERATE=on must be
+    rejected cleanly (SystemExit, stderr message) — parity with the MCP tool."""
+    root = tmp_path / "repoF"
+    _seed_project(root, ["local note"])
+
+    with pytest.raises(SystemExit) as exc:
+        main(["recall", "note", "--path", str(root), "--scope", "family"])
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "global mode" in err or "federate" in err.lower()
+
+
+def test_recall_family_federated_fans_out(tmp_path, capsys, monkeypatch):
+    """scope='family' + BRAINCELL_FEDERATE=on fans out across family members and
+    surfaces a SIBLING's note (retrieved via its distinctive keyword)."""
+    a = tmp_path / "famA"
+    b = tmp_path / "famB"
+    _seed_project(a, ["alpha note in project A"])
+    _seed_project(b, ["distinctivezebra note only in project B"])
+    add_family_members("fam", [str(a), str(b)])
+
+    monkeypatch.setenv("BRAINCELL_FEDERATE", "on")
+    # seed PID is set by cmd_recall from --path; nothing else needed.
+
+    main(["recall", "distinctivezebra", "--path", str(a),
+          "--scope", "family", "--json"])
+    out = capsys.readouterr().out
+    data = json.loads(out)
+    contents = " ".join(n["content"] for n in data)
+    assert "distinctivezebra" in contents, "federated family recall did not surface B's note"
+
+
+def test_recall_scope_self_excludes_siblings(tmp_path, capsys, monkeypatch):
+    """scope='self' (default) returns only the active project's notes even when a
+    family + federation are configured (federation only triggers on scope='family')."""
+    a = tmp_path / "selfA"
+    b = tmp_path / "selfB"
+    _seed_project(a, ["alpha own note"])
+    _seed_project(b, ["distinctivezebra sibling note"])
+    add_family_members("fam2", [str(a), str(b)])
+    monkeypatch.setenv("BRAINCELL_FEDERATE", "on")
+
+    main(["recall", "distinctivezebra", "--path", str(a), "--json"])
+    data = json.loads(capsys.readouterr().out)
+    contents = " ".join(n["content"] for n in data)
+    assert "distinctivezebra" not in contents, "scope='self' leaked a sibling note"

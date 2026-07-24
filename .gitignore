@@ -1,63 +1,119 @@
-# .gitignore for the PUBLIC braincell-mcp repo (clean-snapshot allowlist model).
-# The public repo carries ONLY: code, images, guides, testing data,
-# README.md, LICENSE, NOTICE, COMMERCIAL-LICENSE.md.
-
-# ---- Python ----
+# ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
+*$py.class
+*.so
+.Python
 *.egg-info/
 .eggs/
 build/
 dist/
+wheels/
+.installed.cfg
+*.egg
+
+# ── Virtualenvs ───────────────────────────────────────────────────────────────
 .venv/
 venv/
-.pytest_cache/
-.ruff_cache/
-.mypy_cache/
-.coverage
-htmlcov/
+env/
+ENV/
 
-# ---- Secrets / env (never commit) ----
-.env
-.env.*
-*.pem
-*.key
+# ── Local secrets / rendered env — never commit ──────────────────────────────
+# Highest-consequence category: a leaked build artifact is noise, a leaked key is
+# an incident. Deliberately broad — an over-broad rule here costs one `git add -f`,
+# an under-broad one costs a rotation.
+*.env
+.env*
 secrets.enc.yaml
+*.key
+*.pem
+*.p12
+*.pfx
+*.keystore
+*.jks
+id_rsa*
+id_ed25519*
+id_ecdsa*
+*.ppk
+.netrc
+.npmrc
+credentials.json
+service-account*.json
+*.crt
+*.csr
 
-# ---- SQLite / braincell runtime data ----
+# ── Local brain data / backups — never commit (data lives in XDG, not the repo) ─
 *.db
 *.sqlite
 *.sqlite3
-*-wal
-*-shm
+braincell-backup-*.db
+# Pre-merge snapshots written by `consolidate --apply` / `reflect --apply` (v5).
+braincell-pre*-*.db
+# SQLite WAL/shared-memory sidecars. `*.db` does NOT cover these, and a `-wal`
+# holds committed-but-uncheckpointed PAGE DATA — i.e. real brain content — so
+# leaving them unignored would leak exactly what `*.db` exists to keep out.
 *.db-wal
 *.db-shm
-*.bak
-*.bak-*
-*.premerge.bak
+*.sqlite-wal
+*.sqlite-shm
+*-journal
 
-# ---- Internal/maintainer files that must never land in the public repo ----
-CLAUDE.md
-.claude/
-CHANGELOG.md
-# CONTRIBUTING.md is KEPT (owner ruling 2026-07-23: it carries the CLA)
-# QUICKSTART.md is KEPT (user-facing getting-started guide)
-docs/PACKAGING-linux.md
-BUGS.md
-docs/STAGE_LOG.md
-docs/*-2026-*.md
-docs/isolation-and-federation.md
-docs/embedder-selection-and-benchmarks.md
-docs/claude-md-pruned-*.md
-evals/
-tests/benchmarks/*.md
+# ── Tooling / caches ──────────────────────────────────────────────────────────
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.dmypy.json
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
 
-# ---- OS / editor ----
+# ── Editor / OS cruft ─────────────────────────────────────────────────────────
 .DS_Store
+# Windows counterparts — the macOS side was covered, this side was not.
 Thumbs.db
+ehthumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
 .idea/
 .vscode/
 
-# ---- Explicit keeps (defensive re-includes against the globs above) ----
-!docs/add-repo-runbook.md
-!docs/images/*.png
+# ── Merge / backup leftovers ─────────────────────────────────────────────────
+# Conflict and backup residue is a common accidental commit; none of it is source.
+*.orig
+*.rej
+*.bak
+# Dated backups — `*.bak` misses these because the suffix TRAILS the extension
+# (e.g. settings.json.bak-2026-07-23), which is exactly how a hand-made
+# pre-change copy tends to be named.
+*.bak-*
+*.bak.*
+*.backup
+
+# ── Internal working notes — keep LOCAL, never publish ───────────────────────
+# Maintainer-only state (status flags, licensing/provenance strategy, deployment
+# details). Tracked locally on the maintainer's machine but excluded from the
+# remote. See the file itself for why it must not be public-facing.
+CLAUDE.md
+# Internal planning / spec / review / design-mockup artifacts (root-level).
+# These are working notes, not user-facing product docs — keep them local.
+# (braincell-mcp-wrapper.sh is a shipped launcher, NOT matched by these.)
+/braincell-*.md
+/braincell-*.html
+# CLAUDE.md progress-pointer doc — same "never committed" policy as CLAUDE.md itself.
+/docs/STAGE_LOG.md
+# CLAUDE.md restructure spillover (internal status + licensing strategy) — keep local.
+/docs/claude-md-pruned-2026-07-21.md
+# Path-scoped area conventions (.claude/rules/*.md) + any other agent working state.
+# Same class as CLAUDE.md — internal maintainer notes, not user-facing product docs —
+# so they follow the same "never committed" policy. Git history cannot be retracted.
+/.claude/
+
+# Memory ON/OFF task A/B eval — harness + fixtures tracked; runtime artifacts ignored.
+/evals/task-ab/*.log
+/evals/task-ab/**/__pycache__/

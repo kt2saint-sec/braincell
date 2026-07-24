@@ -1,0 +1,20 @@
+braincell-mcp
+=============
+
+Copyright (c) 2026 Karl Toussaint (kt2saint)
+
+Licensed under the GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later);
+see LICENSE. A separate commercial license is available for use in proprietary /
+closed-source products — see COMMERCIAL-LICENSE.md.
+
+
+Acknowledgements (prior art — no code from these projects is included)
+---------------------------------------------------------------------
+
+braincell MCP was influenced early on by a portion of gbrain by Garry Tan (MIT). Since v1, it has since diverged into a substantially different, from-scratch
+implementation. I want to thank him for the inspiration, as the influence to push forward was
+formative and inspirational. No gbrain code is used in braincell MCP.
+
+Ideas, architectures, and methods are not protected by copyright — only expression is.
+braincell-mcp's expression is its own. These acknowledgements are given as a matter of
+intellectual honesty and respect for prior art, not as a license obligation.

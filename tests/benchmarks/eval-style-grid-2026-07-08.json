@@ -1,0 +1,952 @@
+{
+  "_doc": "Client-query-style factorial (Fable step 2). 42 frozen H7 passages; each of 14 families queried by 5 client models. test='STYLE'; each query tagged with 'client' and 'family'. Scored by bench_style_grid.py.",
+  "provenance": {
+    "haiku": "Claude Haiku 4.5 (subagent)",
+    "sonnet": "Claude Sonnet 5 (subagent)",
+    "opus": "Claude Opus 4.8 (subagent)",
+    "qwen3-coder": "qwen3-coder:30b (local, Ollama)",
+    "qwen2.5-coder": "qwen2.5-coder:7b (local, Ollama)"
+  },
+  "passages": [
+    {
+      "id": "H7_f01_A",
+      "text": "Buttons in the packaged desktop app do nothing after installation — the preload script set window.doThing directly, but with contextIsolation enabled the call never reached the renderer process; had to expose it through a bridge instead."
+    },
+    {
+      "id": "H7_f01_B",
+      "text": "After building the release version, the save action from the frontend never completes — the Rust side never registered a matching command handler, so it silently does nothing in production even though the interface rendered fine."
+    },
+    {
+      "id": "H7_f01_TA",
+      "text": "An invisible modal backdrop that never got removed from the DOM was capturing every click — buttons in the installed build looked pressed but a transparent overlay layered on top silently absorbed the pointer events before they reached the screen."
+    },
+    {
+      "id": "H7_f02_A",
+      "text": "Lag climbed so we added more consumers to the group — a rebalance storm followed, ownership was revoked and reassigned across nodes before anyone caught up, and duplicate processing got worse instead of better."
+    },
+    {
+      "id": "H7_f02_B",
+      "text": "The real bottleneck turned out to be downstream — the database connection pool was exhausted, so every worker just sat waiting for a free connection; adding more workers only meant more things waiting in line."
+    },
+    {
+      "id": "H7_f02_TA",
+      "text": "We doubled the number of worker threads to shrink the backlog, but each thread pinned a CPU core and the context-switching overhead from too many threads actually slowed total throughput — the fix was fewer, not more, workers."
+    },
+    {
+      "id": "H7_f03_A",
+      "text": "Large uploads got truncated whenever the app left the foreground — configuring the session for background transfers with a discretionary flag let the system defer or throttle the transfer based on battery and network conditions."
+    },
+    {
+      "id": "H7_f03_B",
+      "text": "Sync jobs silently stopped on some devices — the OS-level battery scheduler deferred the sync to the next maintenance window, and some manufacturers' aggressive battery savers made it worse."
+    },
+    {
+      "id": "H7_f03_TA",
+      "text": "The upload progress bar froze at ninety percent because the app was rendering it on the main thread and a long synchronous JSON parse blocked the interface — the transfer had actually finished, only the on-screen indicator never updated."
+    },
+    {
+      "id": "H7_f04_A",
+      "text": "We indexed a boolean flag column hoping to speed up the query — the planner still scanned the whole table, since ninety percent of rows share the same value and hopping between the index and the heap costs more than just scanning."
+    },
+    {
+      "id": "H7_f04_B",
+      "text": "We split the table by country code and one customer alone generates ninety-five percent of the traffic — that single split is overwhelmed while the rest of the table sits nearly idle, despite plenty of spare table capacity overall."
+    },
+    {
+      "id": "H7_f04_TA",
+      "text": "We added a computed column to make dashboard lookups faster, but the trigger that maintained it ran synchronously on every write, and under high write traffic that trigger itself became the bottleneck for the whole table."
+    },
+    {
+      "id": "H7_f05_A",
+      "text": "We put the customer ID directly into the JSON key rather than as a value — every new customer created a cluster-state update, we blew past the one-thousand key limit, and both heap usage and latency fell apart."
+    },
+    {
+      "id": "H7_f05_B",
+      "text": "A metric carried the request ID as one of its values — every distinct request spawned a brand new time series, ingestion volume and memory both went vertical within hours."
+    },
+    {
+      "id": "H7_f05_TA",
+      "text": "We started logging a unique session token with every event for tracing, and the logging library serialized each event synchronously to disk — under load the disk write queue backed up and the whole system's request handling stalled waiting on log flushes."
+    },
+    {
+      "id": "H7_f06_A",
+      "text": "The window-resize handler fired hundreds of times a second and thrashed the layout engine — wrapping it so the expensive recalculation only runs once things settle fixed it."
+    },
+    {
+      "id": "H7_f06_B",
+      "text": "A single bulk file operation triggered a storm of filesystem-change notifications — we merge them into one rebuild trigger after a short quiet window instead of reacting to every individual event."
+    },
+    {
+      "id": "H7_f06_TA",
+      "text": "Our event handler was overwhelmed because it allocated a new database connection per incoming event instead of reusing one already open, so under any load the connection setup cost dominated regardless of how many events arrived."
+    },
+    {
+      "id": "H7_f07_A",
+      "text": "The client resent the charge request after a timeout — we recognize the same key in the request header, so resending returns the original result instead of charging the customer a second time."
+    },
+    {
+      "id": "H7_f07_B",
+      "text": "The job restarted partway through a run — we record the last row we finished, so restarting from that checkpoint doesn't reprocess and duplicate the earlier rows."
+    },
+    {
+      "id": "H7_f07_TA",
+      "text": "We made every write go through a distributed lock to guarantee only one writer touches a row at a time, but under high contention threads queued for the lock so long that requests started timing out — the safety mechanism itself became the throughput ceiling."
+    },
+    {
+      "id": "H7_f08_A",
+      "text": "API latency spiked and everything looked slow across the board — every incoming request was waiting in line for a spot to talk to the database, and there just weren't enough spots for how many requests we were running at once."
+    },
+    {
+      "id": "H7_f08_B",
+      "text": "Requests to a single external host mysteriously ran one after another instead of together — browsers cap how many simultaneous connections they'll open to any one origin, so many requests to the same domain queue up behind that cap."
+    },
+    {
+      "id": "H7_f08_TA",
+      "text": "Requests were piling up even though CPU and memory both sat well under capacity — a single global logging lock serialized every request through one line of synchronous log-writing code, so throughput was capped by that one lock, not by any resource shortage."
+    },
+    {
+      "id": "H7_f09_A",
+      "text": "Listing fifty posts issued fifty-one separate SQL statements — the object mapper pulls the author for each row one at a time; joining it into a single statement dropped that to two."
+    },
+    {
+      "id": "H7_f09_B",
+      "text": "Building one page meant calling forty different downstream services, one call per line item on the page — replacing that with a single combined-lookup endpoint fixed it."
+    },
+    {
+      "id": "H7_f09_TA",
+      "text": "One screen felt slow to build even though it only makes a single API call — the response payload itself is fifteen megabytes of unused fields, so the slowness is all in parsing and transferring one enormous reply, not in how many calls were made."
+    },
+    {
+      "id": "H7_f10_A",
+      "text": "We piped a large file through without respecting the readable side's flow-control signal — the source kept shoving data in regardless, and memory ballooned until the process ran out."
+    },
+    {
+      "id": "H7_f10_B",
+      "text": "The producer ran far ahead of what the consumer side could keep up with — nothing ever slowed the producer down or dropped excess work, so the gap between the two just kept growing."
+    },
+    {
+      "id": "H7_f10_TA",
+      "text": "One microservice produced results faster than a downstream cache could be invalidated, so clients briefly read stale values — switching the cache to write-through eliminated the staleness, and no speed mismatch in processing was ever the cause."
+    },
+    {
+      "id": "H7_f11_A",
+      "text": "One flaky downstream call tied up every worker thread waiting on it — after a set number of failures we now fail fast instead of piling threads up waiting on a service that's clearly down."
+    },
+    {
+      "id": "H7_f11_B",
+      "text": "A single noisy process with no resource caps starved the whole machine and dragged down unrelated workloads sharing it — giving it its own bounded share of resources on a separate machine kept the blast contained."
+    },
+    {
+      "id": "H7_f11_TA",
+      "text": "A dependency we relied on shipped a broken minor-version update that silently changed its default timeout from ten seconds to ten milliseconds, causing every caller to fail — rolling back the dependency version fixed it, with no isolation mechanism involved at all."
+    },
+    {
+      "id": "H7_f12_A",
+      "text": "The service came back up and immediately fell over again — every client was resending its failed call on the exact same fixed interval, so they all hammered it the instant it recovered; spreading those attempts out with a randomized delay fixed it."
+    },
+    {
+      "id": "H7_f12_B",
+      "text": "A popular cache entry expired and ten thousand callers hit the origin in the same second trying to refill it — letting only one caller refill while everyone else waits for that result solved it."
+    },
+    {
+      "id": "H7_f12_TA",
+      "text": "The database came back online after maintenance and immediately hit its connection limit again — the maintenance script itself never closed its own session, so one stale leftover connection had been silently occupying a slot the entire time."
+    },
+    {
+      "id": "H7_f13_A",
+      "text": "A user updates their profile, refreshes the page, and sees the old data — the read happened to land on a copy of the database that hadn't caught up yet; routing that immediate read to the primary copy fixed it."
+    },
+    {
+      "id": "H7_f13_B",
+      "text": "We pushed new content and support tickets say it's still not showing — distributed nodes serving the content hadn't all picked up the change yet, so different users saw different versions for several minutes."
+    },
+    {
+      "id": "H7_f13_TA",
+      "text": "A user saved a settings change and still saw the old value, but it turned out their browser had cached the page itself from before the edit — a hard refresh showed the new value immediately, since nothing on the server side was ever out of date."
+    },
+    {
+      "id": "H7_f14_A",
+      "text": "Requests in flight got dropped every time we deployed — there was no pre-stop hook, so the process got killed before the grace period gave it a chance to finish what it was doing."
+    },
+    {
+      "id": "H7_f14_B",
+      "text": "A batch job lost its last few writes whenever someone hit Ctrl-C — a handler now stops accepting new work and waits for everything already running to finish before the process actually exits."
+    },
+    {
+      "id": "H7_f14_TA",
+      "text": "A long report generation job appeared to lose its output when the terminal window was closed, but the process itself kept running detached the whole time — the output was written correctly, it just wasn't visible in the closed terminal."
+    }
+  ],
+  "queries": [
+    {
+      "id": "SG_haiku_q01",
+      "text": "desktop window renders but doesn't respond to clicks",
+      "relevant_ids": [
+        "H7_f01_A",
+        "H7_f01_B"
+      ],
+      "test": "STYLE",
+      "client": "haiku",
+      "family": "01"
+    },
+    {
+      "id": "SG_haiku_q02",
+      "text": "adding more workers decreased performance instead of improving it",
+      "relevant_ids": [
+        "H7_f02_A",
+        "H7_f02_B"
+      ],
+      "test": "STYLE",
+      "client": "haiku",
+      "family": "02"
+    },
+    {
+      "id": "SG_haiku_q03",
+      "text": "long operations don't finish when the app loses focus",
+      "relevant_ids": [
+        "H7_f03_A",
+        "H7_f03_B"
+      ],
+      "test": "STYLE",
+      "client": "haiku",
+      "family": "03"
+    },
+    {
+      "id": "SG_haiku_q04",
+      "text": "adding a field to optimize made queries slower instead",
+      "relevant_ids": [
+        "H7_f04_A",
+        "H7_f04_B"
+      ],
+      "test": "STYLE",
+      "client": "haiku",
+      "family": "04"
+    },
+    {
+      "id": "SG_haiku_q05",
+      "text": "unique per-request identifiers caused the whole system to crash",
+      "relevant_ids": [
+        "H7_f05_A",
+        "H7_f05_B"
+      ],
+      "test": "STYLE",
+      "client": "haiku",
+      "family": "05"
+    },
+    {
+      "id": "SG_haiku_q06",
+      "text": "preventing a flood of similar events from overwhelming the handler",
+      "relevant_ids": [
+        "H7_f06_A",
+        "H7_f06_B"
+      ],
+      "test": "STYLE",
+      "client": "haiku",
+      "family": "06"
+    },
+    {
+      "id": "SG_haiku_q07",
+      "text": "handling the same request processed multiple times safely",
+      "relevant_ids": [
+        "H7_f07_A",
+        "H7_f07_B"
+      ],
+      "test": "STYLE",
+      "client": "haiku",
+      "family": "07"
+    },
+    {
+      "id": "SG_haiku_q08",
+      "text": "requests queue up even though the system doesn't look overloaded",
+      "relevant_ids": [
+        "H7_f08_A",
+        "H7_f08_B"
+      ],
+      "test": "STYLE",
+      "client": "haiku",
+      "family": "08"
+    },
+    {
+      "id": "SG_haiku_q09",
+      "text": "page makes one query per row instead of loading everything together",
+      "relevant_ids": [
+        "H7_f09_A",
+        "H7_f09_B"
+      ],
+      "test": "STYLE",
+      "client": "haiku",
+      "family": "09"
+    },
+    {
+      "id": "SG_haiku_q10",
+      "text": "producer faster than consumer without overflow handling",
+      "relevant_ids": [
+        "H7_f10_A",
+        "H7_f10_B"
+      ],
+      "test": "STYLE",
+      "client": "haiku",
+      "family": "10"
+    },
+    {
+      "id": "SG_haiku_q11",
+      "text": "one service failure took down the entire application",
+      "relevant_ids": [
+        "H7_f11_A",
+        "H7_f11_B"
+      ],
+      "test": "STYLE",
+      "client": "haiku",
+      "family": "11"
+    },
+    {
+      "id": "SG_haiku_q12",
+      "text": "synchronized failure recovery causing immediate cascade crash",
+      "relevant_ids": [
+        "H7_f12_A",
+        "H7_f12_B"
+      ],
+      "test": "STYLE",
+      "client": "haiku",
+      "family": "12"
+    },
+    {
+      "id": "SG_haiku_q13",
+      "text": "changes don't appear in the UI after being saved",
+      "relevant_ids": [
+        "H7_f13_A",
+        "H7_f13_B"
+      ],
+      "test": "STYLE",
+      "client": "haiku",
+      "family": "13"
+    },
+    {
+      "id": "SG_haiku_q14",
+      "text": "losing unsaved work when the application terminates",
+      "relevant_ids": [
+        "H7_f14_A",
+        "H7_f14_B"
+      ],
+      "test": "STYLE",
+      "client": "haiku",
+      "family": "14"
+    },
+    {
+      "id": "SG_sonnet_q01",
+      "text": "packaged desktop app window opens and looks fine but buttons and menu clicks do nothing at all - what typically causes a UI to become completely unresponsive to input",
+      "relevant_ids": [
+        "H7_f01_A",
+        "H7_f01_B"
+      ],
+      "test": "STYLE",
+      "client": "sonnet",
+      "family": "01"
+    },
+    {
+      "id": "SG_sonnet_q02",
+      "text": "added more worker processes to clear a growing job backlog but the backlog grew faster afterward - why would adding more workers slow throughput instead of helping",
+      "relevant_ids": [
+        "H7_f02_A",
+        "H7_f02_B"
+      ],
+      "test": "STYLE",
+      "client": "sonnet",
+      "family": "02"
+    },
+    {
+      "id": "SG_sonnet_q03",
+      "text": "a long-running task gets silently killed or never completes once the app is no longer the active foreground app - how to make it finish reliably regardless",
+      "relevant_ids": [
+        "H7_f03_A",
+        "H7_f03_B"
+      ],
+      "test": "STYLE",
+      "client": "sonnet",
+      "family": "03"
+    },
+    {
+      "id": "SG_sonnet_q04",
+      "text": "chose a column to speed up lookups and it turned into a hot spot that slowed everything down instead - what's the right way to pick that column",
+      "relevant_ids": [
+        "H7_f04_A",
+        "H7_f04_B"
+      ],
+      "test": "STYLE",
+      "client": "sonnet",
+      "family": "04"
+    },
+    {
+      "id": "SG_sonnet_q05",
+      "text": "tagging every request with a unique id for tracing caused memory and storage usage to blow up and the metrics/logging system to fall over",
+      "relevant_ids": [
+        "H7_f05_A",
+        "H7_f05_B"
+      ],
+      "test": "STYLE",
+      "client": "sonnet",
+      "family": "05"
+    },
+    {
+      "id": "SG_sonnet_q06",
+      "text": "the same event fires many times in rapid succession and each one triggers expensive work, overwhelming the handler - how do I collapse rapid repeated triggers into one",
+      "relevant_ids": [
+        "H7_f06_A",
+        "H7_f06_B"
+      ],
+      "test": "STYLE",
+      "client": "sonnet",
+      "family": "06"
+    },
+    {
+      "id": "SG_sonnet_q07",
+      "text": "a network call gets sent twice because of a client resend and it needs to be safe to run the same operation more than once without duplicating effects",
+      "relevant_ids": [
+        "H7_f07_A",
+        "H7_f07_B"
+      ],
+      "test": "STYLE",
+      "client": "sonnet",
+      "family": "07"
+    },
+    {
+      "id": "SG_sonnet_q08",
+      "text": "requests are stuck waiting even though CPU and memory look fine, like everything is queued up for some limited resource that's all checked out",
+      "relevant_ids": [
+        "H7_f08_A",
+        "H7_f08_B"
+      ],
+      "test": "STYLE",
+      "client": "sonnet",
+      "family": "08"
+    },
+    {
+      "id": "SG_sonnet_q09",
+      "text": "a single page load triggers a huge number of small individual data lookups instead of one combined query - why is it making so many separate calls",
+      "relevant_ids": [
+        "H7_f09_A",
+        "H7_f09_B"
+      ],
+      "test": "STYLE",
+      "client": "sonnet",
+      "family": "09"
+    },
+    {
+      "id": "SG_sonnet_q10",
+      "text": "the producing side generates data much faster than the consuming side can process it and nothing slows the producer down, so memory grows unbounded",
+      "relevant_ids": [
+        "H7_f10_A",
+        "H7_f10_B"
+      ],
+      "test": "STYLE",
+      "client": "sonnet",
+      "family": "10"
+    },
+    {
+      "id": "SG_sonnet_q11",
+      "text": "one downstream service starts failing and that failure cascades and takes down unrelated parts of the whole system instead of staying contained",
+      "relevant_ids": [
+        "H7_f11_A",
+        "H7_f11_B"
+      ],
+      "test": "STYLE",
+      "client": "sonnet",
+      "family": "11"
+    },
+    {
+      "id": "SG_sonnet_q12",
+      "text": "after an outage clears, every client reconnects or reattempts at the exact same instant and the flood of simultaneous attempts knocks the service back down",
+      "relevant_ids": [
+        "H7_f12_A",
+        "H7_f12_B"
+      ],
+      "test": "STYLE",
+      "client": "sonnet",
+      "family": "12"
+    },
+    {
+      "id": "SG_sonnet_q13",
+      "text": "I just wrote an update but when I read it back or reload the page I still see the old stale value for a while",
+      "relevant_ids": [
+        "H7_f13_A",
+        "H7_f13_B"
+      ],
+      "test": "STYLE",
+      "client": "sonnet",
+      "family": "13"
+    },
+    {
+      "id": "SG_sonnet_q14",
+      "text": "when the service is stopped or restarted, whatever request or job was in flight at that moment just gets lost instead of finishing or being resumed",
+      "relevant_ids": [
+        "H7_f14_A",
+        "H7_f14_B"
+      ],
+      "test": "STYLE",
+      "client": "sonnet",
+      "family": "14"
+    },
+    {
+      "id": "SG_opus_q01",
+      "text": "native app window opens and renders fine but every button and click is completely dead with no reaction",
+      "relevant_ids": [
+        "H7_f01_A",
+        "H7_f01_B"
+      ],
+      "test": "STYLE",
+      "client": "opus",
+      "family": "01"
+    },
+    {
+      "id": "SG_opus_q02",
+      "text": "added more parallel processing capacity and the pending queue grew larger instead of shrinking",
+      "relevant_ids": [
+        "H7_f02_A",
+        "H7_f02_B"
+      ],
+      "test": "STYLE",
+      "client": "opus",
+      "family": "02"
+    },
+    {
+      "id": "SG_opus_q03",
+      "text": "a long-running job stalls or never completes once the app loses focus or the screen is off",
+      "relevant_ids": [
+        "H7_f03_A",
+        "H7_f03_B"
+      ],
+      "test": "STYLE",
+      "client": "opus",
+      "family": "03"
+    },
+    {
+      "id": "SG_opus_q04",
+      "text": "chose a column to make lookups faster but it turned into the slowest part of the query",
+      "relevant_ids": [
+        "H7_f04_A",
+        "H7_f04_B"
+      ],
+      "test": "STYLE",
+      "client": "opus",
+      "family": "04"
+    },
+    {
+      "id": "SG_opus_q05",
+      "text": "storing a distinct value per event blew up memory and brought the metrics/storage layer to its knees",
+      "relevant_ids": [
+        "H7_f05_A",
+        "H7_f05_B"
+      ],
+      "test": "STYLE",
+      "client": "opus",
+      "family": "05"
+    },
+    {
+      "id": "SG_opus_q06",
+      "text": "a flood of nearly identical events fires within milliseconds and swamps the callback",
+      "relevant_ids": [
+        "H7_f06_A",
+        "H7_f06_B"
+      ],
+      "test": "STYLE",
+      "client": "opus",
+      "family": "06"
+    },
+    {
+      "id": "SG_opus_q07",
+      "text": "the same operation may run more than once and must stay correct no matter how many times it executes",
+      "relevant_ids": [
+        "H7_f07_A",
+        "H7_f07_B"
+      ],
+      "test": "STYLE",
+      "client": "opus",
+      "family": "07"
+    },
+    {
+      "id": "SG_opus_q08",
+      "text": "callers stall waiting to acquire a resource yet no component appears busy or saturated",
+      "relevant_ids": [
+        "H7_f08_A",
+        "H7_f08_B"
+      ],
+      "test": "STYLE",
+      "client": "opus",
+      "family": "08"
+    },
+    {
+      "id": "SG_opus_q09",
+      "text": "a single view fires dozens of separate fetches to assemble its data instead of one",
+      "relevant_ids": [
+        "H7_f09_A",
+        "H7_f09_B"
+      ],
+      "test": "STYLE",
+      "client": "opus",
+      "family": "09"
+    },
+    {
+      "id": "SG_opus_q10",
+      "text": "producer emits far quicker than the downstream can process and nothing throttles the flow",
+      "relevant_ids": [
+        "H7_f10_A",
+        "H7_f10_B"
+      ],
+      "test": "STYLE",
+      "client": "opus",
+      "family": "10"
+    },
+    {
+      "id": "SG_opus_q11",
+      "text": "a single failing downstream service drags the entire application down with it",
+      "relevant_ids": [
+        "H7_f11_A",
+        "H7_f11_B"
+      ],
+      "test": "STYLE",
+      "client": "opus",
+      "family": "11"
+    },
+    {
+      "id": "SG_opus_q12",
+      "text": "all clients recover simultaneously and immediately knock the service over again",
+      "relevant_ids": [
+        "H7_f12_A",
+        "H7_f12_B"
+      ],
+      "test": "STYLE",
+      "client": "opus",
+      "family": "12"
+    },
+    {
+      "id": "SG_opus_q13",
+      "text": "just wrote an update but reads keep returning the previous stale value",
+      "relevant_ids": [
+        "H7_f13_A",
+        "H7_f13_B"
+      ],
+      "test": "STYLE",
+      "client": "opus",
+      "family": "13"
+    },
+    {
+      "id": "SG_opus_q14",
+      "text": "unfinished in-flight work vanishes when the process is shut down mid-task",
+      "relevant_ids": [
+        "H7_f14_A",
+        "H7_f14_B"
+      ],
+      "test": "STYLE",
+      "client": "opus",
+      "family": "14"
+    },
+    {
+      "id": "SG_qwen3-coder_q01",
+      "text": "UI appears but user interactions are unresponsive",
+      "relevant_ids": [
+        "H7_f01_A",
+        "H7_f01_B"
+      ],
+      "test": "STYLE",
+      "client": "qwen3-coder",
+      "family": "01"
+    },
+    {
+      "id": "SG_qwen3-coder_q02",
+      "text": "Increasing worker count worsened task processing delays",
+      "relevant_ids": [
+        "H7_f02_A",
+        "H7_f02_B"
+      ],
+      "test": "STYLE",
+      "client": "qwen3-coder",
+      "family": "02"
+    },
+    {
+      "id": "SG_qwen3-coder_q03",
+      "text": "Tasks fail to complete when app is not in active state",
+      "relevant_ids": [
+        "H7_f03_A",
+        "H7_f03_B"
+      ],
+      "test": "STYLE",
+      "client": "qwen3-coder",
+      "family": "03"
+    },
+    {
+      "id": "SG_qwen3-coder_q04",
+      "text": "Choosing a field for optimization introduced new performance issues",
+      "relevant_ids": [
+        "H7_f04_A",
+        "H7_f04_B"
+      ],
+      "test": "STYLE",
+      "client": "qwen3-coder",
+      "family": "04"
+    },
+    {
+      "id": "SG_qwen3-coder_q05",
+      "text": "Adding unique identifiers caused system-wide instability",
+      "relevant_ids": [
+        "H7_f05_A",
+        "H7_f05_B"
+      ],
+      "test": "STYLE",
+      "client": "qwen3-coder",
+      "family": "05"
+    },
+    {
+      "id": "SG_qwen3-coder_q06",
+      "text": "Rapid duplicate events overwhelm the processing logic",
+      "relevant_ids": [
+        "H7_f06_A",
+        "H7_f06_B"
+      ],
+      "test": "STYLE",
+      "client": "qwen3-coder",
+      "family": "06"
+    },
+    {
+      "id": "SG_qwen3-coder_q07",
+      "text": "Same operation executes multiple times without side effects",
+      "relevant_ids": [
+        "H7_f07_A",
+        "H7_f07_B"
+      ],
+      "test": "STYLE",
+      "client": "qwen3-coder",
+      "family": "07"
+    },
+    {
+      "id": "SG_qwen3-coder_q08",
+      "text": "Requests are stuck waiting despite no apparent resource limits",
+      "relevant_ids": [
+        "H7_f08_A",
+        "H7_f08_B"
+      ],
+      "test": "STYLE",
+      "client": "qwen3-coder",
+      "family": "08"
+    },
+    {
+      "id": "SG_qwen3-coder_q09",
+      "text": "Screen makes excessive data calls during rendering",
+      "relevant_ids": [
+        "H7_f09_A",
+        "H7_f09_B"
+      ],
+      "test": "STYLE",
+      "client": "qwen3-coder",
+      "family": "09"
+    },
+    {
+      "id": "SG_qwen3-coder_q10",
+      "text": "Data generation outpaces consumption with no flow control",
+      "relevant_ids": [
+        "H7_f10_A",
+        "H7_f10_B"
+      ],
+      "test": "STYLE",
+      "client": "qwen3-coder",
+      "family": "10"
+    },
+    {
+      "id": "SG_qwen3-coder_q11",
+      "text": "System failure propagates due to single point of failure",
+      "relevant_ids": [
+        "H7_f11_A",
+        "H7_f11_B"
+      ],
+      "test": "STYLE",
+      "client": "qwen3-coder",
+      "family": "11"
+    },
+    {
+      "id": "SG_qwen3-coder_q12",
+      "text": "Multiple failures occur simultaneously after recovery",
+      "relevant_ids": [
+        "H7_f12_A",
+        "H7_f12_B"
+      ],
+      "test": "STYLE",
+      "client": "qwen3-coder",
+      "family": "12"
+    },
+    {
+      "id": "SG_qwen3-coder_q13",
+      "text": "Recent updates are not visible across all system instances",
+      "relevant_ids": [
+        "H7_f13_A",
+        "H7_f13_B"
+      ],
+      "test": "STYLE",
+      "client": "qwen3-coder",
+      "family": "13"
+    },
+    {
+      "id": "SG_qwen3-coder_q14",
+      "text": "Unfinished operations are lost during shutdown process",
+      "relevant_ids": [
+        "H7_f14_A",
+        "H7_f14_B"
+      ],
+      "test": "STYLE",
+      "client": "qwen3-coder",
+      "family": "14"
+    },
+    {
+      "id": "SG_qwen2.5-coder_q01",
+      "text": "UI elements load but don't respond to user actions",
+      "relevant_ids": [
+        "H7_f01_A",
+        "H7_f01_B"
+      ],
+      "test": "STYLE",
+      "client": "qwen2.5-coder",
+      "family": "01"
+    },
+    {
+      "id": "SG_qwen2.5-coder_q02",
+      "text": "Scaling up workers worsens system performance",
+      "relevant_ids": [
+        "H7_f02_A",
+        "H7_f02_B"
+      ],
+      "test": "STYLE",
+      "client": "qwen2.5-coder",
+      "family": "02"
+    },
+    {
+      "id": "SG_qwen2.5-coder_q03",
+      "text": "Long-running tasks fail when app is not in focus",
+      "relevant_ids": [
+        "H7_f03_A",
+        "H7_f03_B"
+      ],
+      "test": "STYLE",
+      "client": "qwen2.5-coder",
+      "family": "03"
+    },
+    {
+      "id": "SG_qwen2.5-coder_q04",
+      "text": "Optimizing a query creates unexpected bottlenecks",
+      "relevant_ids": [
+        "H7_f04_A",
+        "H7_f04_B"
+      ],
+      "test": "STYLE",
+      "client": "qwen2.5-coder",
+      "family": "04"
+    },
+    {
+      "id": "SG_qwen2.5-coder_q05",
+      "text": "Adding unique identifiers causes system failure",
+      "relevant_ids": [
+        "H7_f05_A",
+        "H7_f05_B"
+      ],
+      "test": "STYLE",
+      "client": "qwen2.5-coder",
+      "family": "05"
+    },
+    {
+      "id": "SG_qwen2.5-coder_q06",
+      "text": "Handling rapid repeated duplicate events efficiently",
+      "relevant_ids": [
+        "H7_f06_A",
+        "H7_f06_B"
+      ],
+      "test": "STYLE",
+      "client": "qwen2.5-coder",
+      "family": "06"
+    },
+    {
+      "id": "SG_qwen2.5-coder_q07",
+      "text": "Ensuring safe execution of repeated actions",
+      "relevant_ids": [
+        "H7_f07_A",
+        "H7_f07_B"
+      ],
+      "test": "STYLE",
+      "client": "qwen2.5-coder",
+      "family": "07"
+    },
+    {
+      "id": "SG_qwen2.5-coder_q08",
+      "text": "Requests are waiting for resources without apparent overload",
+      "relevant_ids": [
+        "H7_f08_A",
+        "H7_f08_B"
+      ],
+      "test": "STYLE",
+      "client": "qwen2.5-coder",
+      "family": "08"
+    },
+    {
+      "id": "SG_qwen2.5-coder_q09",
+      "text": "Single screen making excessive data requests",
+      "relevant_ids": [
+        "H7_f09_A",
+        "H7_f09_B"
+      ],
+      "test": "STYLE",
+      "client": "qwen2.5-coder",
+      "family": "09"
+    },
+    {
+      "id": "SG_qwen2.5-coder_q10",
+      "text": "One side producing data faster than the other can handle",
+      "relevant_ids": [
+        "H7_f10_A",
+        "H7_f10_B"
+      ],
+      "test": "STYLE",
+      "client": "qwen2.5-coder",
+      "family": "10"
+    },
+    {
+      "id": "SG_qwen2.5-coder_q11",
+      "text": "Broken dependencies causing cascading failures",
+      "relevant_ids": [
+        "H7_f11_A",
+        "H7_f11_B"
+      ],
+      "test": "STYLE",
+      "client": "qwen2.5-coder",
+      "family": "11"
+    },
+    {
+      "id": "SG_qwen2.5-coder_q12",
+      "text": "System recovering together but breaking again immediately",
+      "relevant_ids": [
+        "H7_f12_A",
+        "H7_f12_B"
+      ],
+      "test": "STYLE",
+      "client": "qwen2.5-coder",
+      "family": "12"
+    },
+    {
+      "id": "SG_qwen2.5-coder_q13",
+      "text": "App displays old data after change is saved",
+      "relevant_ids": [
+        "H7_f13_A",
+        "H7_f13_B"
+      ],
+      "test": "STYLE",
+      "client": "qwen2.5-coder",
+      "family": "13"
+    },
+    {
+      "id": "SG_qwen2.5-coder_q14",
+      "text": "Work in progress lost when process stops",
+      "relevant_ids": [
+        "H7_f14_A",
+        "H7_f14_B"
+      ],
+      "test": "STYLE",
+      "client": "qwen2.5-coder",
+      "family": "14"
+    }
+  ]
+}

@@ -1,0 +1,342 @@
+{
+  "passages": [
+    {
+      "id": "H7_f01_A",
+      "text": "Buttons in the packaged desktop app do nothing after installation \u2014 the preload script set window.doThing directly, but with contextIsolation enabled the call never reached the renderer process; had to expose it through a bridge instead."
+    },
+    {
+      "id": "H7_f01_B",
+      "text": "After building the release version, the save action from the frontend never completes \u2014 the Rust side never registered a matching command handler, so it silently does nothing in production even though the interface rendered fine."
+    },
+    {
+      "id": "H7_f01_TA",
+      "text": "An invisible modal backdrop that never got removed from the DOM was capturing every click \u2014 buttons in the installed build looked pressed but a transparent overlay layered on top silently absorbed the pointer events before they reached the screen."
+    },
+    {
+      "id": "H7_f02_A",
+      "text": "Lag climbed so we added more consumers to the group \u2014 a rebalance storm followed, ownership was revoked and reassigned across nodes before anyone caught up, and duplicate processing got worse instead of better."
+    },
+    {
+      "id": "H7_f02_B",
+      "text": "The real bottleneck turned out to be downstream \u2014 the database connection pool was exhausted, so every worker just sat waiting for a free connection; adding more workers only meant more things waiting in line."
+    },
+    {
+      "id": "H7_f02_TA",
+      "text": "We doubled the number of worker threads to shrink the backlog, but each thread pinned a CPU core and the context-switching overhead from too many threads actually slowed total throughput \u2014 the fix was fewer, not more, workers."
+    },
+    {
+      "id": "H7_f03_A",
+      "text": "Large uploads got truncated whenever the app left the foreground \u2014 configuring the session for background transfers with a discretionary flag let the system defer or throttle the transfer based on battery and network conditions."
+    },
+    {
+      "id": "H7_f03_B",
+      "text": "Sync jobs silently stopped on some devices \u2014 the OS-level battery scheduler deferred the sync to the next maintenance window, and some manufacturers' aggressive battery savers made it worse."
+    },
+    {
+      "id": "H7_f03_TA",
+      "text": "The upload progress bar froze at ninety percent because the app was rendering it on the main thread and a long synchronous JSON parse blocked the interface \u2014 the transfer had actually finished, only the on-screen indicator never updated."
+    },
+    {
+      "id": "H7_f04_A",
+      "text": "We indexed a boolean flag column hoping to speed up the query \u2014 the planner still scanned the whole table, since ninety percent of rows share the same value and hopping between the index and the heap costs more than just scanning."
+    },
+    {
+      "id": "H7_f04_B",
+      "text": "We split the table by country code and one customer alone generates ninety-five percent of the traffic \u2014 that single split is overwhelmed while the rest of the table sits nearly idle, despite plenty of spare table capacity overall."
+    },
+    {
+      "id": "H7_f04_TA",
+      "text": "We added a computed column to make dashboard lookups faster, but the trigger that maintained it ran synchronously on every write, and under high write traffic that trigger itself became the bottleneck for the whole table."
+    },
+    {
+      "id": "H7_f05_A",
+      "text": "We put the customer ID directly into the JSON key rather than as a value \u2014 every new customer created a cluster-state update, we blew past the one-thousand key limit, and both heap usage and latency fell apart."
+    },
+    {
+      "id": "H7_f05_B",
+      "text": "A metric carried the request ID as one of its values \u2014 every distinct request spawned a brand new time series, ingestion volume and memory both went vertical within hours."
+    },
+    {
+      "id": "H7_f05_TA",
+      "text": "We started logging a unique session token with every event for tracing, and the logging library serialized each event synchronously to disk \u2014 under load the disk write queue backed up and the whole system's request handling stalled waiting on log flushes."
+    },
+    {
+      "id": "H7_f06_A",
+      "text": "The window-resize handler fired hundreds of times a second and thrashed the layout engine \u2014 wrapping it so the expensive recalculation only runs once things settle fixed it."
+    },
+    {
+      "id": "H7_f06_B",
+      "text": "A single bulk file operation triggered a storm of filesystem-change notifications \u2014 we merge them into one rebuild trigger after a short quiet window instead of reacting to every individual event."
+    },
+    {
+      "id": "H7_f06_TA",
+      "text": "Our event handler was overwhelmed because it allocated a new database connection per incoming event instead of reusing one already open, so under any load the connection setup cost dominated regardless of how many events arrived."
+    },
+    {
+      "id": "H7_f07_A",
+      "text": "The client resent the charge request after a timeout \u2014 we recognize the same key in the request header, so resending returns the original result instead of charging the customer a second time."
+    },
+    {
+      "id": "H7_f07_B",
+      "text": "The job restarted partway through a run \u2014 we record the last row we finished, so restarting from that checkpoint doesn't reprocess and duplicate the earlier rows."
+    },
+    {
+      "id": "H7_f07_TA",
+      "text": "We made every write go through a distributed lock to guarantee only one writer touches a row at a time, but under high contention threads queued for the lock so long that requests started timing out \u2014 the safety mechanism itself became the throughput ceiling."
+    },
+    {
+      "id": "H7_f08_A",
+      "text": "API latency spiked and everything looked slow across the board \u2014 every incoming request was waiting in line for a spot to talk to the database, and there just weren't enough spots for how many requests we were running at once."
+    },
+    {
+      "id": "H7_f08_B",
+      "text": "Requests to a single external host mysteriously ran one after another instead of together \u2014 browsers cap how many simultaneous connections they'll open to any one origin, so many requests to the same domain queue up behind that cap."
+    },
+    {
+      "id": "H7_f08_TA",
+      "text": "Requests were piling up even though CPU and memory both sat well under capacity \u2014 a single global logging lock serialized every request through one line of synchronous log-writing code, so throughput was capped by that one lock, not by any resource shortage."
+    },
+    {
+      "id": "H7_f09_A",
+      "text": "Listing fifty posts issued fifty-one separate SQL statements \u2014 the object mapper pulls the author for each row one at a time; joining it into a single statement dropped that to two."
+    },
+    {
+      "id": "H7_f09_B",
+      "text": "Building one page meant calling forty different downstream services, one call per line item on the page \u2014 replacing that with a single combined-lookup endpoint fixed it."
+    },
+    {
+      "id": "H7_f09_TA",
+      "text": "One screen felt slow to build even though it only makes a single API call \u2014 the response payload itself is fifteen megabytes of unused fields, so the slowness is all in parsing and transferring one enormous reply, not in how many calls were made."
+    },
+    {
+      "id": "H7_f10_A",
+      "text": "We piped a large file through without respecting the readable side's flow-control signal \u2014 the source kept shoving data in regardless, and memory ballooned until the process ran out."
+    },
+    {
+      "id": "H7_f10_B",
+      "text": "The producer ran far ahead of what the consumer side could keep up with \u2014 nothing ever slowed the producer down or dropped excess work, so the gap between the two just kept growing."
+    },
+    {
+      "id": "H7_f10_TA",
+      "text": "One microservice produced results faster than a downstream cache could be invalidated, so clients briefly read stale values \u2014 switching the cache to write-through eliminated the staleness, and no speed mismatch in processing was ever the cause."
+    },
+    {
+      "id": "H7_f11_A",
+      "text": "One flaky downstream call tied up every worker thread waiting on it \u2014 after a set number of failures we now fail fast instead of piling threads up waiting on a service that's clearly down."
+    },
+    {
+      "id": "H7_f11_B",
+      "text": "A single noisy process with no resource caps starved the whole machine and dragged down unrelated workloads sharing it \u2014 giving it its own bounded share of resources on a separate machine kept the blast contained."
+    },
+    {
+      "id": "H7_f11_TA",
+      "text": "A dependency we relied on shipped a broken minor-version update that silently changed its default timeout from ten seconds to ten milliseconds, causing every caller to fail \u2014 rolling back the dependency version fixed it, with no isolation mechanism involved at all."
+    },
+    {
+      "id": "H7_f12_A",
+      "text": "The service came back up and immediately fell over again \u2014 every client was resending its failed call on the exact same fixed interval, so they all hammered it the instant it recovered; spreading those attempts out with a randomized delay fixed it."
+    },
+    {
+      "id": "H7_f12_B",
+      "text": "A popular cache entry expired and ten thousand callers hit the origin in the same second trying to refill it \u2014 letting only one caller refill while everyone else waits for that result solved it."
+    },
+    {
+      "id": "H7_f12_TA",
+      "text": "The database came back online after maintenance and immediately hit its connection limit again \u2014 the maintenance script itself never closed its own session, so one stale leftover connection had been silently occupying a slot the entire time."
+    },
+    {
+      "id": "H7_f13_A",
+      "text": "A user updates their profile, refreshes the page, and sees the old data \u2014 the read happened to land on a copy of the database that hadn't caught up yet; routing that immediate read to the primary copy fixed it."
+    },
+    {
+      "id": "H7_f13_B",
+      "text": "We pushed new content and support tickets say it's still not showing \u2014 distributed nodes serving the content hadn't all picked up the change yet, so different users saw different versions for several minutes."
+    },
+    {
+      "id": "H7_f13_TA",
+      "text": "A user saved a settings change and still saw the old value, but it turned out their browser had cached the page itself from before the edit \u2014 a hard refresh showed the new value immediately, since nothing on the server side was ever out of date."
+    },
+    {
+      "id": "H7_f14_A",
+      "text": "Requests in flight got dropped every time we deployed \u2014 there was no pre-stop hook, so the process got killed before the grace period gave it a chance to finish what it was doing."
+    },
+    {
+      "id": "H7_f14_B",
+      "text": "A batch job lost its last few writes whenever someone hit Ctrl-C \u2014 a handler now stops accepting new work and waits for everything already running to finish before the process actually exits."
+    },
+    {
+      "id": "H7_f14_TA",
+      "text": "A long report generation job appeared to lose its output when the terminal window was closed, but the process itself kept running detached the whole time \u2014 the output was written correctly, it just wasn't visible in the closed terminal."
+    }
+  ],
+  "queries": [
+    {
+      "id": "H7_q01a",
+      "text": "Every screen paints correctly after opening the finished program, but pressing any control produces no effect at all.",
+      "relevant_ids": ["H7_f01_A", "H7_f01_B"],
+      "test": "H7"
+    },
+    {
+      "id": "H7_q01b",
+      "text": "Even though the installed program's layout looks fully correct, tapping or pressing any part of it produces zero result at all.",
+      "relevant_ids": ["H7_f01_A", "H7_f01_B"],
+      "test": "H7"
+    },
+    {
+      "id": "H7_q02a",
+      "text": "Increasing capacity for a growing task queue actually made the whole system slow rather than fast.",
+      "relevant_ids": ["H7_f02_A", "H7_f02_B"],
+      "test": "H7"
+    },
+    {
+      "id": "H7_q02b",
+      "text": "Scaling out extra capacity to handle a backlog somehow ended up reducing total throughput rather than raising it.",
+      "relevant_ids": ["H7_f02_A", "H7_f02_B"],
+      "test": "H7"
+    },
+    {
+      "id": "H7_q03a",
+      "text": "A lengthy operation that starts while the application is open sometimes never finishes once the user switches away for a while.",
+      "relevant_ids": ["H7_f03_A", "H7_f03_B"],
+      "test": "H7"
+    },
+    {
+      "id": "H7_q03b",
+      "text": "Something that begins running is supposed to complete later, but it stops making any progress unless someone keeps the screen on and stays engaged.",
+      "relevant_ids": ["H7_f03_A", "H7_f03_B"],
+      "test": "H7"
+    },
+    {
+      "id": "H7_q04a",
+      "text": "We picked an attribute aiming to make lookups run faster, and it turned into the biggest chokepoint for everything instead.",
+      "relevant_ids": ["H7_f04_A", "H7_f04_B"],
+      "test": "H7"
+    },
+    {
+      "id": "H7_q04b",
+      "text": "Adding a computed shortcut to make dashboard lookups faster ended up creating the exact bottleneck everyone was trying to avoid -- keeping it updated under heavy writes meant constantly maintaining it, and that upkeep became the real trigger, running synchronously every time.",
+      "relevant_ids": ["H7_f04_A", "H7_f04_B"],
+      "test": "H7"
+    },
+    {
+      "id": "H7_q05a",
+      "text": "Tagging each outgoing call with a unique marker made the whole platform grind to a halt once traffic picked up.",
+      "relevant_ids": ["H7_f05_A", "H7_f05_B"],
+      "test": "H7"
+    },
+    {
+      "id": "H7_q05b",
+      "text": "Once each outbound message included its own individual tag, the whole backend's queue backed up and everything started stalling under the load.",
+      "relevant_ids": ["H7_f05_A", "H7_f05_B"],
+      "test": "H7"
+    },
+    {
+      "id": "H7_q06a",
+      "text": "How do we stop a rapid flood of nearly identical signals from swamping whatever already-busy code processes them, especially when many keep arriving in the same instant?",
+      "relevant_ids": ["H7_f06_A", "H7_f06_B"],
+      "test": "H7"
+    },
+    {
+      "id": "H7_q06b",
+      "text": "A flurry of nearly duplicate signals lands in a very tight span and whatever is listening for them gets overwhelmed under the load.",
+      "relevant_ids": ["H7_f06_A", "H7_f06_B"],
+      "test": "H7"
+    },
+    {
+      "id": "H7_q07a",
+      "text": "If a single operation might accidentally trigger more than once, how do we guarantee -- via some safety mechanism -- that executing it twice causes no permanent harm?",
+      "relevant_ids": ["H7_f07_A", "H7_f07_B"],
+      "test": "H7"
+    },
+    {
+      "id": "H7_q07b",
+      "text": "A step in some process could fire an extra round under contention, and only a shaky safety mechanism stops that from corrupting anything permanently.",
+      "relevant_ids": ["H7_f07_A", "H7_f07_B"],
+      "test": "H7"
+    },
+    {
+      "id": "H7_q08a",
+      "text": "Calls are stacking up in a holding area for some reason, yet capacity, resource, and processing dashboards both say nothing appears maxed out anywhere in the code.",
+      "relevant_ids": ["H7_f08_A", "H7_f08_B"],
+      "test": "H7"
+    },
+    {
+      "id": "H7_q08b",
+      "text": "Nothing registers as overloaded on any chart, but calls keep silently piling up behind some serialized lock before they can even begin, well under any resource limit.",
+      "relevant_ids": ["H7_f08_A", "H7_f08_B"],
+      "test": "H7"
+    },
+    {
+      "id": "H7_q09a",
+      "text": "One view ends up triggering way more backend requests than it should, though only a handful were technically made, and the whole thing still felt painfully slow to assemble.",
+      "relevant_ids": ["H7_f09_A", "H7_f09_B"],
+      "test": "H7"
+    },
+    {
+      "id": "H7_q09b",
+      "text": "An interface quietly makes dozens of small independent API requests behind the scenes rather than one merged response payload, and many of those fields go unused anyway.",
+      "relevant_ids": ["H7_f09_A", "H7_f09_B"],
+      "test": "H7"
+    },
+    {
+      "id": "H7_q10a",
+      "text": "A microservice generates output faster than its downstream client can consume it, with no mechanism reining in the faster one -- which becomes the root cause.",
+      "relevant_ids": ["H7_f10_A", "H7_f10_B"],
+      "test": "H7"
+    },
+    {
+      "id": "H7_q10b",
+      "text": "One component continually outpaces whatever reads its output afterward, and no mechanism at any point corrects the resulting mismatch.",
+      "relevant_ids": ["H7_f10_A", "H7_f10_B"],
+      "test": "H7"
+    },
+    {
+      "id": "H7_q11a",
+      "text": "A component we've relied on starts misbehaving and ends up causing the entire setup to grind to a stop, and only a proper fix for the broken piece gets things moving again.",
+      "relevant_ids": ["H7_f11_A", "H7_f11_B"],
+      "test": "H7"
+    },
+    {
+      "id": "H7_q11b",
+      "text": "When one dependency's default behavior quietly changes after a routine update, everything that leans on it grinds to a halt too.",
+      "relevant_ids": ["H7_f11_A", "H7_f11_B"],
+      "test": "H7"
+    },
+    {
+      "id": "H7_q12a",
+      "text": "The moment the entire system returns online after maintenance, it right away runs into its old limit again and chokes.",
+      "relevant_ids": ["H7_f12_A", "H7_f12_B"],
+      "test": "H7"
+    },
+    {
+      "id": "H7_q12b",
+      "text": "As soon as everything is switched on again, all the paused work resumes in the same heartbeat and the giant coordinated spike of demand immediately buries the service once more.",
+      "relevant_ids": ["H7_f12_A", "H7_f12_B"],
+      "test": "H7"
+    },
+    {
+      "id": "H7_q13a",
+      "text": "Right after making an edit to a setting, what the browser displays still reflects the state from before, as if nothing ever took effect on that side.",
+      "relevant_ids": ["H7_f13_A", "H7_f13_B"],
+      "test": "H7"
+    },
+    {
+      "id": "H7_q13b",
+      "text": "A write completes successfully but checking right afterward still returns the previous value, as though the server itself never noticed at all.",
+      "relevant_ids": ["H7_f13_A", "H7_f13_B"],
+      "test": "H7"
+    },
+    {
+      "id": "H7_q14a",
+      "text": "Whatever output is still being generated quietly disappears -- nothing about it stays correct or even visible -- if the program gets shut down or swapped out mid-task.",
+      "relevant_ids": ["H7_f14_A", "H7_f14_B"],
+      "test": "H7"
+    },
+    {
+      "id": "H7_q14b",
+      "text": "Interrupting something midway through its task can quietly lose whatever output it had produced, even though the display still appeared correct on screen up to that point.",
+      "relevant_ids": ["H7_f14_A", "H7_f14_B"],
+      "test": "H7"
+    }
+  ]
+}

@@ -1,0 +1,656 @@
+{
+  "passages": [
+    {
+      "id": "H1_p1",
+      "text": "Reducing vector dimensionality from one thousand to fifty preserved retrieval speed."
+    },
+    {
+      "id": "H1_p2",
+      "text": "Spinlock contention blocked request handling; lock-free structures restored concurrent throughput."
+    },
+    {
+      "id": "H1_p3",
+      "text": "Expiration windows purged stale entries; clients observed consistent data afterward."
+    },
+    {
+      "id": "H1_p4",
+      "text": "Binary serialization replaced JSON; network bandwidth consumption fell seventy percent."
+    },
+    {
+      "id": "H1_p5",
+      "text": "Catastrophic backtracking in regex matching consumed CPU; lookahead assertions flattened complexity."
+    },
+    {
+      "id": "H1_p6",
+      "text": "Connection pool depletion hit during peak hours; dynamic spawning prevented starvation."
+    },
+    {
+      "id": "H1_p7",
+      "text": "Deep recursion exhausted call stack limits; iterative traversal with explicit stacks recovered stability."
+    },
+    {
+      "id": "H1_p8",
+      "text": "Naive sorting algorithm exhibited quadratic behavior; merge-sort rewrite proved instant."
+    },
+    {
+      "id": "H1_p9",
+      "text": "Whitespace-based string splitting crawled on documents; hand-rolled lexer cut parse time ninety percent."
+    },
+    {
+      "id": "H1_p10",
+      "text": "Unbounded message buffering consumed RAM; backpressure throttling restored producer-consumer equilibrium."
+    },
+    {
+      "id": "H1_p11",
+      "text": "B-tree page fragmentation forced sequential disk I/O; rebalancing operation restored index efficiency."
+    },
+    {
+      "id": "H1_p12",
+      "text": "Blocking I/O calls froze the event loop; async operations restored application responsiveness."
+    },
+    {
+      "id": "H2_p1",
+      "text": "Redis cache should expire entries after 30s to avoid stale data in production environments."
+    },
+    {
+      "id": "H2_p2",
+      "text": "Redis cache should expire entries after 300s to avoid stale data in production environments."
+    },
+    {
+      "id": "H2_p3",
+      "text": "Redis cache should expire entries after 30ms to avoid stale data in production environments."
+    },
+    {
+      "id": "H2_p4",
+      "text": "Redis cache should expire entries after 3000s to avoid stale data in production environments."
+    },
+    {
+      "id": "H2_p5",
+      "text": "The database migration does affect existing user profiles and their associated metadata in production systems."
+    },
+    {
+      "id": "H2_p6",
+      "text": "The database migration does not affect existing user profiles and their associated metadata in production systems."
+    },
+    {
+      "id": "H2_p7",
+      "text": "The database migration does affect legacy user profiles and their associated metadata in production systems."
+    },
+    {
+      "id": "H2_p8",
+      "text": "The database migration does affect existing user profiles and their associated metadata in test systems."
+    },
+    {
+      "id": "H2_p9",
+      "text": "Feature flag REDIS_POOL_ENABLED is true, so the connection pooling system activates automatically on server startup."
+    },
+    {
+      "id": "H2_p10",
+      "text": "Feature flag REDIS_POOL_ENABLED is false, so the connection pooling system does not activate on server startup."
+    },
+    {
+      "id": "H2_p11",
+      "text": "Feature flag REDIS_CACHE_ENABLED is true, so the connection pooling system activates automatically on server startup."
+    },
+    {
+      "id": "H2_p12",
+      "text": "Feature flag REDIS_POOL_ENABLED is true, so the connection pooling system activates automatically on application startup."
+    },
+    {
+      "id": "H2_p13",
+      "text": "API version 2 increases the request timeout from 5s to 30s for large payload handling in production."
+    },
+    {
+      "id": "H2_p14",
+      "text": "API version 2 decreases the request timeout from 30s to 5s for large payload handling in production."
+    },
+    {
+      "id": "H2_p15",
+      "text": "API version 3 increases the request timeout from 5s to 30s for large payload handling in production."
+    },
+    {
+      "id": "H2_p16",
+      "text": "API version 2 increases the response timeout from 5s to 30s for large payload handling in production."
+    },
+    {
+      "id": "H3_p1",
+      "text": "PostgreSQL advisory locks serialize distributed transactions to prevent race conditions across microservices, ensuring consistency."
+    },
+    {
+      "id": "H3_p2",
+      "text": "Exponential backoff in message consumers prevents thundering herd when services recover from brief outages or degradation."
+    },
+    {
+      "id": "H3_p3",
+      "text": "Failed messages route to dead-letter queue after five unsuccessful retry attempts, automatically triggering operator alerts and investigation."
+    },
+    {
+      "id": "H3_p4",
+      "text": "Circuit breaker pattern opens and stops new connection requests after ten consecutive failures to an upstream dependency."
+    },
+    {
+      "id": "H3_p5",
+      "text": "Kubernetes StatefulSet provides stable pod DNS identities that are required for reliable database cluster coordination."
+    },
+    {
+      "id": "H3_p6",
+      "text": "Prometheus monitoring scrapes metrics every 15 seconds; missing metrics indicate a service is unavailable or down."
+    },
+    {
+      "id": "H3_p7",
+      "text": "Webhook receiver validates request signatures and JSON schema compliance before processing payloads from external partners."
+    },
+    {
+      "id": "H3_p8",
+      "text": "Feature flags segment users into specific cohorts, enabling gradual canary rollouts and safe A/B testing."
+    },
+    {
+      "id": "H3_p9",
+      "text": "Read replicas experience increasing lag during write-heavy periods, causing queries to see stale data from older snapshots."
+    },
+    {
+      "id": "H3_p10",
+      "text": "ORM cascading deletes remove all dependent child records atomically when parent record is deleted."
+    },
+    {
+      "id": "H3_p11",
+      "text": "Docker image layers cache unchanged RUN commands, avoiding full container rebuilds during CI pipeline deployments."
+    },
+    {
+      "id": "H3_p12",
+      "text": "Rate limiter using sliding window algorithm allows burst traffic up to per-client threshold before enforcing throttling."
+    },
+    {
+      "id": "H3_p13",
+      "text": "TLS certificate renewal is scheduled and completed 30 days before actual expiry, preventing unexpected connection interruptions."
+    },
+    {
+      "id": "H3_p14",
+      "text": "Graceful connection draining allows in-flight requests to complete execution during rolling deployments or maintenance windows."
+    },
+    {
+      "id": "H3_p15",
+      "text": "Database backups are encrypted and written to S3 storage every hour for disaster recovery and audit trails."
+    },
+    {
+      "id": "H4_p1",
+      "text": "The production database query that was timing out at 45 seconds required a comprehensive investigation. Our initial approach focused on the WHERE clause columns, which seemed logical at first. The issue was more subtle. During the incident, we discovered that the `status` column had cardinality problems, and filtering on it was expensive. We created an index there, but query time remained unchanged at 42 seconds. This was frustrating because indexing usually works. Upon deeper inspection of the EXPLAIN plan, we realized the real bottleneck wasn't in the filter at all — it was the missing index on the `updated_at` column used by the ORDER BY clause that was forcing a full table scan across 2.3 million rows. Once we added that specific index, query time dropped to 180ms. The error rate had spiked to 2.8% during the incident window, but normalized immediately after. The lesson was understanding query execution plans, not just adding indices blindly. We also reviewed our other tables for similar patterns. We committed to checking EXPLAIN output for any query touching more than 100k rows."
+    },
+    {
+      "id": "H4_p2",
+      "text": "Our JWT implementation originally used 30-minute expiration for access tokens, which seemed reasonable for security. But mobile clients with spotty connectivity struggled with frequent re-authentication. The refresh token strategy was theoretically sound but added complexity. After analyzing failed login patterns across regions, we found most sessions lasted under 20 minutes naturally. We made the decision to increase access token expiry to 1 hour, reducing token refresh overhead significantly. This required updating both client libraries and server validation. The security trade-off was acceptable — we implemented request fingerprinting and suspicious IP detection at the application layer instead. The 1-hour window gave legitimate users breathing room while maintaining security. We also implemented rate limiting at 100 requests per minute on the token endpoint to catch brute force attempts. This proved effective and we documented the decision in architecture guides. Other teams considering shorter windows should account for the mobile penalty."
+    },
+    {
+      "id": "H4_p3",
+      "text": "Early versions of braincell attempted PostgreSQL with pgvector for embedded note storage, but we switched to SQLite with NumPy arrays and FTS5 full-text search. PostgreSQL seemed ideal — mature pgvector extension, distributed query capability, and proven scalability. But the actual constraint wasn't data volume; it was operational simplicity. SQLite's embedded nature meant no separate daemon process, no network calls, no credential management. The entire memory subsystem copied and moved as a single file. For a local-first tool running on individual developer machines, this mattered enormously. We avoided database administration overhead. PostgreSQL would be necessary for a SaaS platform with hundreds of concurrent users, but that wasn't our design goal. The hybrid vector and FTS5 ranking achieved 95th percentile search latency under 100ms. The embedded approach also simplified local-tool integration — no schema migrations, no connection pooling, just deploy and the data travels with the code. We made this decision knowing that any large distributed system needs a real database, but this wasn't that."
+    },
+    {
+      "id": "H4_p4",
+      "text": "During API design, rate limiting was extensively debated. Some advocated for 100 requests per hour to encourage batching. Others worried this was too restrictive for legitimate heavy users. We analyzed our power user patterns and found the 99th percentile never exceeded 2000 requests per hour. We settled on 5000 requests per hour per API key — a 2.5x safety margin to catch obvious abuse while permitting legitimate heavy users. Implementation used token bucket rate limiting with per-endpoint burst allowances. Status endpoints were uncapped while mutation endpoints had tighter controls. Rate limit headers followed standard RateLimit-Limit and RateLimit-Remaining format. We also added grace periods for temporary overages if clients backed off within 5 minutes. This proved crucial for tools with traffic spikes. We had considered PostgreSQL for the backend initially because of its maturity, but opted for SQLite instead. After six months in production, we hadn't needed to adjust the 5000/hour limit — suggesting accurate calibration. Some endpoints like health checks saw request volumes that would exceed traditional rate limits, but we exempted them."
+    },
+    {
+      "id": "H4_p5",
+      "text": "The session cache layer originally had 2-hour TTL matching the user session timeout. But we discovered logout consistency issues — users would log out on one device but remain authenticated on another because the session lingered in cache until expiry. The fundamental problem was cache coherence without explicit invalidation. We reduced TTL to 15 minutes, accepting more frequent cache misses for better consistency. Cache hit rate fell from 92% to 76% — a 4x increase in Redis lookups. But this was negligible infrastructure-wise; what mattered was that logout took effect within 15 minutes worst-case. We also added explicit cache purge calls on logout for immediate effect. This 15-minute window became our standard for all session-dependent caches, including permission and feature flag caches. Token expiration windows also had to be aligned — we ensured they worked together. The lesson was that TTL alone isn't a security boundary; explicit invalidation is necessary. We also monitored cache performance and didn't see the increased lookup rate cause any latency problems. The trade-off proved justified."
+    },
+    {
+      "id": "H4_p6",
+      "text": "During deployment of version 3.2, we had defined success metrics but not rollback triggers clearly. Error rate climbed to 2.1% post-deployment. The on-call engineer hesitated because it 'might stabilize' — it didn't. By the time rollback initiated, 45 minutes had passed and we'd lost SLA time. We established a hard rule: automatic rollback when error rate exceeds 1.5% for more than 5 minutes. This threshold was 3x our baseline 0.5% error rate. The 5-minute window prevents hair-trigger rollbacks from transient spikes. Once automated, we've only had two automatic rollbacks in six months — both justified in post-incident review. Real-time monitoring is visible to all on-call engineers. Rollback procedures are tested weekly. We also defined critical failure time windows — if issues appeared within 5 minutes of deployment, we'd roll back immediately rather than waiting for the 5-minute threshold. This aggressive posture reduced our mean time to recovery significantly."
+    },
+    {
+      "id": "H4_p7",
+      "text": "The admin dashboard hit performance cliffs around 500 users. API endpoint took 8-12 seconds to return. Profiling revealed a classic N+1 problem: the endpoint fetched the user list, then made 501 separate queries (one per user) to fetch permissions. With 500 users that meant sequential calls instead of batching. The naive fix was caching, but we chose eager loading with JOINs instead. We rewrote the query using a single multi-join statement bringing permissions, roles, and organization data in one round trip. Query time dropped from 10 seconds to 420ms. We also found the permissions table was missing an index on the `user_id` column, which we added for additional optimization. The combination of eager loading plus indexing solved the problem. Some developers suggested query caching as an alternative, but eager loading was cleaner — no invalidation concerns. This pattern became standard in ORM usage guides. We also added query logging to detect future N+1 patterns automatically. The improvement was dramatic and the solution generalizable."
+    },
+    {
+      "id": "H4_p8",
+      "text": "Initial CORS configuration accepted requests from any origin, convenient for development but problematic for production. We tightened it by specifying allowed origins as a whitelist. The first version included localhost:3000, localhost:8000, and localhost:9000 for different developer environments — too permissive. The real problem emerged when developers tunneled through ngrok for mobile testing, creating subdomains we couldn't explicitly whitelist. We made a decision to restrict CORS to just https://app.example.com for production and localhost for development only. Requests from other origins, including localhost:8001 and staging deployments, would be rejected. This broke some integration tests temporarily, but forced proper use of staging rather than testing against production. The restrictive policy made the security model explicit: the API trusts the main app domain and development only. We document this in API docs and new integrations require explicit approval. This proved valuable when we discovered a third-party service making unauthorized requests — it was automatically blocked without special intervention. The whitelist approach was more maintainable than URL patterns."
+    },
+    {
+      "id": "H5_p1",
+      "text": "Implemented response caching layer last sprint. Performance improved threefold. Initially feared staleness issues but none materialized; we kept the feature."
+    },
+    {
+      "id": "H5_p2",
+      "text": "Removed the request batching system in April. Reverted to single-request handling. Code complexity dropped significantly but throughput degraded slightly."
+    },
+    {
+      "id": "H5_p3",
+      "text": "Evaluated migrating to Postgres but rejected the plan. Stayed with SQLite. Index optimization was cheaper and delivered better results."
+    },
+    {
+      "id": "H5_p4",
+      "text": "Planned to deprecate the legacy REST API but reversed course. Keeping it active because enterprise customers depend on backward compatibility."
+    },
+    {
+      "id": "H5_p5",
+      "text": "Raised connection timeout from five seconds to thirty seconds to handle slow clients. Caused out-of-memory exhaustion under production load; reverted immediately to five."
+    },
+    {
+      "id": "H5_p6",
+      "text": "Decreased request batch size from three hundred items to thirty items per batch. Memory consumption dropped sharply and end-to-end latency improved unexpectedly."
+    },
+    {
+      "id": "H5_p7",
+      "text": "Started enforcing strict input validation at the API layer. Caught silent-failure bugs in edge cases that were previously undetected. Feature is staying permanent."
+    },
+    {
+      "id": "H5_p8",
+      "text": "Disabled automatic cache invalidation background job. Users must manually clear entries now to prevent stale values from propagating downstream."
+    },
+    {
+      "id": "H5_p9",
+      "text": "Discussed eliminating optional query parameters but decided against it. Retaining all parameters for backward compatibility with legacy client integrations."
+    },
+    {
+      "id": "H5_p10",
+      "text": "Proposed major microservices refactoring but abandoned the plan. Operational complexity too high; staying with monolith until infrastructure matures."
+    },
+    {
+      "id": "H5_p11",
+      "text": "Raised the request rate limit ceiling from one hundred to five hundred requests per minute. Enterprise tier now handles peak loads without throttling."
+    },
+    {
+      "id": "H5_p12",
+      "text": "Lowered vector similarity threshold from zero-point-eight to zero-point-five. Accepting lower precision in exchange for significantly higher recall."
+    },
+    {
+      "id": "H5_p13",
+      "text": "Started tracking database connection pool statistics actively. Discovered production memory leak in connection reuse logic; patched and verified."
+    },
+    {
+      "id": "H5_p14",
+      "text": "Discontinued the free-tier offering entirely. Migrated all users to paid plans with grandfather pricing for existing accounts to stabilize revenue."
+    },
+    {
+      "id": "H5_p15",
+      "text": "Evaluated completely rebuilding the system in Rust but decided against it. Python performance after aggressive tuning proved sufficient for our scale."
+    },
+    {
+      "id": "H5_p16",
+      "text": "Proposed freezing application config as immutable at startup but reversed the decision. Hot-reloading enabled now for faster development iteration cycles."
+    },
+    {
+      "id": "H6_A_p1",
+      "text": "Store auth tokens in Redux store with in-memory backing. Use sessionStorage only as fallback; never localStorage for sensitive tokens."
+    },
+    {
+      "id": "H6_A_p2",
+      "text": "JWT middleware validates signature against public key. Decode claims to extract user ID, roles, and permissions. Reject invalid algorithms."
+    },
+    {
+      "id": "H6_A_p3",
+      "text": "Route guard checks active session status before rendering. Redirect unauthenticated users to login; verify token validity on each navigation."
+    },
+    {
+      "id": "H6_A_p4",
+      "text": "Refresh token rotation: issue new token pair on every auth request. Immediately invalidate old refresh token to prevent token replay attacks."
+    },
+    {
+      "id": "H6_A_p5",
+      "text": "Extract bearer token from Authorization header with regex. Return 401 Unauthorized if header missing or malformed."
+    },
+    {
+      "id": "H6_A_p6",
+      "text": "Implement CORS preflight checks validating Origin header. Whitelist allowed origins; prevent cross-site token leakage."
+    },
+    {
+      "id": "H6_A_p7",
+      "text": "Logout invalidates session by clearing stored tokens and server-side revocation. Set cookie max-age=0 to expire httpOnly session cookie."
+    },
+    {
+      "id": "H6_A_p8",
+      "text": "User context provider holds authentication state and computed permissions. Memoize selectors; broadcast logout via context listener."
+    },
+    {
+      "id": "H6_B_p1",
+      "text": "ETL pipeline authenticates to source APIs using embedded service credentials. Include API key in request header; fail fast if auth rejected."
+    },
+    {
+      "id": "H6_B_p2",
+      "text": "Warehouse fact table partitioned by date. Partition pruning accelerates queries; too many partitions degrade metadata catalog performance."
+    },
+    {
+      "id": "H6_B_p3",
+      "text": "Store API credentials in secrets vault. Rotate service account credentials quarterly. Audit logs track which job used which credential."
+    },
+    {
+      "id": "H6_B_p4",
+      "text": "Batch ETL DAG defines dependencies: extract→transform→load. Scheduler triggers daily; downstream jobs await upstream completion signal."
+    },
+    {
+      "id": "H6_B_p5",
+      "text": "Transform step applies aggregations: group by user_id, sum revenue, calculate rolling averages. Output to staging table."
+    },
+    {
+      "id": "H6_B_p6",
+      "text": "Access control grants define which team can read which table partition. Query engine enforces at runtime; denied queries return zero rows."
+    },
+    {
+      "id": "H6_B_p7",
+      "text": "Incremental load: store watermark of last processed record ID. Next run fetches only records with ID > watermark; prevents duplicate processing."
+    },
+    {
+      "id": "H6_B_p8",
+      "text": "Audit log records actor, timestamp, operation, partition accessed for every data read. Required for compliance and security forensics."
+    }
+  ],
+  "queries": [
+    {
+      "id": "H1_q2",
+      "text": "How can we achieve genuine parallelism in the worker engine?",
+      "relevant_ids": ["H1_p2"],
+      "test": "H1"
+    },
+    {
+      "id": "H1_q3",
+      "text": "Which mechanism eliminated view inconsistency issues across services?",
+      "relevant_ids": ["H1_p3"],
+      "test": "H1"
+    },
+    {
+      "id": "H1_q4",
+      "text": "How much transmission overhead did the protocol switch eliminate?",
+      "relevant_ids": ["H1_p4"],
+      "test": "H1"
+    },
+    {
+      "id": "H1_q5",
+      "text": "Text scanning algorithms exploded on certain corner cases.",
+      "relevant_ids": ["H1_p5"],
+      "test": "H1"
+    },
+    {
+      "id": "H1_q6",
+      "text": "Services refused new socket creation during traffic spikes. What was the issue?",
+      "relevant_ids": ["H1_p6"],
+      "test": "H1"
+    },
+    {
+      "id": "H1_q7",
+      "text": "Nested function invocations caused memory exhaustion crashes.",
+      "relevant_ids": ["H1_p7"],
+      "test": "H1"
+    },
+    {
+      "id": "H1_q8",
+      "text": "Rearranging billions of items consumed prohibitive resources.",
+      "relevant_ids": ["H1_p8"],
+      "test": "H1"
+    },
+    {
+      "id": "H1_q9",
+      "text": "Breaking files into linguistic features took unacceptable duration.",
+      "relevant_ids": ["H1_p9"],
+      "test": "H1"
+    },
+    {
+      "id": "H1_q10",
+      "text": "The accumulator overflowed, straining memory capacity.",
+      "relevant_ids": ["H1_p10"],
+      "test": "H1"
+    },
+    {
+      "id": "H2_q3",
+      "text": "What millisecond timeout value does Redis use for the quick cache expiration?",
+      "relevant_ids": ["H2_p3"],
+      "test": "H2"
+    },
+    {
+      "id": "H2_q6",
+      "text": "How does the database migration handle the storage of legacy user account profiles?",
+      "relevant_ids": ["H2_p7"],
+      "test": "H2"
+    },
+    {
+      "id": "H2_q7",
+      "text": "Is the REDIS_POOL_ENABLED configuration flag set to true or enabled?",
+      "relevant_ids": ["H2_p9", "H2_p12"],
+      "test": "H2"
+    },
+    {
+      "id": "H2_q8",
+      "text": "What happens when the REDIS_POOL_ENABLED feature flag is disabled or false?",
+      "relevant_ids": ["H2_p10"],
+      "test": "H2"
+    },
+    {
+      "id": "H2_q9",
+      "text": "Does the REDIS_CACHE_ENABLED flag control connection pooling behavior on server startup?",
+      "relevant_ids": ["H2_p11"],
+      "test": "H2"
+    },
+    {
+      "id": "H2_q10",
+      "text": "What happens when API version 2 increases the request timeout values in production?",
+      "relevant_ids": ["H2_p13"],
+      "test": "H2"
+    },
+    {
+      "id": "H2_q11",
+      "text": "How does API version 2 handle request timeout decrease for large payloads?",
+      "relevant_ids": ["H2_p14"],
+      "test": "H2"
+    },
+    {
+      "id": "H2_q12",
+      "text": "What is the API version 3 behavior for increasing request timeouts in production?",
+      "relevant_ids": ["H2_p15"],
+      "test": "H2"
+    },
+    {
+      "id": "H3_q1",
+      "text": "How do we prevent an overloaded message queue from spamming operator alerts every minute?",
+      "relevant_ids": ["H3_p2", "H3_p3", "H3_p4"],
+      "test": "H3"
+    },
+    {
+      "id": "H3_q2",
+      "text": "What breaks silently during peak load if certificate renewal isn't scheduled weeks ahead?",
+      "relevant_ids": ["H3_p13", "H3_p9", "H3_p6"],
+      "test": "H3"
+    },
+    {
+      "id": "H3_q3",
+      "text": "Which three mechanisms make it safe to delete linked parent-child data during a rolling update?",
+      "relevant_ids": ["H3_p5", "H3_p10", "H3_p14"],
+      "test": "H3"
+    },
+    {
+      "id": "H3_q4",
+      "text": "How does isolating a bad upstream service prevent read staleness from becoming a cascading failure?",
+      "relevant_ids": ["H3_p4", "H3_p2", "H3_p9"],
+      "test": "H3"
+    },
+    {
+      "id": "H3_q5",
+      "text": "When can gradual rollout strategies mask whether a new service change actually improved latency?",
+      "relevant_ids": ["H3_p8", "H3_p9", "H3_p12"],
+      "test": "H3"
+    },
+    {
+      "id": "H3_q6",
+      "text": "Why must database record deletion coordinate with infrastructure stability before opening to traffic?",
+      "relevant_ids": ["H3_p10", "H3_p5", "H3_p14"],
+      "test": "H3"
+    },
+    {
+      "id": "H3_q8",
+      "text": "How do three independent timing mechanisms prevent certificate expiration from causing permanent data loss?",
+      "relevant_ids": ["H3_p13", "H3_p15", "H3_p6"],
+      "test": "H3"
+    },
+    {
+      "id": "H4_q1",
+      "text": "Which specific database column required an index to resolve the timeout?",
+      "relevant_ids": ["H4_p1"],
+      "test": "H4"
+    },
+    {
+      "id": "H4_q2",
+      "text": "What access token expiration duration was selected after mobile analysis?",
+      "relevant_ids": ["H4_p2"],
+      "test": "H4"
+    },
+    {
+      "id": "H4_q3",
+      "text": "Why was the single-file database chosen over the distributed system?",
+      "relevant_ids": ["H4_p3"],
+      "test": "H4"
+    },
+    {
+      "id": "H4_q4",
+      "text": "At what specific request threshold per hour were API requests throttled?",
+      "relevant_ids": ["H4_p4"],
+      "test": "H4"
+    },
+    {
+      "id": "H4_q5",
+      "text": "To what interval was session cache TTL reduced for consistency?",
+      "relevant_ids": ["H4_p5"],
+      "test": "H4"
+    },
+    {
+      "id": "H4_q6",
+      "text": "What specific error rate percentage triggers automatic production rollback?",
+      "relevant_ids": ["H4_p6"],
+      "test": "H4"
+    },
+    {
+      "id": "H4_q7",
+      "text": "How exactly was the N+1 query load problem resolved in production?",
+      "relevant_ids": ["H4_p7"],
+      "test": "H4"
+    },
+    {
+      "id": "H4_q8",
+      "text": "Which single primary domain is permitted by restrictive CORS policy?",
+      "relevant_ids": ["H4_p8"],
+      "test": "H4"
+    },
+    {
+      "id": "H5_q1",
+      "text": "Raising the timeout to thirty seconds—what production failures occurred?",
+      "relevant_ids": ["H5_p5"],
+      "test": "H5"
+    },
+    {
+      "id": "H5_q2",
+      "text": "From three hundred down to thirty—what parameter did we reduce?",
+      "relevant_ids": ["H5_p6"],
+      "test": "H5"
+    },
+    {
+      "id": "H5_q3",
+      "text": "Which database system did we evaluate but ultimately reject?",
+      "relevant_ids": ["H5_p3"],
+      "test": "H5"
+    },
+    {
+      "id": "H5_q4",
+      "text": "What legacy API endpoint did we plan to remove but kept anyway?",
+      "relevant_ids": ["H5_p4"],
+      "test": "H5"
+    },
+    {
+      "id": "H5_q5",
+      "text": "Did the caching feature we implemented prove valuable despite early doubts?",
+      "relevant_ids": ["H5_p1"],
+      "test": "H5"
+    },
+    {
+      "id": "H5_q6",
+      "text": "When we stopped batching requests, what improved beyond performance?",
+      "relevant_ids": ["H5_p2"],
+      "test": "H5"
+    },
+    {
+      "id": "H5_q7",
+      "text": "The strict input validation we enforced—is it a temporary measure?",
+      "relevant_ids": ["H5_p7"],
+      "test": "H5"
+    },
+    {
+      "id": "H5_q8",
+      "text": "Why do users now manually manage stale data instead of automation handling it?",
+      "relevant_ids": ["H5_p8"],
+      "test": "H5"
+    },
+    {
+      "id": "H5_q9",
+      "text": "For backward compatibility with legacy integrations, what old feature are we preserving?",
+      "relevant_ids": ["H5_p9"],
+      "test": "H5"
+    },
+    {
+      "id": "H5_q10",
+      "text": "What customer tier did we completely remove from the product offering?",
+      "relevant_ids": ["H5_p14"],
+      "test": "H5"
+    },
+    {
+      "id": "H5_q11",
+      "text": "We rejected rebuilding in Rust. What finding made us decide against the rewrite?",
+      "relevant_ids": ["H5_p15"],
+      "test": "H5"
+    },
+    {
+      "id": "H5_q12",
+      "text": "Configuration became dynamic instead of static startup-only. What capability did we gain?",
+      "relevant_ids": ["H5_p16"],
+      "test": "H5"
+    },
+    {
+      "id": "H6_q1",
+      "text": "How should access be revoked when a user or service account is compromised?",
+      "relevant_ids": ["H6_A_p7", "H6_B_p3"],
+      "test": "H6"
+    },
+    {
+      "id": "H6_q2",
+      "text": "What validates identity in interactive user sessions and automated batch jobs?",
+      "relevant_ids": ["H6_A_p2", "H6_B_p1"],
+      "test": "H6"
+    },
+    {
+      "id": "H6_q3",
+      "text": "How do systems prevent re-executing the same transaction or data load twice?",
+      "relevant_ids": ["H6_A_p4", "H6_B_p7"],
+      "test": "H6"
+    },
+    {
+      "id": "H6_q4",
+      "text": "What authorization mechanisms protect user interface workflows and data pipeline operations?",
+      "relevant_ids": ["H6_A_p3", "H6_B_p6"],
+      "test": "H6"
+    },
+    {
+      "id": "H6_q5",
+      "text": "How are temporary credentials issued and revalidated across different system layers?",
+      "relevant_ids": ["H6_A_p4", "H6_B_p3"],
+      "test": "H6"
+    },
+    {
+      "id": "H6_q6",
+      "text": "How do we extract and apply user or service identity to control resource access?",
+      "relevant_ids": ["H6_A_p2", "H6_B_p6"],
+      "test": "H6"
+    },
+    {
+      "id": "H6_q8",
+      "text": "How do authentication credentials get passed in different types of system requests?",
+      "relevant_ids": ["H6_A_p5", "H6_B_p1"],
+      "test": "H6"
+    },
+    {
+      "id": "H6_q9",
+      "text": "What storage and rotation patterns apply to different credential types across tiers?",
+      "relevant_ids": ["H6_A_p1", "H6_B_p3"],
+      "test": "H6"
+    },
+    {
+      "id": "H6_q10",
+      "text": "What prevents malicious cross-domain requests while validating authorized service access?",
+      "relevant_ids": ["H6_A_p6", "H6_B_p1"],
+      "test": "H6"
+    }
+  ]
+}

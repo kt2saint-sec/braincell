@@ -1,0 +1,12 @@
+#!/bin/sh
+# prerm for braincell-mcp — drop the /usr/bin symlinks on removal.
+# (postinst re-creates them on upgrade, so only 'remove' cleans up.)
+set -e
+
+case "$1" in
+    remove)
+        rm -f /usr/bin/braincell /usr/bin/braincell-mcp /usr/bin/braincell-map
+        ;;
+esac
+
+exit 0

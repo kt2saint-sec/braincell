@@ -1,0 +1,123 @@
+{
+  "_doc": "Client-query-style factorial seed set (Fable step 2). Each family gives a NEUTRAL situation (q_seed) and a banned-token list (avoid) so different client models author a recall query WITHOUT leaking passage vocabulary. relevant_ids are the two cross-project instantiations (A+B) from eval-H7-vocab-divergence-2026-07-08.json; the *_TA passage in that pool is a decoy (NOT relevant). Passages are reused frozen from H7 — only query STYLE varies by client.",
+  "source": "tests/benchmarks/h7-content-bank.md",
+  "families": [
+    {
+      "family": "01",
+      "q_seed": "packaged desktop app UI shows but nothing responds to clicks",
+      "avoid": [
+        "preload",
+        "contextBridge",
+        "context isolation",
+        "invoke",
+        "generate_handler",
+        "electron",
+        "tauri",
+        "ipc",
+        "renderer"
+      ],
+      "relevant_ids": ["H7_f01_A", "H7_f01_B"]
+    },
+    {
+      "family": "02",
+      "q_seed": "scaling up workers made the backlog worse instead of better",
+      "avoid": ["rebalance", "partition", "consumer", "pool", "kafka"],
+      "relevant_ids": ["H7_f02_A", "H7_f02_B"]
+    },
+    {
+      "family": "03",
+      "q_seed": "a long task doesn't reliably finish when the app isn't in the foreground",
+      "avoid": [
+        "background",
+        "doze",
+        "discretionary",
+        "workmanager",
+        "urlsession",
+        "ios",
+        "android"
+      ],
+      "relevant_ids": ["H7_f03_A", "H7_f03_B"]
+    },
+    {
+      "family": "04",
+      "q_seed": "picked a field to speed things up and it just created a bottleneck",
+      "avoid": ["cardinality", "index", "partition", "shard", "selectivity"],
+      "relevant_ids": ["H7_f04_A", "H7_f04_B"]
+    },
+    {
+      "family": "05",
+      "q_seed": "adding a unique-per-request identifier into our data made the whole system fall over",
+      "avoid": [
+        "cardinality",
+        "mapping",
+        "field",
+        "label",
+        "explosion",
+        "elasticsearch",
+        "prometheus"
+      ],
+      "relevant_ids": ["H7_f05_A", "H7_f05_B"]
+    },
+    {
+      "family": "06",
+      "q_seed": "stop a rapid burst of near-duplicate triggers from overwhelming the handler",
+      "avoid": ["debounce", "coalesce", "throttle", "burst"],
+      "relevant_ids": ["H7_f06_A", "H7_f06_B"]
+    },
+    {
+      "family": "07",
+      "q_seed": "the same action can happen twice and it needs to be safe either way",
+      "avoid": ["idempotent", "idempotency", "dedupe", "retry", "watermark"],
+      "relevant_ids": ["H7_f07_A", "H7_f07_B"]
+    },
+    {
+      "family": "08",
+      "q_seed": "requests queue waiting for something even though nothing looks overloaded",
+      "avoid": ["pool", "connection", "concurrency", "exhausted"],
+      "relevant_ids": ["H7_f08_A", "H7_f08_B"]
+    },
+    {
+      "family": "09",
+      "q_seed": "one screen is making way more calls than it should to build its data",
+      "avoid": ["n+1", "lazy", "eager", "batch", "fan-out", "fanout", "orm"],
+      "relevant_ids": ["H7_f09_A", "H7_f09_B"]
+    },
+    {
+      "family": "10",
+      "q_seed": "one side produces faster than the other can keep up and nothing is done about it",
+      "avoid": ["backpressure", "buffer", "lag", "throughput", "highwatermark"],
+      "relevant_ids": ["H7_f10_A", "H7_f10_B"]
+    },
+    {
+      "family": "11",
+      "q_seed": "one broken dependency is taking the whole system down with it",
+      "avoid": [
+        "circuit",
+        "breaker",
+        "bulkhead",
+        "isolate",
+        "isolation",
+        "limits"
+      ],
+      "relevant_ids": ["H7_f11_A", "H7_f11_B"]
+    },
+    {
+      "family": "12",
+      "q_seed": "everything recovers at the same moment and immediately breaks again",
+      "avoid": ["retry", "backoff", "jitter", "herd", "thundering"],
+      "relevant_ids": ["H7_f12_A", "H7_f12_B"]
+    },
+    {
+      "family": "13",
+      "q_seed": "I just saved a change and the app still shows the old version",
+      "avoid": ["replica", "lag", "edge", "purge", "consistency", "eventual"],
+      "relevant_ids": ["H7_f13_A", "H7_f13_B"]
+    },
+    {
+      "family": "14",
+      "q_seed": "work in progress gets lost when the process is stopped",
+      "avoid": ["sigterm", "sigint", "drain", "graceful", "prestop"],
+      "relevant_ids": ["H7_f14_A", "H7_f14_B"]
+    }
+  ]
+}

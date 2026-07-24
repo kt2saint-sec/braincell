@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (c) 2026 Karl Toussaint (kt2saint)
+#
+# Portable BrainCell Map launcher (macOS / Linux).
+#
+# Prefers the installed `braincell-map` console script; if it is not on PATH
+# (e.g. a venv whose bin dir isn't exported), falls back to `python -m
+# braincell.cli` via the interpreter that can import braincell.
+#
+# Any extra args (e.g. --port 9000) are forwarded verbatim.
+set -euo pipefail
+
+if command -v braincell-map >/dev/null 2>&1; then
+  exec braincell-map "$@"
+fi
+
+# Fallback: find a python that can import braincell and drive main_map().
+for PY in python3 python; do
+  if command -v "$PY" >/dev/null 2>&1 && "$PY" -c "import braincell" >/dev/null 2>&1; then
+    exec "$PY" -c "import sys; from braincell.cli import main_map; main_map(sys.argv[1:])" "$@"
+  fi
+done
+
+echo "braincell-map: could not find the 'braincell-map' script or a python that can import braincell." >&2
+echo "Install it with:  pip install braincell-mcp[gui]" >&2
+exit 1

@@ -1,0 +1,394 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (c) 2026 Karl Toussaint (kt2saint)
+"""
+gui_ops.py — maintenance-command endpoints for the Memory-Map GUI.
+
+Write-gated endpoints mounted by gui.create_app(allow_writes=True):
+
+  POST /api/ops/consolidate    find + (opt-in) merge near-duplicate notes
+  POST /api/ops/reflect        LLM-synthesize higher-level notes from clusters
+  POST /api/ops/contradictions read-only LLM audit of embedding-close notes
+  POST /api/ops/reembed-notes  backfill NULL note embeddings
+  GET  /api/ops/status         poll the current/last maintenance job
+  POST /api/backup             VACUUM INTO snapshot of the opened brain
+  GET  /api/memory             list recorded merge operations (memory log)
+  POST /api/memory/undo        reverse a recorded merge operation
+
+These are the GUI counterparts of `braincell consolidate` / `reflect` /
+`contradictions` / `reembed-notes` / `backup` / `memory log|undo` — each
+endpoint reuses the exact core function its CLI command calls (never a CLI
+subprocess). The long-running / LLM-invoking ops follow the /api/ingest
+background-job + status-polling pattern: one job at a time (409 when busy),
+run in a worker thread with its OWN SqliteStore on the same db (WAL handles
+the concurrent reader), stdout captured as the job log. Destructive applies
+keep the CLI's discipline: pre-merge VACUUM INTO backup + one undoable
+bc_operations record.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import time
+from contextlib import redirect_stdout
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Callable, Optional
+
+from fastapi import FastAPI, HTTPException, Request
+from pydantic import BaseModel, ConfigDict
+
+from .embed import embed_texts
+from .log import get as _get_log
+from .project_registry import load_path_registry
+from .store import SqliteStore
+
+log = _get_log("braincell.gui_ops")
+
+_LOG_TAIL = 200  # lines of job log kept/returned (mirrors gui_ingest)
+
+
+# ── Request bodies (closed shapes only, extra=forbid like gui_install) ────────
+
+class ConsolidateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str
+    threshold: float = 0.9
+    apply: bool = False
+    llm: bool = False
+
+
+class ReflectBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str
+    threshold: float = 0.85
+    since_days: Optional[int] = None
+    apply: bool = False
+    model: Optional[str] = None
+
+
+class ContradictionsBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str
+    threshold: Optional[float] = None
+    limit: int = 50
+    no_llm: bool = False
+    model: Optional[str] = None
+
+
+class ReembedBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str
+
+
+class UndoBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    op_id: int
+    project_id: str
+
+
+# ── Background job manager (one maintenance op at a time) ─────────────────────
+
+@dataclass
+class OpsJob:
+    name: str
+    state: str = "running"            # running | done | error
+    log: list[str] = field(default_factory=list)
+    result: Optional[dict] = None     # structured outcome (op-specific)
+    started: float = field(default_factory=time.time)
+    finished: Optional[float] = None
+
+    def as_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "state": self.state,
+            "log": self.log[-_LOG_TAIL:],
+            "result": self.result,
+            "started": self.started,
+            "finished": self.finished,
+        }
+
+
+class _LineWriter:
+    """File-like sink appending complete lines to a job's log list."""
+
+    def __init__(self, sink: list[str]) -> None:
+        self._sink = sink
+        self._buf = ""
+
+    def write(self, s: str) -> int:
+        self._buf += s
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            self._sink.append(line)
+            del self._sink[:-_LOG_TAIL or None]
+        return len(s)
+
+    def flush(self) -> None:  # pragma: no cover - protocol completeness
+        if self._buf:
+            self._sink.append(self._buf)
+            self._buf = ""
+
+
+class OpsJobManager:
+    """Runs one maintenance worker at a time in a thread; keeps the last job."""
+
+    def __init__(self) -> None:
+        self.job: Optional[OpsJob] = None
+        self._task: Optional[asyncio.Task] = None
+
+    @property
+    def busy(self) -> bool:
+        return self.job is not None and self.job.state == "running"
+
+    async def start(self, name: str, worker: Callable[[], Optional[dict]]) -> OpsJob:
+        if self.busy:
+            raise RuntimeError("A maintenance job is already running.")
+        job = OpsJob(name=name)
+        self.job = job
+        self._task = asyncio.ensure_future(self._run(job, worker))
+        return job
+
+    async def _run(self, job: OpsJob, worker: Callable[[], Optional[dict]]) -> None:
+        try:
+            job.result = await asyncio.to_thread(self._captured, job, worker)
+            job.state = "done"
+        except Exception as exc:  # worker failure — never crash the GUI
+            job.log.append(f"{job.name} failed: {exc!r}")
+            job.state = "error"
+        finally:
+            job.finished = time.time()
+
+    @staticmethod
+    def _captured(job: OpsJob, worker: Callable[[], Optional[dict]]) -> Optional[dict]:
+        """Run *worker* with stdout captured into the job log.
+
+        redirect_stdout swaps the process-wide sys.stdout, but only one job runs
+        at a time and the server itself logs via `logging` (stderr), so the only
+        prints during the window are the worker's own — the same lines the CLI
+        command shows.
+        """
+        w = _LineWriter(job.log)
+        with redirect_stdout(w):  # type: ignore[arg-type]
+            out = worker()
+        w.flush()
+        return out
+
+
+# ── Workers — each reuses the SAME core function its CLI command calls ────────
+#
+# Every worker opens its OWN store (fresh asyncio.run loop in the thread; the
+# app's aiosqlite store must never be driven from a second loop) and closes it.
+
+def run_consolidate(
+    db_path: Path, project_id: str, threshold: float, apply: bool, llm: bool,
+) -> Optional[dict]:
+    """`braincell consolidate` core (cli._consolidate_async + auto-backup)."""
+    from .cli import _auto_backup, _consolidate_async
+
+    backup: Optional[str] = None
+    if apply:
+        bp = _auto_backup(db_path, "consolidate")
+        if bp is not None:
+            backup = str(bp)
+            print(f"Pre-merge backup: {bp}")
+        else:
+            print("Proceeding WITHOUT a pre-merge backup.")
+
+    store = SqliteStore(db_path)
+    store.assert_schema_version()
+    try:
+        asyncio.run(_consolidate_async(
+            store, project_id, threshold=threshold, apply=apply,
+            use_llm=llm, verbose=False, backup_path=backup,
+        ))
+    finally:
+        store.close()
+    return {"backup": backup, "applied": apply}
+
+
+def run_reflect(
+    db_path: Path, project_id: str, threshold: float,
+    since_days: Optional[int], apply: bool, model: Optional[str],
+) -> Optional[dict]:
+    """`braincell reflect` core (reflect.reflect + auto-backup)."""
+    from .cli import _auto_backup
+    from .embed import embed_query_async
+    from .reflect import reflect
+
+    backup: Optional[str] = None
+    if apply:
+        bp = _auto_backup(db_path, "reflect")
+        if bp is not None:
+            backup = str(bp)
+            print(f"Pre-reflect backup: {bp}")
+        else:
+            print("Proceeding WITHOUT a pre-reflect backup.")
+
+    store = SqliteStore(db_path)
+    store.assert_schema_version()
+    try:
+        result = asyncio.run(reflect(
+            store, project_id, threshold=threshold, since_days=since_days,
+            apply=apply, model=model,
+            embed_fn=embed_query_async if apply else None,
+            verbose=False, backup_path=backup,
+        ))
+    finally:
+        store.close()
+    return {
+        "backup": backup,
+        "applied": apply,
+        "clusters_considered": result.clusters_considered,
+        "synthesized": result.synthesized,
+        "skipped": result.skipped,
+    }
+
+
+def run_contradictions(
+    db_path: Path, project_id: str, threshold: Optional[float],
+    limit: int, no_llm: bool, model: Optional[str],
+) -> Optional[dict]:
+    """`braincell contradictions` core — READ-ONLY by design (no apply exists)."""
+    from .contradictions import find_contradictions, ollama_judge, print_report
+
+    judge = None
+    if not no_llm:
+        judge = lambda a, b: ollama_judge(a, b, model=model)  # noqa: E731
+
+    store = SqliteStore(db_path)
+    store.assert_schema_version()
+    try:
+        report = asyncio.run(find_contradictions(
+            store, project_id, threshold=threshold, limit=limit, judge_fn=judge,
+        ))
+    finally:
+        store.close()
+    print_report(report, verbose=False)
+    return {
+        "notes_scanned": report.notes_scanned,
+        "pairs_over_threshold": report.pairs_over_threshold,
+        "pairs_judged": report.pairs_judged,
+        "pairs": [
+            {
+                "id_a": p.id_a, "id_b": p.id_b,
+                "cosine": round(p.cosine, 4), "verdict": p.verdict,
+            }
+            for p in report.pairs
+        ],
+    }
+
+
+def run_reembed_notes(db_path: Path, project_id: str) -> Optional[dict]:
+    """`braincell reembed-notes` core (store.reembed_notes + embed_texts)."""
+    store = SqliteStore(db_path)
+    store.assert_schema_version()
+    try:
+        count = asyncio.run(store.reembed_notes(project_id, embed_texts))
+    finally:
+        store.close()
+    print(f"Re-embedded {count} notes.")
+    return {"reembedded": count}
+
+
+# ── Route mounting (called by gui.create_app when allow_writes=True) ──────────
+
+def mount_ops_api(app: FastAPI, *, db_path: Path, manager: OpsJobManager) -> None:
+    """Register the maintenance-command routes on *app*."""
+
+    def _require_project(project_id: str) -> None:
+        # Mirrors /api/clear: only registered projects are valid targets.
+        if project_id not in set(load_path_registry().values()):
+            raise HTTPException(404, f"Unknown project {project_id!r}.")
+
+    async def _start(name: str, worker: Callable[[], Optional[dict]]) -> dict:
+        try:
+            job = await manager.start(name, worker)
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc))
+        return {"started": True, "job": job.as_dict()}
+
+    @app.post("/api/ops/consolidate")
+    async def api_ops_consolidate(body: ConsolidateBody) -> dict:  # type: ignore[type-arg]
+        _require_project(body.project_id)
+        return await _start(
+            "consolidate",
+            lambda: run_consolidate(
+                db_path, body.project_id, body.threshold, body.apply, body.llm,
+            ),
+        )
+
+    @app.post("/api/ops/reflect")
+    async def api_ops_reflect(body: ReflectBody) -> dict:  # type: ignore[type-arg]
+        _require_project(body.project_id)
+        return await _start(
+            "reflect",
+            lambda: run_reflect(
+                db_path, body.project_id, body.threshold, body.since_days,
+                body.apply, body.model,
+            ),
+        )
+
+    @app.post("/api/ops/contradictions")
+    async def api_ops_contradictions(body: ContradictionsBody) -> dict:  # type: ignore[type-arg]
+        _require_project(body.project_id)
+        return await _start(
+            "contradictions",
+            lambda: run_contradictions(
+                db_path, body.project_id, body.threshold, body.limit,
+                body.no_llm, body.model,
+            ),
+        )
+
+    @app.post("/api/ops/reembed-notes")
+    async def api_ops_reembed(body: ReembedBody) -> dict:  # type: ignore[type-arg]
+        _require_project(body.project_id)
+        return await _start(
+            "reembed-notes",
+            lambda: run_reembed_notes(db_path, body.project_id),
+        )
+
+    @app.get("/api/ops/status")
+    async def api_ops_status() -> dict:  # type: ignore[type-arg]
+        return {"job": manager.job.as_dict() if manager.job else None}
+
+    @app.post("/api/backup")
+    async def api_backup() -> dict:  # type: ignore[type-arg]
+        """VACUUM INTO snapshot of the opened brain — same as `braincell backup`."""
+        from .cli import _vacuum_into
+        if not db_path.exists():
+            raise HTTPException(409, "No brain built yet — nothing to back up.")
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        dest = db_path.parent / f"braincell-backup-{ts}.db"
+        import anyio
+        try:
+            await anyio.to_thread.run_sync(_vacuum_into, db_path, dest)
+        except Exception as exc:  # disk full / locked — surface, never 500-trace
+            raise HTTPException(409, f"Backup failed: {exc}")
+        return {"ok": True, "path": str(dest)}
+
+    @app.get("/api/memory")
+    async def api_memory_log(
+        request: Request, project_id: str, limit: int = 20,
+    ) -> dict:  # type: ignore[type-arg]
+        """List recorded merge operations — same as `braincell memory log`."""
+        _require_project(project_id)
+        store: SqliteStore = request.app.state.store
+        ops = await store.list_operations(project_id, limit=limit)
+        return {"operations": ops}
+
+    @app.post("/api/memory/undo")
+    async def api_memory_undo(request: Request, body: UndoBody) -> dict:  # type: ignore[type-arg]
+        """Reverse a recorded merge operation — same as `braincell memory undo`."""
+        _require_project(body.project_id)
+        store: SqliteStore = request.app.state.store
+        try:
+            result = await store.undo_operation(body.op_id, body.project_id)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc))
+        return {"ok": True, **result}
