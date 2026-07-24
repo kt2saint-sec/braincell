@@ -21,43 +21,56 @@ ollama pull qwen3-embedding:4b
 
 ## 2. Install braincell
 
-From a checkout:
-
 ```bash
-pip install .          # core (CLI + MCP server)
-pip install .[gui]     # also the Memory Map web UI
+pip install braincell-mcp
 ```
 
-Or, per-user, without cloning:
+(Or isolated per-user: `pipx install braincell-mcp`. From a source checkout,
+`pip install .` is equivalent.) You get three commands on your PATH: `braincell` (the CLI,
+including the `start` launcher), `braincell-mcp` (the MCP stdio server your client runs),
+and `braincell-map` (the global Memory Map). The Memory Map GUI is part of the base
+install — no extra needed.
+
+## 3. Start
 
 ```bash
-pipx install 'braincell-mcp[gui]'
+cd /path/to/your/project      # any folder you work in — no git required
+braincell start
 ```
 
-Either way you get three commands on your PATH: `braincell` (CLI), `braincell-mcp` (MCP
-server), and `braincell-map` (opens the Memory Map).
+One command does the rest. It checks the embedder first — if Ollama is down or the model
+isn't pulled, it prints the exact fix before anything else — then opens the Memory Map in
+your browser. On a first run the map opens straight into a short **guided tour**; follow it
+to **1 · ✚ Add project**, one wizard that **Builds** the folder's memory, **Registers the
+MCP** server for your client (Claude Code, Codex, or VS Code), and optionally joins it to a
+**Family** for cross-project recall.
 
-## 3. Build your first brain
+Then reconnect your MCP client — run `/mcp` in Claude Code (or restart the client) — and
+the `mcp__braincell__*` tools are live.
 
-Index the current project into its own brain (creates it on first run):
+Two things to expect on a fresh start:
+
+- **The embedder chip.** The map's header shows embedder status. If it's red, click it for
+  the fix (`ollama pull qwen3-embedding:4b`) — Build refuses to run until the embedder is
+  ready, rather than silently indexing without vectors.
+- **A new folder starts small.** Build indexes the folder's agent transcripts and
+  documents; a folder with no history yet builds a near-empty brain. That's normal —
+  memory accrues as you work and `remember` notes land.
+
+Day to day, just run `braincell start` again: it reuses the already-running map instead of
+starting a second one.
+
+### Prefer the terminal?
+
+The same flow, by hand:
 
 ```bash
-cd /path/to/your/project
-braincell build .
+braincell build .        # Build this folder's memory
+braincell install        # Register the MCP server (+ the family-recall hook, disarmed)
+# reconnect your client (/mcp in Claude Code) → the mcp__braincell__* tools light up
 ```
 
-## 4. Connect it to your MCP client
-
-One command registers the MCP server for the current project (Claude Code shown; use
-`--client codex` or `--client vscode` for others):
-
-```bash
-braincell install
-# then restart your client so it loads the server —
-# the mcp__braincell__* tools light up
-```
-
-## 5. Use it
+## 4. Use it
 
 Your agent now has persistent memory tools (`search`, `recall`, `remember`, `supersede`,
 `forget`, …). From the terminal you can also:
@@ -65,12 +78,17 @@ Your agent now has persistent memory tools (`search`, `recall`, `remember`, `sup
 ```bash
 braincell recall "how did we handle rate limiting?"   # query curated notes
 braincell search "throttle"                            # hybrid keyword + vector search
-braincell gui                                          # open the visual Memory Map
+braincell start                                        # (re)open the visual Memory Map
 ```
 
 ## Where to next
 
-- **Group related repos** into a family for cross-project recall, or **pool** brains into a
-  shared global brain — see the [README](README.md).
+- **Group related project folders** into a family for cross-project recall, or **pool**
+  brains into a shared global brain — see the [README](README.md).
+- **MCP on or off?** Click any cell on the map — its inspector shows the registration
+  state with **Register MCP** / **Deregister MCP** buttons. To restart the MCP server
+  itself, reconnect in your client (`/mcp` in Claude Code) — it runs inside the client,
+  not the GUI.
 - **Maintenance** (`consolidate`, `reflect`, `contradictions`, `backup`, `memory undo`) is
-  available from the CLI and the Memory Map's ⌘ Commands panel.
+  available from the CLI and the Memory Map's ★ Commands panel.
+- Replay the guided tour anytime from **? Help** in the map's toolbar.

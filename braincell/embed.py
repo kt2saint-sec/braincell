@@ -278,6 +278,75 @@ def prewarm_embed_model() -> bool:
         return False
 
 
+def embedder_status(timeout: float = 2.0) -> dict:
+    """Read-only embedder health probe — never loads a model into VRAM.
+
+    Answers "can a Build / remember embed right now?" BEFORE the user falls off
+    the silent-NULL-embedding cliff. Ollama branch: one ``Client.list()`` call
+    (reachability + default-model presence in a single cheap round trip —
+    deliberately NOT prewarm_embed_model(), which performs a real embed and can
+    stall on a cold GPU model load). openai branch: OPENAI_API_KEY presence
+    only, no network call.
+
+    Returns (never raises):
+        {provider, model, dim, reachable, model_present, ok, detail}
+    where ``ok = reachable AND model_present`` and ``detail`` carries the
+    actionable fix ("install Ollama…", "ollama pull <model>") when not ok —
+    mirroring the remediation strings in _embed_ollama's failure message.
+    """
+    base = {
+        "provider": embed_spec.PROVIDER,
+        "model": embed_spec.MODEL,
+        "dim": embed_spec.DIM,
+    }
+    if embed_spec.PROVIDER == "openai":
+        has_key = bool(os.environ.get("OPENAI_API_KEY"))
+        return {
+            **base,
+            "reachable": has_key,
+            "model_present": has_key,
+            "ok": has_key,
+            "detail": "" if has_key else (
+                "OPENAI_API_KEY is not set — export it, or unset "
+                "BRAINCELL_EMBED_PROVIDER to use the local Ollama embedder."
+            ),
+        }
+    try:
+        import ollama  # noqa: PLC0415 — lazy import mirrors _embed_ollama
+        client = ollama.Client(timeout=timeout)
+        listed = client.list()
+    except Exception as exc:  # noqa: BLE001 — a probe reports, never raises
+        return {
+            **base,
+            "reachable": False,
+            "model_present": False,
+            "ok": False,
+            "detail": (
+                f"Ollama unreachable — install it from https://ollama.com, "
+                f"start it (`ollama serve`), then run: "
+                f"ollama pull {embed_spec.MODEL} ({exc})"
+            ),
+        }
+    names: set[str] = set()
+    for m in getattr(listed, "models", None) or []:
+        name = getattr(m, "model", None)
+        if name is None and isinstance(m, dict):
+            name = m.get("model") or m.get("name")
+        if name:
+            names.add(str(name))
+    # A tagless MODEL is listed by Ollama as "<model>:latest" — accept both.
+    present = embed_spec.MODEL in names or f"{embed_spec.MODEL}:latest" in names
+    return {
+        **base,
+        "reachable": True,
+        "model_present": present,
+        "ok": present,
+        "detail": "" if present else (
+            f"Embedding model not pulled — run: ollama pull {embed_spec.MODEL}"
+        ),
+    }
+
+
 # ── Async wrappers (MCP server path) ─────────────────────────────────────────
 
 async def embed_texts_async(texts: list[str]) -> list[np.ndarray]:

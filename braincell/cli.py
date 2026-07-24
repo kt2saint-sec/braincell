@@ -1009,6 +1009,11 @@ def cmd_gui(args: argparse.Namespace) -> None:
         print(f"Installed BrainCell Map launcher:\n  icon:    {icon}\n  desktop: {desktop}")
         print("Open your app menu and search for “BrainCell Map”.")
         return
+    if getattr(args, "rotate_token", False):
+        from .config import get_gui_token_path
+        token_path = get_gui_token_path()
+        token_path.unlink(missing_ok=True)
+        print(f"GUI token rotated: {token_path} removed; a fresh token will be minted.")
     from .gui import run_gui
     run_gui(
         mode=getattr(args, "mode", None),
@@ -1016,6 +1021,52 @@ def cmd_gui(args: argparse.Namespace) -> None:
         allow_writes=args.allow_writes,
         open_browser=not args.no_browser,
         path=args.path,
+    )
+
+
+def cmd_start(args: argparse.Namespace) -> None:
+    """`braincell start` — the one-command launcher (NAMINGS "Start").
+
+    ≡ `braincell gui <path> --allow-writes` plus what `gui` doesn't do: a
+    single-instance probe (reuse the running map instead of dying on "address
+    already in use"; refuse the port if a DIFFERENT brain owns it), a
+    pre-launch report (embedder first, brain state, MCP registration —
+    print-and-continue, NEVER auto-register), and the first-run tour handoff
+    (``tour=1`` via run_gui's url_extra_query).
+    """
+    from . import launch
+
+    mode = "global" if args.global_brain else "project"
+    pre = launch.preflight(Path(args.path), mode=mode, port=args.port)
+
+    if pre.action == "reuse":
+        import webbrowser
+        print(
+            f"BrainCell GUI already running on port {args.port} "
+            f"({pre.expected_db}) — opening the existing map."
+        )
+        webbrowser.open(pre.reuse_url)
+        return
+    if pre.action == "conflict":
+        print(
+            f"ERROR: port {args.port} already serves a DIFFERENT brain:\n"
+            f"  running: {pre.conflict_db}\n"
+            f"  target:  {pre.expected_db or Path(args.path).resolve()}\n"
+            f"Pick another port: braincell start --port <port>",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+    for line in pre.report_lines:
+        print(line)
+    from .gui import run_gui
+    run_gui(
+        mode=mode,
+        port=args.port,
+        allow_writes=True,
+        open_browser=not args.no_browser,
+        path=args.path,
+        url_extra_query="tour=1" if pre.first_run else None,
     )
 
 
@@ -1089,6 +1140,10 @@ def cmd_install(args: argparse.Namespace) -> None:
         root = Path(args.path).resolve()
         pid = get_project_id(root)  # mints + registers if absent
         env["BRAINCELL_PROJECT_ID"] = pid
+        # Project mode: the server's lifespan open_store() resolves via the
+        # BRAINCELL_STORE=sqlite + BRAINCELL_PROJECT_ID env contract. Omitting
+        # BRAINCELL_STORE makes the MCP server exit(1) at startup (never loads).
+        env["BRAINCELL_STORE"] = "sqlite"
         target = f"project {pid}"
         cwd = str(root)
         if args.federate:
@@ -1529,6 +1584,31 @@ def main(argv: list[str] | None = None) -> None:
     ppool.add_argument("-v", "--verbose", action="store_true")
     ppool.set_defaults(func=cmd_pool)
 
+    pstart = sub.add_parser(
+        "start",
+        help=(
+            "Start the Memory Map for a project folder (writable, opens the "
+            "browser; reuses an already-running map on the same port)."
+        ),
+    )
+    pstart.add_argument(
+        "path", nargs="?", default=".",
+        help="Project folder (default: cwd).",
+    )
+    pstart.add_argument(
+        "--port", type=int, default=8765,
+        help="TCP port to listen on (default: 8765).",
+    )
+    pstart.add_argument(
+        "--no-browser", action="store_true", default=False,
+        help="Skip opening a browser tab on startup.",
+    )
+    pstart.add_argument(
+        "--global", dest="global_brain", action="store_true", default=False,
+        help="Open the shared global brain instead (mirrors braincell-map).",
+    )
+    pstart.set_defaults(func=cmd_start)
+
     pgui = sub.add_parser("gui", help="Launch the BrainCell local web viewer.")
     pgui.add_argument(
         "path", nargs="?", default=".",
@@ -1549,6 +1629,13 @@ def main(argv: list[str] | None = None) -> None:
     pgui.add_argument(
         "--no-browser", action="store_true", default=False,
         help="Skip opening a browser tab on startup.",
+    )
+    pgui.add_argument(
+        "--rotate-token", action="store_true", default=False,
+        help=(
+            "Delete the persisted GUI token so a fresh one is minted "
+            "(invalidates existing tab links)."
+        ),
     )
     pgui.add_argument(
         "--install-launcher", action="store_true", default=False,

@@ -207,6 +207,53 @@ class TestIngest:
         assert cmd[1:] == ["-m", "braincell.cli", "build", "/some/path"]
 
 
+# ── /api/ingest build flags (mode=global / reembed) ────────────────────────────
+
+class TestIngestBuildFlags:
+    """The flags append server-side AFTER the command_for() seam, so an argv-echo
+    fake sees exactly what the real `braincell build` subprocess would receive."""
+
+    _ECHO = "import sys;print('ARGS::' + ' '.join(sys.argv[1:]))"
+
+    def _run_with(self, tmp_path, monkeypatch, body_extra: dict):
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        app = _app(tmp_path)
+        with TestClient(app) as client:
+            mgr = app.state.ingest_manager
+            monkeypatch.setattr(
+                mgr, "command_for",
+                lambda path: [sys.executable, "-c", self._ECHO],
+            )
+            r = client.post("/api/ingest", json={"path": str(proj), **body_extra})
+            assert r.status_code == 200
+            job = _wait_done(client)
+        assert job["state"] == "done"
+        argline = next(ln for ln in job["log"] if ln.startswith("ARGS::"))
+        return argline[len("ARGS::"):], job
+
+    def test_global_and_reembed_appended(self, tmp_path, monkeypatch):
+        args, job = self._run_with(
+            tmp_path, monkeypatch, {"mode": "global", "reembed": True}
+        )
+        assert args == "--mode global --reembed"
+        assert job["mode"] == "global"
+        assert job["reembed"] is True
+
+    def test_default_appends_nothing(self, tmp_path, monkeypatch):
+        args, job = self._run_with(tmp_path, monkeypatch, {})
+        assert args == ""
+        assert job["mode"] == "project"
+        assert job["reembed"] is False
+
+    def test_invalid_mode_422(self, tmp_path):
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        with TestClient(_app(tmp_path)) as client:
+            r = client.post("/api/ingest", json={"path": str(proj), "mode": "bogus"})
+        assert r.status_code == 422
+
+
 # ── /api/clear ────────────────────────────────────────────────────────────────
 
 class TestClear:
@@ -314,7 +361,7 @@ class TestTemplateHasIngestUi:
             html = client.get("/").text
         for needle in (
             'id="modal-root"', "openIngestModal", "/api/fs", "/api/ingest",
-            "/api/clear", "/api/schedule", "Clear memory", "Auto-ingest",
+            "/api/clear", "/api/schedule", "Clear memory", "Auto-build",
         ):
             assert needle in html, f"missing {needle!r} in SPA"
 

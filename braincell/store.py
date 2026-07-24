@@ -1380,6 +1380,95 @@ class SqliteStore:
 
         return dict(result)
 
+    # ── tail_since (GUI activity feed) ────────────────────────────────────────
+
+    async def tail_since(
+        self,
+        *,
+        note_after: int,
+        doc_after: int,
+        projects: Optional[list[str]] = None,
+        limit: int = 30,
+    ) -> dict:
+        """Rows newer than a per-table id cursor, for the GUI activity feed.
+
+        Read-only. Each SELECT runs per-statement (no explicit BEGIN) so every
+        call observes the latest committed rows — the feed must see writes made
+        by other connections (MCP server, CLI build) between polls.
+
+        Returns ``{"notes": [...], "documents": [...], "cursors": {"note", "doc"}}``
+        where cursors are the current ``max(id)`` per table (0 when empty) —
+        the client resets its cursor when these shrink after a clear. Each
+        document carries a ``preview``: its first chunk's text clipped to
+        ~280 chars, so the feed can show actual memory text instead of the
+        transcript's ``.jsonl`` doc key ("" when the doc has no chunks).
+        """
+        cf = await self._conn_get()
+
+        def _clip(text: Optional[str], limit: int = 280) -> str:
+            if not text:
+                return ""
+            return text if len(text) <= limit else text[:limit] + "…"
+
+        note_sql = (
+            "SELECT id, project_id, kind, content, created_at, status "
+            "FROM memory_notes WHERE id > ?"
+        )
+        note_params: list = [note_after]
+        doc_sql = (
+            "SELECT d.id, d.project_id, d.title, d.created_at, "
+            "(SELECT COUNT(*) FROM bc_chunks c WHERE c.document_id = d.id) AS chunks, "
+            "(SELECT c2.chunk_text FROM bc_chunks c2 WHERE c2.document_id = d.id "
+            " ORDER BY c2.chunk_index ASC LIMIT 1) AS first_chunk "
+            "FROM bc_documents d WHERE d.id > ?"
+        )
+        doc_params: list = [doc_after]
+        if projects:
+            ph = ",".join("?" * len(projects))
+            note_sql += f" AND project_id IN ({ph})"
+            note_params += list(projects)
+            doc_sql += f" AND d.project_id IN ({ph})"
+            doc_params += list(projects)
+        note_sql += " ORDER BY id DESC LIMIT ?"
+        note_params.append(limit)
+        doc_sql += " ORDER BY d.id DESC LIMIT ?"
+        doc_params.append(limit)
+
+        note_rows = await (await cf.execute(note_sql, note_params)).fetchall()
+        doc_rows = await (await cf.execute(doc_sql, doc_params)).fetchall()
+        note_max = (await (await cf.execute(
+            "SELECT max(id) FROM memory_notes"
+        )).fetchone())[0]
+        doc_max = (await (await cf.execute(
+            "SELECT max(id) FROM bc_documents"
+        )).fetchone())[0]
+
+        return {
+            "notes": [
+                {
+                    "id": r["id"],
+                    "project": r["project_id"],
+                    "kind": r["kind"],
+                    "content": r["content"],
+                    "created_at": r["created_at"],
+                    "status": r["status"],
+                }
+                for r in note_rows
+            ],
+            "documents": [
+                {
+                    "id": r["id"],
+                    "project": r["project_id"],
+                    "title": r["title"],
+                    "chunks": r["chunks"],
+                    "created_at": r["created_at"],
+                    "preview": _clip(r["first_chunk"]),
+                }
+                for r in doc_rows
+            ],
+            "cursors": {"note": note_max or 0, "doc": doc_max or 0},
+        }
+
     # ── remember ──────────────────────────────────────────────────────────────
 
     async def remember(

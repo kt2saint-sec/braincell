@@ -165,6 +165,90 @@ class TestIndex:
         assert "Restart your MCP client" in r.text
 
 
+# ── Phase-1 terminology / toolbar regression (NAMINGS.md) ────────────────────
+
+class TestPhase1Terminology:
+    """Served-HTML guards for the NAMINGS.md rename pass.
+
+    Canonical copy: 'Add project' (wizard) is the primary path, 'Build memory
+    (no MCP)' is the demoted build-only path, the grouping is a 'family'
+    ('pool' is reserved for the family→global fuse: '◉ Pool now'), and the
+    wizard's step 3 is 'Register MCP', never 'Install'.
+    """
+
+    def test_add_project_is_first_and_primary_toolbar_button(self, tmp_path):
+        with TestClient(_app(tmp_path)) as client:
+            r = client.get("/")
+        assert "✚ Add project" in r.text, "Missing '✚ Add project' toolbar copy"
+        assert 'class="btn primary" id="add-repo-btn"' in r.text, (
+            "Add project must keep id=add-repo-btn AND the primary style"
+        )
+        toolbar = r.text.split('<div class="toolbar">', 1)[1]
+        first_button = toolbar.split("</button>", 1)[0]
+        assert 'id="add-repo-btn"' in first_button, (
+            "'✚ Add project' must be the FIRST toolbar button"
+        )
+
+    def test_build_only_button_demoted(self, tmp_path):
+        """Build-only path exists as a secondary '⬇ Build memory (no MCP)' button."""
+        with TestClient(_app(tmp_path)) as client:
+            r = client.get("/")
+        assert 'id="build-btn"' in r.text, 'Missing id="build-btn"'
+        assert "Build memory (no MCP)" in r.text, "Missing build-only copy"
+
+    def test_new_family_button_and_family_terminology(self, tmp_path):
+        """Grouping is a 'family' everywhere: button, header chip, drawer tag."""
+        with TestClient(_app(tmp_path)) as client:
+            r = client.get("/")
+        assert 'id="new-family-btn"' in r.text, 'Missing id="new-family-btn"'
+        assert "＋ New family" in r.text, "Missing '＋ New family' button copy"
+        assert 'Families <b id="c-pool">' in r.text, "Header chip must say 'Families'"
+        assert "no family" in r.text, "Drawer tag must say 'no family'"
+        # Stale copy must be gone; 'pool' survives ONLY as the fuse action.
+        assert "no pool" not in r.text
+        assert "New pool" not in r.text
+        assert "Pool now" in r.text, "The fuse button keeps the reserved 'Pool now'"
+
+    def test_wizard_register_mcp_step_and_skip_copy(self, tmp_path):
+        """Wizard step 3 is 'Register MCP' (not 'Install'); step 4 skip is explicit."""
+        with TestClient(_app(tmp_path)) as client:
+            r = client.get("/")
+        assert "Add a project — 3/4: Register MCP" in r.text, (
+            "Wizard step 3 must be titled 'Register MCP'"
+        )
+        assert "Register MCP →" in r.text, "Wizard step-3 button must say 'Register MCP →'"
+        assert "Skip — keep isolated" in r.text, (
+            "Step-4 skip must say 'Skip — keep isolated'"
+        )
+
+    def test_counts_banner_removed_for_honest_counts(self, tmp_path):
+        """The 'siblings read 0' counts banner was removed once sibling counts
+        became honest (active-project memory); the active-project chip replaces
+        it. Pin the removal so the banner can't quietly come back."""
+        with TestClient(_app(tmp_path)) as client:
+            r = client.get("/")
+        assert 'id="counts-banner"' not in r.text, "counts banner should be gone"
+        assert "paintCountsBanner" not in r.text, "dead paint handler must be removed"
+        assert "dismissCountsBanner" not in r.text, "dead dismiss handler must be removed"
+        assert 'id="active-chip"' in r.text, "active-project chip should replace the banner"
+
+    def test_read_only_disables_toolbar_write_buttons(self, tmp_path):
+        """Read-only launches disable (never hide) the toolbar write buttons.
+
+        The served HTML is identical either way — the disabling is
+        paintWriteButtons() reading status.allow_writes at load — so assert the
+        mechanism ships: the handler, the explanatory title, and the
+        :disabled styling it depends on.
+        """
+        with TestClient(_app(tmp_path)) as client:   # _app() defaults to read-only
+            r = client.get("/")
+        assert "paintWriteButtons" in r.text, "Missing paintWriteButtons handler"
+        assert "read-only: launch with --allow-writes" in r.text, (
+            "Disabled write buttons must explain WHY they are unavailable"
+        )
+        assert ".btn:disabled" in r.text, "Missing .btn:disabled styling"
+
+
 # ── /api/config (scope-toggle bootstrap) ──────────────────────────────────────
 
 class TestApiConfig:

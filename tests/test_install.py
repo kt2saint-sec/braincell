@@ -270,6 +270,9 @@ def test_cmd_install_default_no_federate_key(tmp_path, monkeypatch, capsys):
     main(["install", str(repo)])
     add_argv = calls[1]  # remove-then-add
     assert not any(a.startswith("BRAINCELL_FEDERATE=") for a in add_argv)
+    # Regression: project-mode install MUST stamp BRAINCELL_STORE=sqlite, else the
+    # server's lifespan open_store() exit(1)s at startup and the MCP never loads.
+    assert "BRAINCELL_STORE=sqlite" in add_argv
     out = capsys.readouterr().out
     assert "federation" not in out.lower()
 

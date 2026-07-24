@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "braincell-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local-first persistent-memory MCP server. Per-project brain with hybrid vector + FTS5 search, recall, remember, forget, and supersede over a single SQLite file."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -19,8 +19,12 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 
-# Lazy-imported embed clients (ollama/openai) are declared so an installed
-# product runs out-of-box; numpy/aiosqlite/mcp/rich are imported eagerly.
+# Every eagerly-imported package is declared here so a clean
+# `pip install braincell-mcp` runs out-of-box: gui.py imports fastapi/anyio
+# unconditionally and `braincell-map` is an unconditional console script, so
+# fastapi/uvicorn are BASE deps, not an extra (mcp[cli] does NOT pull them in —
+# verified). httpx (embed.py) and pydantic are likewise imported directly, so
+# they are declared first-party rather than relied on transitively via mcp.
 # Upper bounds cap the major version so a breaking release can't be pulled in
 # silently. NOT a substitute for a hash-pinned lockfile — generate one with
 # `uv lock` / `uv pip compile --generate-hashes` and run osv-scanner in CI.
@@ -31,13 +35,19 @@ dependencies = [
     "rich>=13.7.0,<15",
     "ollama>=0.2.0,<1",        # default embed provider (local-first)
     "python-ulid>=2.2.0,<4",   # project-id minting (build path)
+    "fastapi>=0.115,<1",       # GUI (gui.py imports it unconditionally)
+    "uvicorn>=0.30,<1",        # GUI server
+    "httpx>=0.28.0,<1",        # embed.py HTTP client
+    "anyio>=4.14.0,<5",        # gui.py async plumbing
+    "pydantic>=2.13.0,<3",     # request/response models
 ]
 
 [project.optional-dependencies]
 openai = ["openai>=1.40.0,<3"]   # hosted embed provider (text-embedding-3-*)
-# GUI viewer — fastapi + uvicorn are already present in the venv via mcp[cli],
-# but declared here so `pip install braincell-mcp[gui]` pulls them explicitly.
-gui = ["fastapi>=0.115", "uvicorn>=0.30"]
+# Back-compat alias: fastapi/uvicorn moved into base dependencies (gui.py needs
+# them unconditionally), so `pip install braincell-mcp[gui]` stays valid but
+# adds nothing.
+gui = []
 dev = ["pytest>=8.0.0,<9", "ruff>=0.6.0,<1"]
 
 [project.scripts]

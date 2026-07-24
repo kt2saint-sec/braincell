@@ -13,16 +13,22 @@ hook merge to a tmp file (same idiom as test_install.py's `_settings` helper).
 from __future__ import annotations
 
 import json
+import sys
+import time
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from braincell import install as inst
 
 
-def _app(tmp_path, *, allow_writes: bool = True, auth_token=None):
+def _app(tmp_path, *, allow_writes: bool = True, auth_token=None, restart_argv=None,
+         seed_project_id=None):
     from braincell.gui import create_app
     return create_app(
-        db_path=tmp_path / "braincell.db", allow_writes=allow_writes, auth_token=auth_token,
+        db_path=tmp_path / "braincell.db", allow_writes=allow_writes,
+        auth_token=auth_token, restart_argv=restart_argv,
+        seed_project_id=seed_project_id,
     )
 
 
@@ -83,6 +89,9 @@ def test_install_happy_path(tmp_path, monkeypatch):
     env = calls[0]["env"]
     assert "BRAINCELL_DATA_NAMESPACE" in env
     assert "BRAINCELL_PROJECT_ID" in env
+    # Regression: without BRAINCELL_STORE=sqlite the server's lifespan open_store()
+    # exit(1)s at startup and the MCP never loads (project mode).
+    assert env["BRAINCELL_STORE"] == "sqlite"
     assert "BRAINCELL_FEDERATE" not in env
 
 
@@ -188,6 +197,34 @@ def test_install_hook_flag_behavior(tmp_path, monkeypatch):
     assert any("braincell.family_hook" in c for c in cmds)
 
 
+def test_install_global_brain(tmp_path, monkeypatch):
+    """(t8b) global_brain=true mirrors `braincell install --global`: env carries
+    MODE=global only (no PROJECT_ID/STORE, federate ignored), cwd None,
+    project_id None — and the path is never resolved (a bogus one still 200s)."""
+    _settings(tmp_path, monkeypatch)
+    fake_cls, calls = _fake_client()
+    monkeypatch.setitem(inst.CLIENTS, "claude", fake_cls)
+
+    with TestClient(_app(tmp_path)) as client:
+        r = client.post("/api/install", json={
+            "path": str(tmp_path / "does-not-exist"),
+            "global_brain": True,
+            "federate": True,
+        })
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["project_id"] is None
+    env = calls[0]["env"]
+    assert env["BRAINCELL_MODE"] == "global"
+    assert "BRAINCELL_DATA_NAMESPACE" in env
+    assert "BRAINCELL_PROJECT_ID" not in env
+    assert "BRAINCELL_STORE" not in env
+    assert "BRAINCELL_FEDERATE" not in env
+    assert calls[0]["cwd"] is None
+
+
 # ── /api/uninstall ───────────────────────────────────────────────────────────────
 
 def test_uninstall_vscode_409_manual_instructions(tmp_path, monkeypatch):
@@ -259,3 +296,288 @@ def test_hook_on_off_status_roundtrip(tmp_path, monkeypatch):
         r = client.post("/api/hook", json={"action": "off"})
         assert r.json()["armed"] is False
         assert not flag.exists()
+
+
+# ── /api/skills ───────────────────────────────────────────────────────────────
+
+def _skills_dir(tmp_path, monkeypatch) -> Path:
+    d = tmp_path / "claude-skills"
+    monkeypatch.setenv("BRAINCELL_CLAUDE_SKILLS_DIR", str(d))
+    return d
+
+
+class TestSkillsEndpoint:
+    def test_places_packaged_skills_then_current(self, tmp_path, monkeypatch):
+        """(t11) First call installs both packaged skills; a rerun is 'current'."""
+        _skills_dir(tmp_path, monkeypatch)
+
+        with TestClient(_app(tmp_path)) as client:
+            r = client.post("/api/skills", json={})
+            assert r.status_code == 200
+            skills = r.json()["skills"]
+            names = {s["name"] for s in skills}
+            assert {"braincell-init", "braincell-sync"} <= names
+            assert all(s["status"] == "installed" for s in skills)
+            for s in skills:
+                assert Path(s["path"]).is_file()
+
+            r2 = client.post("/api/skills", json={})
+            assert all(s["status"] == "current" for s in r2.json()["skills"])
+
+    def test_conflict_never_clobbers(self, tmp_path, monkeypatch):
+        """(t12) A user-authored same-name skill is reported as conflict and its
+        content left byte-identical; the other skill still resolves normally."""
+        _skills_dir(tmp_path, monkeypatch)
+
+        with TestClient(_app(tmp_path)) as client:
+            first = client.post("/api/skills", json={}).json()["skills"]
+            init = next(s for s in first if s["name"] == "braincell-init")
+            Path(init["path"]).write_text("MY OWN SKILL\n", encoding="utf-8")
+
+            second = client.post("/api/skills", json={}).json()["skills"]
+
+        by_name = {s["name"]: s["status"] for s in second}
+        assert by_name["braincell-init"] == "conflict"
+        assert by_name["braincell-sync"] == "current"
+        assert Path(init["path"]).read_text(encoding="utf-8") == "MY OWN SKILL\n"
+
+    def test_extra_field_422(self, tmp_path, monkeypatch):
+        _skills_dir(tmp_path, monkeypatch)
+        with TestClient(_app(tmp_path)) as client:
+            r = client.post("/api/skills", json={"target": "/etc"})
+        assert r.status_code == 422
+
+    def test_absent_in_read_only_mode(self, tmp_path):
+        with TestClient(_app(tmp_path, allow_writes=False)) as client:
+            assert client.post("/api/skills", json={}).status_code in (404, 405)
+
+    def test_401_without_token(self, tmp_path):
+        with TestClient(_app(tmp_path, auth_token="secret")) as client:
+            assert client.post("/api/skills", json={}).status_code == 401
+
+
+# ── /api/status mcp+embedder, /api/config suggest_tour, /api/projects badge ───
+
+def _stub_embedder_route(monkeypatch, ok: bool = True):
+    """Replace gui's embedder probe (no live Ollama in route tests)."""
+    monkeypatch.setattr(
+        "braincell.gui.embedder_status",
+        lambda *a, **k: {
+            "provider": "ollama", "model": "stub-model", "dim": 4,
+            "reachable": ok, "model_present": ok, "ok": ok,
+            "detail": "" if ok else "Ollama unreachable — fix it",
+        },
+    )
+
+
+def _isolate_client_configs(tmp_path, monkeypatch):
+    """Point registration detection at (absent) tmp configs — never real ones."""
+    monkeypatch.setenv("BRAINCELL_CLAUDE_JSON", str(tmp_path / "no-claude.json"))
+    monkeypatch.setenv("BRAINCELL_CODEX_CONFIG", str(tmp_path / "no-codex.toml"))
+
+
+class TestStatusEmbedderAndMcp:
+    def test_embedder_contract_keys(self, tmp_path, monkeypatch):
+        """(t14) /api/status.embedder carries the frozen contract keys."""
+        _stub_embedder_route(monkeypatch)
+        _isolate_client_configs(tmp_path, monkeypatch)
+        with TestClient(_app(tmp_path)) as client:
+            emb = client.get("/api/status").json()["embedder"]
+        for key in ("reachable", "model", "ok", "detail"):
+            assert key in emb, f"Missing embedder key: {key}"
+        assert emb["ok"] is True
+
+    def test_embedder_down_still_200(self, tmp_path, monkeypatch):
+        """(t15) A down embedder is a failure-shaped field, never a 5xx."""
+        _stub_embedder_route(monkeypatch, ok=False)
+        _isolate_client_configs(tmp_path, monkeypatch)
+        with TestClient(_app(tmp_path)) as client:
+            r = client.get("/api/status")
+        assert r.status_code == 200
+        emb = r.json()["embedder"]
+        assert emb["ok"] is False
+        assert "unreachable" in emb["detail"]
+
+    def test_mcp_global_mode_shape(self, tmp_path, monkeypatch):
+        """(t16) No seed (global-mode launch) → path null, no clients — the
+        object shape stays stable for the SPA."""
+        _stub_embedder_route(monkeypatch)
+        _isolate_client_configs(tmp_path, monkeypatch)
+        with TestClient(_app(tmp_path)) as client:
+            mcp = client.get("/api/status").json()["mcp"]
+        assert mcp == {"path": None, "clients": []}
+
+    def test_mcp_seed_project_registered(self, tmp_path, monkeypatch):
+        """(t17) Seeded launch + a local-scope claude registration → path is the
+        seed's registry path and clients lists {claude, local}."""
+        from braincell.config import get_project_id
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        pid = get_project_id(repo)
+        claude_json = tmp_path / "claude.json"
+        claude_json.write_text(json.dumps({
+            "projects": {
+                str(repo.resolve()): {
+                    "mcpServers": {"braincell": {"command": "/x/braincell-mcp"}}
+                }
+            }
+        }), encoding="utf-8")
+        monkeypatch.setenv("BRAINCELL_CLAUDE_JSON", str(claude_json))
+        monkeypatch.setenv("BRAINCELL_CODEX_CONFIG", str(tmp_path / "no.toml"))
+        _stub_embedder_route(monkeypatch)
+        with TestClient(_app(tmp_path, seed_project_id=pid)) as client:
+            mcp = client.get("/api/status").json()["mcp"]
+        assert mcp["path"] == str(repo.resolve())
+        assert {"client": "claude", "scope": "local"} in mcp["clients"]
+
+    def test_mcp_seed_project_not_registered(self, tmp_path, monkeypatch):
+        """(t18) Seeded launch, no registration anywhere → empty clients."""
+        from braincell.config import get_project_id
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        pid = get_project_id(repo)
+        _stub_embedder_route(monkeypatch)
+        _isolate_client_configs(tmp_path, monkeypatch)
+        with TestClient(_app(tmp_path, seed_project_id=pid)) as client:
+            mcp = client.get("/api/status").json()["mcp"]
+        assert mcp["path"] == str(repo.resolve())
+        assert mcp["clients"] == []
+
+
+class TestProjectsMcpRegistered:
+    def test_entries_carry_mcp_registered(self, tmp_path, monkeypatch):
+        """(t19) /api/projects entries gain mcp_registered from ONE claude.json
+        read: registered path True, unregistered sibling False."""
+        from braincell.config import get_project_id
+        wired = tmp_path / "wired"
+        wired.mkdir()
+        bare = tmp_path / "bare"
+        bare.mkdir()
+        get_project_id(wired)
+        get_project_id(bare)
+        claude_json = tmp_path / "claude.json"
+        claude_json.write_text(json.dumps({
+            "projects": {
+                str(wired.resolve()): {
+                    "mcpServers": {"braincell": {"command": "/x"}}
+                }
+            }
+        }), encoding="utf-8")
+        monkeypatch.setenv("BRAINCELL_CLAUDE_JSON", str(claude_json))
+        _stub_embedder_route(monkeypatch)
+        with TestClient(_app(tmp_path)) as client:
+            rows = client.get("/api/projects").json()
+        by_path = {r["path"]: r["mcp_registered"] for r in rows}
+        assert by_path[str(wired.resolve())] is True
+        assert by_path[str(bare.resolve())] is False
+
+    def test_detection_failure_degrades_to_false(self, tmp_path, monkeypatch):
+        """(t20) A malformed claude.json never 500s the map — every cell False."""
+        from braincell.config import get_project_id
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        get_project_id(repo)
+        claude_json = tmp_path / "claude.json"
+        claude_json.write_text("{oops", encoding="utf-8")
+        monkeypatch.setenv("BRAINCELL_CLAUDE_JSON", str(claude_json))
+        _stub_embedder_route(monkeypatch)
+        with TestClient(_app(tmp_path)) as client:
+            r = client.get("/api/projects")
+        assert r.status_code == 200
+        assert all(row["mcp_registered"] is False for row in r.json())
+
+
+class TestConfigSuggestTour:
+    def test_true_on_empty_brain_no_other_projects(self, tmp_path, monkeypatch):
+        """(t21) Empty launch brain + empty registry → first-run signal on."""
+        _isolate_client_configs(tmp_path, monkeypatch)
+        with TestClient(_app(tmp_path)) as client:
+            data = client.get("/api/config").json()
+        assert data["suggest_tour"] is True
+
+    def test_false_when_another_project_exists(self, tmp_path, monkeypatch):
+        """(t22) An OTHER registered project defeats first-run (the seed itself
+        is minted at launch and never counts)."""
+        from braincell.config import get_project_id
+        other = tmp_path / "other"
+        other.mkdir()
+        get_project_id(other)
+        _isolate_client_configs(tmp_path, monkeypatch)
+        with TestClient(_app(tmp_path, seed_project_id="SEEDPID00001")) as client:
+            data = client.get("/api/config").json()
+        assert data["suggest_tour"] is False
+
+    def test_seed_project_alone_still_first_run(self, tmp_path, monkeypatch):
+        """(t23) Registry holding ONLY the seed (just minted by start) is still
+        a first run when the brain is empty."""
+        from braincell.config import get_project_id
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        pid = get_project_id(repo)
+        _isolate_client_configs(tmp_path, monkeypatch)
+        with TestClient(_app(tmp_path, seed_project_id=pid)) as client:
+            data = client.get("/api/config").json()
+        assert data["suggest_tour"] is True
+
+
+# ── /api/restart ──────────────────────────────────────────────────────────────
+
+_ARGV = [sys.executable, "-m", "braincell.cli", "gui", "/some/proj",
+         "--mode", "project", "--port", "8765", "--no-browser", "--allow-writes"]
+
+
+class TestRestartEndpoint:
+    def _patch_execv(self, monkeypatch, delay: float = 0.05) -> list:
+        import braincell.gui_install as gi
+        calls: list = []
+        monkeypatch.setattr(gi, "_RESTART_DELAY_S", delay)
+        monkeypatch.setattr(gi.os, "execv", lambda prog, argv: calls.append((prog, argv)))
+        return calls
+
+    def test_schedules_execv_with_server_argv(self, tmp_path, monkeypatch):
+        """(t13) 200 returns first, then the deferred exec fires with the argv
+        recorded server-side at launch (never from the request)."""
+        calls = self._patch_execv(monkeypatch)
+
+        with TestClient(_app(tmp_path, restart_argv=list(_ARGV))) as client:
+            r = client.post("/api/restart", json={})
+            assert r.status_code == 200
+            assert r.json() == {"ok": True, "restarting": True}
+            deadline = time.time() + 5.0
+            while not calls and time.time() < deadline:
+                time.sleep(0.02)
+
+        assert calls == [(_ARGV[0], _ARGV)]
+
+    def test_409_while_job_runs(self, tmp_path, monkeypatch):
+        from braincell.gui_ingest import IngestJob
+        calls = self._patch_execv(monkeypatch)
+        app = _app(tmp_path, restart_argv=list(_ARGV))
+        with TestClient(app) as client:
+            app.state.ingest_manager.job = IngestJob(path="/x")  # state=running
+            r = client.post("/api/restart", json={})
+        assert r.status_code == 409
+        assert calls == []
+
+    def test_409_without_restart_argv(self, tmp_path, monkeypatch):
+        calls = self._patch_execv(monkeypatch)
+        with TestClient(_app(tmp_path)) as client:  # restart_argv=None
+            r = client.post("/api/restart", json={})
+        assert r.status_code == 409
+        assert calls == []
+
+    def test_extra_field_422(self, tmp_path, monkeypatch):
+        calls = self._patch_execv(monkeypatch)
+        with TestClient(_app(tmp_path, restart_argv=list(_ARGV))) as client:
+            r = client.post("/api/restart", json={"argv": ["evil"]})
+        assert r.status_code == 422
+        assert calls == []
+
+    def test_absent_in_read_only_mode(self, tmp_path):
+        with TestClient(_app(tmp_path, allow_writes=False)) as client:
+            assert client.post("/api/restart", json={}).status_code in (404, 405)
+
+    def test_401_without_token(self, tmp_path):
+        with TestClient(_app(tmp_path, auth_token="secret",
+                              restart_argv=list(_ARGV))) as client:
+            assert client.post("/api/restart", json={}).status_code == 401

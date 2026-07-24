@@ -334,6 +334,153 @@ class VSCodeClient:
         )
 
 
+# ── Read-only registration detection (never shells to a client CLI) ───────────
+# The read-only counterpart of mcp_add: reading client config does not violate
+# the "never hand-edit ~/.claude.json" rule (that rule is about WRITES, which
+# stay on the client CLIs). NEVER shell to `claude mcp list` — it is documented
+# to time out on at least one machine; detection reads config files only.
+
+_MCP_SERVER_NAME = "braincell"
+
+
+def claude_config_path() -> Path:
+    """Path to Claude Code's ``~/.claude.json`` (override via env for tests).
+
+    READ-ONLY here — detection parses this file; writes stay on `claude mcp add`.
+    """
+    override = os.environ.get("BRAINCELL_CLAUDE_JSON")
+    if override:
+        return Path(override)
+    return Path.home() / ".claude.json"
+
+
+def codex_config_path() -> Path:
+    """Path to Codex's global ``config.toml`` (override via env for tests)."""
+    override = os.environ.get("BRAINCELL_CODEX_CONFIG")
+    if override:
+        return Path(override)
+    return Path.home() / ".codex" / "config.toml"
+
+
+def _claude_registration(path: Path) -> dict:
+    """Claude Code registration for *path*: local > user > project scope.
+
+    Shapes (also the per-client contract of registration_status):
+      {"registered": True, "scope": "local"|"user"|"project", "command": "..."}
+      {"registered": False}          — configs readable, no braincell entry
+      {"registered": None}           — parse/IO failure: cannot determine
+    """
+    resolved = str(Path(path).resolve())
+    cfg_file = claude_config_path()
+    try:
+        cfg: dict = {}
+        if cfg_file.exists():
+            cfg = json.loads(cfg_file.read_text(encoding="utf-8") or "{}")
+        # -s local → projects["<abs path>"].mcpServers.braincell
+        entry = (
+            ((cfg.get("projects") or {}).get(resolved) or {}).get("mcpServers") or {}
+        ).get(_MCP_SERVER_NAME)
+        if entry is not None:
+            return {
+                "registered": True, "scope": "local",
+                "command": str(entry.get("command", "")),
+            }
+        # -s user → top-level mcpServers.braincell
+        entry = (cfg.get("mcpServers") or {}).get(_MCP_SERVER_NAME)
+        if entry is not None:
+            return {
+                "registered": True, "scope": "user",
+                "command": str(entry.get("command", "")),
+            }
+        # -s project → <path>/.mcp.json mcpServers.braincell
+        mcp_json = Path(resolved) / ".mcp.json"
+        if mcp_json.exists():
+            proj = json.loads(mcp_json.read_text(encoding="utf-8") or "{}")
+            entry = (proj.get("mcpServers") or {}).get(_MCP_SERVER_NAME)
+            if entry is not None:
+                return {
+                    "registered": True, "scope": "project",
+                    "command": str(entry.get("command", "")),
+                }
+        return {"registered": False}
+    except Exception:  # noqa: BLE001 — unknown, never an exception into a caller
+        return {"registered": None}
+
+
+def _codex_registration() -> dict:
+    """Codex registration (global config — path-independent). Same shapes as
+    _claude_registration; scope is always "global"."""
+    cfg_file = codex_config_path()
+    try:
+        if not cfg_file.exists():
+            return {"registered": False}
+        import tomllib  # noqa: PLC0415 — stdlib on the required python>=3.11
+        data = tomllib.loads(cfg_file.read_text(encoding="utf-8"))
+        entry = (data.get("mcp_servers") or {}).get(_MCP_SERVER_NAME)
+        if isinstance(entry, dict):
+            return {
+                "registered": True, "scope": "global",
+                "command": str(entry.get("command", "")),
+            }
+        return {"registered": False}
+    except Exception:  # noqa: BLE001 — unknown, never an exception into a caller
+        return {"registered": None}
+
+
+def registration_status(path: Path) -> dict:
+    """Read-only MCP-registration detection for *path*, per client.
+
+    ``{"claude": {...}, "codex": {...}, "vscode": {"registered": None}}`` with
+    the per-client shapes documented on _claude_registration. VS Code's
+    ``User/mcp.json`` location is platform/variant-dependent → honest
+    ``None`` ("cannot determine") rather than a guess. Detection must never
+    raise into a status endpoint — any parse/IO failure is ``None``.
+    """
+    return {
+        "claude": _claude_registration(path),
+        "codex": _codex_registration(),
+        "vscode": {"registered": None},
+    }
+
+
+def claude_registered_map(paths: list[str]) -> dict[str, bool]:
+    """Claude-client registration summary for MANY paths → ``{path: bool}``.
+
+    The Memory Map calls this once for every registered project, so
+    ``~/.claude.json`` is parsed ONCE and each path is a dict lookup (plus a
+    cheap per-path ``<path>/.mcp.json`` check for project-scope
+    registrations). Unknown/parse failure degrades to False — the map's badge
+    is a summary, not an authority (the inspector uses registration_status).
+    """
+    cfg_file = claude_config_path()
+    try:
+        cfg: dict = {}
+        if cfg_file.exists():
+            cfg = json.loads(cfg_file.read_text(encoding="utf-8") or "{}")
+        user_scope = _MCP_SERVER_NAME in (cfg.get("mcpServers") or {})
+        projects = cfg.get("projects") or {}
+    except Exception:  # noqa: BLE001 — summary degrades to False, never raises
+        return dict.fromkeys(paths, False)
+    out: dict[str, bool] = {}
+    for p in paths:
+        if user_scope:
+            out[p] = True
+            continue
+        registered = _MCP_SERVER_NAME in (
+            (projects.get(p) or {}).get("mcpServers") or {}
+        )
+        if not registered:
+            try:
+                mcp_json = Path(p) / ".mcp.json"
+                if mcp_json.exists():
+                    proj = json.loads(mcp_json.read_text(encoding="utf-8") or "{}")
+                    registered = _MCP_SERVER_NAME in (proj.get("mcpServers") or {})
+            except Exception:  # noqa: BLE001
+                registered = False
+        out[p] = registered
+    return out
+
+
 # Client registry — maps the CLI --client key to an adapter.
 CLIENTS = {
     "claude": ClaudeCodeClient,

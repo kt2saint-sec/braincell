@@ -132,25 +132,48 @@ later requires `braincell build --reembed`.
 
 ### braincell itself
 
-From a checkout:
-
 ```bash
-pip install .          # core (CLI + MCP server)
-pip install .[gui]     # also install the web map (FastAPI + uvicorn)
+pip install braincell-mcp      # or `pipx install braincell-mcp`; `pip install .` from a checkout
 ```
 
 This puts three commands on your PATH:
 
-- `braincell` — the CLI (build, search-tuning, maintenance, install).
+- `braincell` — the CLI (start, build, search-tuning, maintenance, install).
 - `braincell-mcp` — the MCP server (stdio).
 - `braincell-map` — opens the Memory Map in your browser (global brain, writable).
 
-The default embedder is a local Ollama model, so no API key is required out of the box.
+The Memory Map GUI ships in the base install (no extra needed), and the default embedder is
+a local Ollama model, so no API key is required out of the box.
 
-## Connect it to Claude Code
+## Start
 
-One command wires braincell into Claude Code — it registers the MCP server for the current
-project (via `claude mcp add`) and installs the optional proactive family-recall hook:
+```bash
+cd /path/to/your/project       # any folder you work in — no git required
+braincell start
+```
+
+One command: `braincell start` verifies the embedder first (printing the exact fix if
+Ollama or the model is missing), then opens the Memory Map for that project folder —
+straight into a short guided tour on a first run. The tour's **✚ Add project** wizard
+Builds the folder's memory, Registers the MCP server for your client, and optionally joins
+a Family — ending with the reminder to reconnect your client (`/mcp` in Claude Code).
+Run it again anytime: it reuses the already-running map instead of starting a second one.
+
+![Getting started — where you run the commands, and where your memory actually lives](docs/images/getting-started.png)
+
+Or run the same pieces individually:
+
+```bash
+braincell build .              # index the current project into its brain
+braincell serve                # run the MCP server (or point your client at `braincell-mcp`)
+braincell-map                  # open the interactive Memory Map (global brain)
+```
+
+## Connect it to Claude Code (terminal path)
+
+Prefer the terminal to the map? One command wires braincell into Claude Code — it registers
+the MCP server for the current project (via `claude mcp add`) and installs the optional
+proactive family-recall hook:
 
 ```bash
 braincell build .        # index the current project into its brain first
@@ -176,23 +199,13 @@ the proactive hook is a Claude Code feature. `braincell uninstall --client codex
 Codex; VS Code has no remove-MCP CLI, so removal there is a one-time manual step (the command
 prints how). Cursor / Windsurf / others can point their MCP config at `braincell-mcp` directly.
 
-## Adding a repo
+## Adding a project
 
 The full copy-paste sequence is `braincell build` → `braincell install --federate` →
 `braincell family add` → restart your client. One caveat: family members only combine as real
 vector search if built with the same embedder (mismatched siblings degrade to keyword-only).
-The Memory Map GUI's **✚ Add repo** wizard (below) walks the same steps interactively if you'd
-rather not type commands.
-
-## Quick start
-
-![Getting started — where you run the commands, and where your memory actually lives](docs/images/getting-started.png)
-
-```bash
-braincell build .              # index the current project into its brain
-braincell serve                # run the MCP server (or point your client at `braincell-mcp`)
-braincell-map                  # open the interactive Memory Map
-```
+The Memory Map GUI's **✚ Add project** wizard (below — opened via `braincell start`) walks the
+same steps interactively if you'd rather not type commands.
 
 ## MCP tools
 
@@ -232,45 +245,60 @@ the same by passing `federate=true` to its notes/search API — see the federati
 
 ![Memory Map](docs/images/gui-memory-map.png)
 
-`braincell gui` (or the one-click `braincell-map`) serves a localhost-only interactive map,
-skinned in a dark emerald, ivory, and silver theme — a near-black canvas with pale ivory text
-and emerald highlights. The header carries the BrainCell wordmark and a "memory
-map" tag, a "Search all memory…" bar, and a row of status chips (`Mode`, `Projects`, `Pools`, a
-writes indicator, and a pulsing chip while a background ingest job is running). Below a small
-toolbar (`⬇ Ingest project`, `＋ New pool`, `✚ Add repo`, `◉ Family recall`, `↻ Re-tidy`) is the map itself, inside a rounded,
-softly bordered stage: each registered project renders as a glowing emerald-green cell, pools
-(families) render as membranes in their own hue, and the global brain — once built — renders as a
-brighter central organism with a luminous silver core ringed in emerald. Drag a cell into a membrane to pool
-it, drag it back out to remove it, click a cell to inspect, re-ingest, clear, or schedule its
-memory, and click a pool's **◉ Pool now** to fuse that family into the global brain — a new pool
-saves the moment you drop the first cell into it. A legend in the corner spells out the
+`braincell start` (or `braincell gui`, or the one-click `braincell-map`) serves a
+localhost-only interactive map, skinned in a dark emerald, ivory, and silver theme — a
+near-black canvas with pale ivory text and emerald highlights. The header carries the
+BrainCell wordmark and a "memory map" tag, a "Search all memory…" bar, and a row of status
+chips (`Mode`, `Projects`, `Families`, a writes indicator, an embedder-status chip that
+turns red — with a click-for-the-fix modal — when the local embedder is unreachable, and a
+pulsing chip while a background build job is running). Below a small toolbar — the numbered
+happy path `1 · ✚ Add project`, `2 · ＋ New family`, `3 · ◌ Family recall`, then
+`⬇ Build memory (no MCP)`, `★ Commands`, `↻ Re-tidy`, and `? Help`, which replays the
+guided tour — is the map itself, inside a rounded,
+softly bordered stage: each registered project renders as a glowing emerald-green cell, families
+render as membranes in their own hue, and the global brain — once built — renders as a
+brighter central organism with a luminous silver core ringed in emerald. Drag a cell into a membrane
+to add it to that family, drag it back out to remove it, click a cell to inspect, rebuild, clear, or
+schedule its memory, and click a family's **◉ Pool now** to fuse that family into the global brain —
+a new family saves the moment you drop the first cell into it. A legend in the corner spells out the
 interactions.
 
-- Read-only by default; pass `--allow-writes` to enable edits (forget notes, manage families,
-  pool, ingest).
-- **✚ Add repo** wizard (writable mode) walks pick → build → install → family in one guided
-  flow: pick a folder (a native OS folder dialog is offered when available — zenity on Linux;
-  it degrades automatically to the built-in server-side folder browser if zenity isn't
-  installed or there's no display), ingest it, register the MCP server for a client
+- `braincell start` opens the map writable with a first-run guided tour (replay it anytime
+  from **? Help**); `braincell gui` is read-only by default — pass `--allow-writes` to
+  enable edits (forget notes, manage families, pool, build).
+- **✚ Add project** wizard (writable mode) walks pick → build → register MCP → family in one
+  guided flow: pick a folder (a native OS folder dialog is offered when available — zenity on
+  Linux; it degrades automatically to the built-in server-side folder browser if zenity isn't
+  installed or there's no display), build it, register the MCP server for a client
   (`POST /api/install`, with "Enable cross-project federation" checked by default), and
   optionally add it to a family — finishing with a reminder to restart your MCP client.
 - **◉ Family recall** (writable mode) arms or disarms the proactive family-recall hook — the
   same switch as `braincell hook on|off`. The hook is installed *disarmed*, so this is what
   turns it on. Note it surfaces curated **notes** (what `remember` writes), not ingested
   transcript chunks, so a freshly built brain stays quiet until notes accumulate.
+- **MCP status & controls** live in each cell's inspector: it shows whether the braincell
+  MCP server is registered for that project folder, with **Register MCP** / **Deregister
+  MCP** as the real on/off. There is deliberately no MCP-restart button — the server is a
+  stdio subprocess owned by your MCP client, so restarting it means reconnecting in the
+  client (`/mcp` in Claude Code); the inspector says so right where you'd look for one.
+- Build is gated on the embedder: if Ollama is unreachable or the model isn't pulled, Build
+  refuses with the exact fix instead of silently indexing without vectors (the header chip
+  shows the same status at all times).
 - One family caveat carries over from the CLI: members only fully participate in vector
   recall if built with the same embedder (mismatched siblings degrade to keyword-only).
-- Even a read-only launch now mints a per-launch token (carried as `?t=` in the opened URL) so the
-  project/family enumeration endpoints aren't open to any other local process or tab; set
-  `BRAINCELL_GUI_TOKEN` if you want a stable, explicit token instead.
+- Even a read-only launch requires an access token (carried as `?t=` in the opened URL) so the
+  project/family enumeration endpoints aren't open to any other local process or tab. The token
+  is minted once and persisted (0600) per data namespace, so restarting the GUI keeps
+  already-open tabs working; rotate it with `braincell gui --rotate-token`, or set
+  `BRAINCELL_GUI_TOKEN` to use an explicit token instead (never written to disk).
 - `braincell gui --install-launcher` adds a desktop icon and a **BrainCell Map** menu entry (Linux).
   Portable launchers for macOS/Linux/Windows live in `scripts/`.
 
 ## Testing & quality
 
-![Testing & quality — 654 passing tests, ruff-clean, and the opt-in federation latency benchmark](docs/images/testing-metrics.png)
+![Testing & quality — passing test suite, ruff-clean, and the opt-in federation latency benchmark](docs/images/testing-metrics.png)
 
-The test suite currently sits at **654 passing tests** (`pytest -q`), and the package source
+The test suite currently sits at **854 passing tests** (`pytest -q`), and the package source
 (`braincell/`) is ruff-clean. A dedicated benchmark (`scripts/federate_bench.py`, no live embedder
 required — it uses synthetic unit vectors) measures the cost of opt-in federation: with 6 sibling
 brains of 200 notes each, a single-store recall averages **1.90 ms** (p95 2.09 ms), while fanning
@@ -283,6 +311,7 @@ when you opt in with `BRAINCELL_FEDERATE=on`.
 
 | Command | Purpose |
 |---|---|
+| `start` | One-command launcher: embedder preflight, then the writable Memory Map (+ first-run guided tour). Reuses an already-running map on the same port instead of starting a second one. |
 | `build` / `sync` | Ingest (or incrementally refresh) documents and transcripts into a brain. |
 | `register` | Mint/confirm the project ULID (no ingest). |
 | `serve` | Run the MCP stdio server. |
@@ -323,7 +352,7 @@ All settings are optional environment variables; the defaults preserve the stand
 | `BRAINCELL_RERANK` | `off` | Set to `ollama` to re-score the fused top-k with a local model. |
 | `BRAINCELL_RERANK_M` | `20` | Reranker candidate window (top-M fused hits rescored before truncating to k). |
 | `BRAINCELL_RERANK_MODEL` | `qwen2.5:7b` | Local Ollama model used for reranking. |
-| `BRAINCELL_GUI_TOKEN` | *(unset)* | If set, the GUI API requires a matching token; otherwise each launch mints its own. |
+| `BRAINCELL_GUI_TOKEN` | *(unset)* | If set, the GUI API requires this exact token (never written to disk); otherwise a token is minted once and persisted per data namespace (rotate with `braincell gui --rotate-token`). |
 | `BRAINCELL_LLM_MODEL` | `qwen2.5:7b` | Local model used by `reflect` (and `consolidate --llm`). |
 | `BRAINCELL_DEDUP_COS` | `0.95` | Recall near-duplicate cosine cutoff. |
 | `BRAINCELL_HALFLIFE_DAYS` | `90` | Recency half-life for note ranking. |

@@ -32,7 +32,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
@@ -52,6 +52,8 @@ _SCHED_TICK_S = 60.0     # scheduler wake-up interval
 
 class IngestBody(BaseModel):
     path: str
+    mode: Literal["project", "global"] = "project"
+    reembed: bool = False
 
 
 class ClearBody(BaseModel):
@@ -74,6 +76,8 @@ class IngestJob:
     started: float = field(default_factory=time.time)
     finished: Optional[float] = None
     returncode: Optional[int] = None
+    mode: str = "project"            # project | global (build target brain)
+    reembed: bool = False
 
     def as_dict(self) -> dict:
         return {
@@ -83,6 +87,8 @@ class IngestJob:
             "started": self.started,
             "finished": self.finished,
             "returncode": self.returncode,
+            "mode": self.mode,
+            "reembed": self.reembed,
         }
 
 
@@ -102,18 +108,28 @@ class IngestManager:
     def busy(self) -> bool:
         return self.job is not None and self.job.state == "running"
 
-    async def start(self, path: str) -> IngestJob:
+    async def start(
+        self, path: str, *, mode: str = "project", reembed: bool = False,
+    ) -> IngestJob:
         if self.busy:
             raise RuntimeError("An ingest job is already running.")
-        job = IngestJob(path=path)
+        job = IngestJob(path=path, mode=mode, reembed=reembed)
         self.job = job
         self._task = asyncio.ensure_future(self._run(job))
         return job
 
     async def _run(self, job: IngestJob) -> None:
         try:
+            # Flags append AFTER the command_for() seam: tests that swap in a
+            # `python -c` fake see them as inert extra argv, while the real
+            # `braincell build` command receives them as its own options.
+            cmd = list(self.command_for(job.path))
+            if job.mode == "global":
+                cmd += ["--mode", "global"]
+            if job.reembed:
+                cmd.append("--reembed")
             proc = await asyncio.create_subprocess_exec(
-                *self.command_for(job.path),
+                *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )
@@ -360,7 +376,9 @@ def mount_ingest_api(app: FastAPI, *, db_path: Path, manager: IngestManager) -> 
         if not p.is_dir():
             raise HTTPException(400, f"Not a directory: {body.path}")
         try:
-            job = await manager.start(str(p.resolve()))
+            job = await manager.start(
+                str(p.resolve()), mode=body.mode, reembed=body.reembed
+            )
         except RuntimeError as exc:
             raise HTTPException(409, str(exc))
         return {"started": True, "job": job.as_dict()}

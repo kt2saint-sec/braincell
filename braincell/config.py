@@ -125,6 +125,11 @@ def get_families_path() -> Path:
     return _xdg_data_home() / DATA_NAMESPACE / "families.json"
 
 
+def get_gui_token_path() -> Path:
+    """``~/.local/share/<namespace>/gui-token`` — the persisted GUI auth token (0600)."""
+    return _xdg_data_home() / DATA_NAMESPACE / "gui-token"
+
+
 def get_global_db_path() -> Path:
     """Return ``~/.local/share/<namespace>/global/braincell.db`` — the shared global brain.
 
