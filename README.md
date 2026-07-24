@@ -17,6 +17,25 @@ to sibling project brains live and read-only (`BRAINCELL_FEDERATE=on`), and stor
 one SQLite file per project brain by default — with a separate opt-in global brain, and families
 that are just a named grouping of project IDs, not a brain of their own.
 
+## What's new in v0.2
+
+![braincell onboarding — the first-run guided tour, step by step](docs/images/onboarding.gif)
+
+v0.2 makes braincell far easier to get into, and sharper once you're in.
+
+**New onboarding**
+- **`braincell start`** — one command launches the Memory Map and, on a first run, an 8-step guided tour.
+- **Numbered happy path** — the toolbar walks you through *1 · Add project → 2 · New family → 3 · Family recall*; **? Help** replays the tour anytime.
+- **Embedder preflight** — `start` checks Ollama and the model first and prints the exact fix if it's down, so you never hit a broken build.
+- **Plain `pip install braincell-mcp`** now ships the GUI — no `[gui]` extra needed.
+
+**New features**
+- **Active-project memory** — switch which project's memory the map is viewing, with honest per-project counts; sibling projects open read-only.
+- **Live Memory feed** — a scrollable rail streams new notes and ingested documents as plain text as they land.
+- **MCP status & controls** — Register / Deregister the MCP from the GUI, with an honest "reconnect via `/mcp`" note.
+- **Embedder gate** — building while the embedder is down no longer silently produces NULL-embedded chunks.
+- **Bottom-dock inspector**, **family-colored cells**, and a **durable GUI token** (restarts stop orphaning open tabs).
+
 ## How it works
 
 ![Architecture — three entry points (MCP stdio server, CLI, Memory Map GUI) share one engine over one SQLite file per brain](docs/images/architecture.png)
