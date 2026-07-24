@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -53,6 +54,31 @@ def probe_status(port: int, token: str, timeout: float = 1.0) -> Optional[dict]:
     except Exception:  # noqa: BLE001 — any failure = not a matching braincell GUI
         return None
     return data if isinstance(data, dict) else None
+
+
+def port_serves_gui(port: int, timeout: float = 1.0) -> bool:
+    """True if a braincell GUI is listening on 127.0.0.1:<port> — token-agnostic.
+
+    Hits ``/api/status`` with NO token. A braincell GUI answers 200 (no-auth
+    mode) or 401 (its token guard is active) — both prove it owns the port. A
+    foreign server or a closed port yields a connection error or some other
+    status → False.
+
+    Unlike :func:`probe_status`, this does not need the caller's token to match
+    the running server's. The desktop icon uses it to REUSE a running map
+    regardless of which token that map launched with: open its bare URL and the
+    server's ``GET /`` redirect supplies the correct token. Without this the icon
+    would silently die on uvicorn "address already in use" (``Terminal=false``).
+    """
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/api/status", timeout=timeout
+        ) as resp:
+            return getattr(resp, "status", None) == 200
+    except urllib.error.HTTPError as exc:
+        return exc.code == 401  # our token guard rejected the tokenless probe
+    except Exception:  # noqa: BLE001 — refused / timeout / foreign = not our GUI
+        return False
 
 
 # ── Preflight ─────────────────────────────────────────────────────────────────

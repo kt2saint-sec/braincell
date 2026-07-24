@@ -202,6 +202,139 @@ def install_skills(target_dir: Path | None = None) -> list[tuple[str, str, Path]
     return results
 
 
+# ── systemd --user service (opt-in always-on Memory-Map) ──────────────────────
+#
+# Fable-advised: opt-in ONLY, never a default — an always-on daemon is
+# footprint-surprise for a local desktop tool, and the probe-then-start desktop
+# icon already makes "server down" a one-click fix. This installs a `--user`
+# unit for the user who WANTS the Map to survive logout/reboot and restart on
+# failure. All systemctl calls funnel through `_run_systemctl` (one seam for
+# tests to fake — never touching the real user manager) and degrade to
+# "unit written, enable it yourself" when systemd is absent, rather than raising.
+
+_SERVICE_UNIT = "braincell-map.service"
+
+
+def systemd_user_dir() -> Path:
+    """The systemd --user unit directory (override via env for tests)."""
+    override = os.environ.get("BRAINCELL_SYSTEMD_USER_DIR")
+    if override:
+        return Path(override)
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    base = Path(xdg) if xdg else Path.home() / ".config"
+    return base / "systemd" / "user"
+
+
+def _service_unit_text(port: int, namespace: str) -> str:
+    """Render the braincell-map.service unit — global, writable, no browser.
+
+    ExecStart uses the ABSOLUTE interpreter + ``-m braincell.cli gui`` so it runs
+    under systemd's minimal --user PATH, and always BINDS and BLOCKS (uvicorn) so
+    ``Restart=on-failure`` genuinely keeps it up (unlike the icon's braincell-map,
+    which reuses-and-exits when the port is already served).
+    """
+    exec_start = (
+        f"{sys.executable} -m braincell.cli gui --mode global "
+        f"--allow-writes --no-browser --port {port}"
+    )
+    return (
+        "[Unit]\n"
+        "Description=BrainCell Memory Map (local, always-on)\n"
+        "After=default.target\n\n"
+        "[Service]\n"
+        "Type=simple\n"
+        f"Environment=BRAINCELL_DATA_NAMESPACE={namespace}\n"
+        f"ExecStart={exec_start}\n"
+        "Restart=on-failure\n"
+        "RestartSec=3\n\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"
+    )
+
+
+def _run_systemctl(args: list[str]) -> tuple[int, str]:
+    """Run ``systemctl --user <args>`` → (returncode, combined output).
+
+    Returns ``(127, <msg>)`` when systemctl is absent (headless / no systemd), so
+    callers degrade gracefully. Single function on purpose: tests monkeypatch it.
+    """
+    exe = shutil.which("systemctl")
+    if not exe:
+        return 127, "systemctl not found (no systemd on this host)"
+    proc = subprocess.run([exe, "--user", *args], capture_output=True, text=True)
+    return proc.returncode, (proc.stdout + proc.stderr).strip()
+
+
+def _svc_active() -> bool:
+    return _run_systemctl(["is-active", _SERVICE_UNIT])[0] == 0
+
+
+def _svc_enabled() -> bool:
+    return _run_systemctl(["is-enabled", _SERVICE_UNIT])[0] == 0
+
+
+def install_service(port: int = 8765) -> dict:
+    """Write + enable + start the always-on Map service unit (opt-in, idempotent).
+
+    Rewrites the unit, ``daemon-reload``, then ``enable --now``. systemctl
+    failures land in ``detail`` (not raised) — the unit file is still written so
+    the user can enable it once a manager is available.
+    """
+    from . import config
+
+    unit_dir = systemd_user_dir()
+    unit_dir.mkdir(parents=True, exist_ok=True)
+    unit_path = unit_dir / _SERVICE_UNIT
+    tmp = unit_path.with_name(unit_path.name + ".tmp")
+    tmp.write_text(_service_unit_text(port, config.DATA_NAMESPACE), encoding="utf-8")
+    tmp.replace(unit_path)                       # atomic (mirrors install_skills)
+
+    details: list[str] = []
+    for step in (["daemon-reload"], ["enable", "--now", _SERVICE_UNIT]):
+        rc, out = _run_systemctl(step)
+        if rc != 0:
+            details.append(f"{' '.join(step)}: {out}")
+    return {
+        "unit_path": str(unit_path),
+        "installed": True,
+        "active": _svc_active(),
+        "enabled": _svc_enabled(),
+        "detail": "; ".join(details),
+    }
+
+
+def uninstall_service() -> dict:
+    """Disable + stop + remove the Map service unit (best-effort, idempotent)."""
+    unit_path = systemd_user_dir() / _SERVICE_UNIT
+    details: list[str] = []
+    rc, out = _run_systemctl(["disable", "--now", _SERVICE_UNIT])
+    low = out.lower()
+    if rc != 0 and "not loaded" not in low and "no such file" not in low:
+        details.append(f"disable --now: {out}")
+    removed = unit_path.exists()
+    unit_path.unlink(missing_ok=True)
+    _run_systemctl(["daemon-reload"])
+    return {
+        "unit_path": str(unit_path),
+        "installed": unit_path.exists(),
+        "removed": removed,
+        "active": _svc_active(),
+        "enabled": _svc_enabled(),
+        "detail": "; ".join(details),
+    }
+
+
+def service_status() -> dict:
+    """Report the Map service state: unit present? active? enabled?"""
+    unit_path = systemd_user_dir() / _SERVICE_UNIT
+    return {
+        "unit_path": str(unit_path),
+        "installed": unit_path.exists(),
+        "active": _svc_active(),
+        "enabled": _svc_enabled(),
+    }
+
+
 # ── Claude Code MCP registration (via the official CLI) ───────────────────────
 
 class ClaudeCodeClient:

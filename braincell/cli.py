@@ -1075,6 +1075,12 @@ def main_map(argv: list[str] | None = None) -> None:
 
     Opens the Memory-Map in global mode with writes enabled and a browser tab —
     the one-click experience.  ``--port`` overrides the default port.
+
+    Single-instance probe FIRST (the desktop icon runs with ``Terminal=false``,
+    so a silent uvicorn "address already in use" would just look like a dead
+    click): if a braincell GUI already answers on the port, open the browser to
+    that running map and return instead of trying to bind. Only when nothing is
+    listening do we start a server — whose lifespan opens the browser once bound.
     """
     p = argparse.ArgumentParser(
         prog="braincell-map",
@@ -1082,7 +1088,22 @@ def main_map(argv: list[str] | None = None) -> None:
     )
     p.add_argument("--port", type=int, default=8765, help="TCP port (default: 8765).")
     ns = p.parse_args(argv)
+
     from .gui import run_gui
+    from .launch import port_serves_gui
+
+    # The map is a namespace-wide viewer, so ANY running braincell GUI on the
+    # port is the map the user wants — reuse it (open its tab) rather than fail
+    # to bind. Open the BARE URL: the running server's GET / redirect fills in
+    # the correct ?t=, so this works even if that server launched with a
+    # different (e.g. ephemeral) token than the one persisted on disk.
+    if port_serves_gui(ns.port):
+        import webbrowser
+        url = f"http://127.0.0.1:{ns.port}/"
+        print(f"BrainCell Map already running on port {ns.port} — opening it.")
+        webbrowser.open(url)
+        return
+
     run_gui(
         mode="global",
         port=ns.port,
@@ -1196,6 +1217,18 @@ def cmd_install(args: argparse.Namespace) -> None:
                     print(f"⚠ skill /{name} EXISTS with different content — left "
                           f"untouched: {path}", file=sys.stderr)
 
+    # Opt-in always-on service (systemd --user) — orthogonal to MCP wiring.
+    if getattr(args, "service", False):
+        from .install import install_service
+        res = install_service()
+        if res["active"]:
+            print(f"✓ always-on Map service installed + started → {res['unit_path']}")
+        else:
+            print(f"• Map service unit written → {res['unit_path']}")
+            if res["detail"]:
+                print(f"  systemctl said: {res['detail']}", file=sys.stderr)
+        print("  Manage: systemctl --user status|stop|disable braincell-map.service")
+
     restart = {"claude": "Claude Code", "codex": "Codex", "vscode": "VS Code"}[args.client]
     print("\nNext steps:")
     print(f"  1. Restart {restart} so it loads the new MCP server.")
@@ -1238,6 +1271,14 @@ def cmd_uninstall(args: argparse.Namespace) -> None:
         if args.disarm:
             _family_hook_flag().unlink(missing_ok=True)
             print("✓ disarmed the hook flag")
+
+    if getattr(args, "service", False):
+        from .install import uninstall_service
+        res = uninstall_service()
+        print(f"✓ removed always-on Map service ({res['unit_path']})" if res["removed"]
+              else "• no always-on Map service unit found")
+        if res["detail"]:
+            print(f"  systemctl said: {res['detail']}", file=sys.stderr)
 
 
 def cmd_hook(args: argparse.Namespace) -> None:
@@ -1491,6 +1532,10 @@ def main(argv: list[str] | None = None) -> None:
                     help="Also install the packaged /braincell-init and /braincell-sync "
                          "Claude Code skills into ~/.claude/skills (never overwrites an "
                          "existing skill of the same name).")
+    pi.add_argument("--service", action="store_true",
+                    help="Also install an opt-in systemd --user service so the Memory Map "
+                         "stays running across logout/reboot (always-on; manage with "
+                         "`systemctl --user … braincell-map.service`).")
     pi.add_argument("--python", default=None,
                     help="Interpreter for the hook command (default: this interpreter).")
     pi.add_argument("--federate", action="store_true",
@@ -1508,6 +1553,8 @@ def main(argv: list[str] | None = None) -> None:
                     help="Claude Code scope to remove from (must match how it was installed).")
     pu.add_argument("--disarm", action="store_true",
                     help="Also remove the hook arm-flag (disarm) while uninstalling (Claude Code).")
+    pu.add_argument("--service", action="store_true",
+                    help="Also remove the always-on systemd --user Map service.")
     pu.set_defaults(func=cmd_uninstall)
 
     ph = sub.add_parser("hook", help="Arm/disarm/status the proactive family-recall hook.")

@@ -317,7 +317,7 @@ interactions.
 
 ![Testing & quality — passing test suite, ruff-clean, and the opt-in federation latency benchmark](docs/images/testing-metrics.png)
 
-The test suite currently sits at **854 passing tests** (`pytest -q`), and the package source
+The test suite currently sits at **875 passing tests** (`pytest -q`), and the package source
 (`braincell/`) is ruff-clean. A dedicated benchmark (`scripts/federate_bench.py`, no live embedder
 required — it uses synthetic unit vectors) measures the cost of opt-in federation: with 6 sibling
 brains of 200 notes each, a single-store recall averages **1.90 ms** (p95 2.09 ms), while fanning

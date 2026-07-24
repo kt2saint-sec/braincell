@@ -23,7 +23,7 @@ from typing import Optional
 
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
 
 from . import embed_spec
@@ -94,6 +94,7 @@ def create_app(
     db_path: Path,
     allow_writes: bool = False,
     auth_token: Optional[str] = None,
+    cookie_name: str = "bc_gui_token",
     open_browser_url: Optional[str] = None,
     seed_project_id: Optional[str] = None,
     restart_argv: Optional[list[str]] = None,
@@ -149,15 +150,25 @@ def create_app(
 
     # ── A4: optional shared-secret guard on all /api/* routes ─────────────────
     if auth_token:
+        import secrets as _secrets
 
         @app.middleware("http")
         async def _require_token(request: Request, call_next):  # type: ignore[no-untyped-def]
             if request.url.path.startswith("/api/"):
+                # Accept the token from (in precedence order) an explicit ?t=,
+                # the X-BrainCell-Token header, or the durable auth COOKIE that
+                # GET / sets. The cookie is what lets a reopened bare-address tab
+                # authenticate with no URL state — closing the browser no longer
+                # strands the SPA on 401s (which used to render as an empty
+                # "wiped" map). Explicit ?t=/header still win so env-token curl
+                # scripting and a correct ?t= recovering from a stale cookie both
+                # keep working. Constant-time compare avoids a timing oracle.
                 supplied = (
                     request.query_params.get("t")
                     or request.headers.get("X-BrainCell-Token")
+                    or request.cookies.get(cookie_name)
                 )
-                if supplied != auth_token:
+                if not (supplied and _secrets.compare_digest(supplied, auth_token)):
                     return JSONResponse(
                         {"detail": "Unauthorized (bad or missing BrainCell token)."},
                         status_code=401,
@@ -246,9 +257,39 @@ def create_app(
 
     # ── Read endpoints ────────────────────────────────────────────────────────
 
-    @app.get("/", response_class=HTMLResponse)
-    async def index() -> HTMLResponse:
-        return HTMLResponse(content=INDEX_HTML)
+    @app.get("/")
+    async def index(request: Request):  # type: ignore[no-untyped-def]
+        # Durable-cookie auth (the fix for "closed the browser → reopened the
+        # bare 127.0.0.1:<port> → empty 'wiped' map"). GET / hands the browser
+        # the server's own token as an HttpOnly, SameSite=Strict cookie, so every
+        # subsequent /api/* call authenticates automatically with NO token in the
+        # URL — surviving tab close, bookmarks, and the desktop-icon reuse path,
+        # with zero dependency on any agent restarting anything.
+        #
+        # Posture (user-approved): the token still guards /api/*; only the
+        # localhost PAGE navigation self-heals. Safe because the server binds
+        # 127.0.0.1 only and the token is a same-user 0600 on-disk secret already
+        # readable by this user's processes. HttpOnly keeps it out of SPA JS
+        # (no XSS exfil); SameSite=Strict blocks cross-site sends; no Secure flag
+        # because browsers drop Secure cookies on plain-http 127.0.0.1.
+        if not auth_token:
+            return HTMLResponse(content=INDEX_HTML)
+        # If a ?t= rode in (first launch, an old bookmark, a stale link), strip it
+        # to a clean URL — the cookie carries auth now, so the token no longer
+        # needs to live in the address bar (or browser history / screenshots).
+        if request.query_params.get("t") is not None:
+            from urllib.parse import urlencode
+            params = dict(request.query_params)
+            params.pop("t", None)
+            clean = "/?" + urlencode(params) if params else "/"
+            resp: Response = RedirectResponse(url=clean, status_code=302)
+        else:
+            resp = HTMLResponse(content=INDEX_HTML)
+        resp.set_cookie(
+            key=cookie_name, value=auth_token, max_age=30 * 24 * 3600, path="/",
+            httponly=True, samesite="strict",  # no secure= on http loopback
+        )
+        return resp
 
     @app.get("/api/status")
     async def api_status(request: Request) -> dict:  # type: ignore[type-arg]
@@ -790,9 +831,10 @@ def run_gui(
     # endpoints enumerate every registered project (ULID + absolute path)
     # from the namespace-wide registry (/api/projects, /api/families), so even the
     # read-only API is gated to the launched tab rather than open to any local
-    # process/tab. The opened URL carries ?t= and the SPA attaches it on each
-    # call, so the one-click flow is unaffected; a manually-opened tab must copy
-    # the token from the logged URL.
+    # process/tab. The opened URL carries ?t= for the first hop, but GET / then
+    # sets the token as a durable HttpOnly cookie and strips ?t= (see index()),
+    # so a manually-opened / bookmarked / reopened bare-address tab authenticates
+    # via the cookie with no URL token — the user never copies a token by hand.
     auth_token = _resolve_gui_token()
 
     url = f"http://127.0.0.1:{port}"
@@ -816,6 +858,12 @@ def run_gui(
         db_path=db_path,
         allow_writes=allow_writes,
         auth_token=auth_token,
+        # Cookies are host-scoped, NOT port-scoped: two GUIs on 127.0.0.1 (e.g.
+        # different namespaces on different ports) would otherwise share one
+        # cookie and clobber each other. Key the cookie by port so concurrent
+        # instances stay isolated; a stale cross-instance cookie just 401s and
+        # GET / re-mints the right one.
+        cookie_name=f"bc_gui_{port}",
         open_browser_url=(open_url if open_browser else None),
         seed_project_id=project_id,
         restart_argv=restart_argv,

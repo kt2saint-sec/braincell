@@ -122,6 +122,8 @@ class TestInstallLauncherA3:
 
     def test_main_map_calls_run_gui_with_documented_kwargs(self, monkeypatch):
         captured = {}
+        # No running GUI on the port → main_map proceeds to bind (run_gui).
+        monkeypatch.setattr("braincell.launch.port_serves_gui", lambda *a, **k: False)
         monkeypatch.setattr("braincell.gui.run_gui", lambda **kw: captured.update(kw))
         from braincell.cli import main_map
 
@@ -136,11 +138,31 @@ class TestInstallLauncherA3:
 
     def test_main_map_port_override(self, monkeypatch):
         captured = {}
+        monkeypatch.setattr("braincell.launch.port_serves_gui", lambda *a, **k: False)
         monkeypatch.setattr("braincell.gui.run_gui", lambda **kw: captured.update(kw))
         from braincell.cli import main_map
 
         main_map(["--port", "9999"])
         assert captured["port"] == 9999
+
+    def test_main_map_reuses_running_gui(self, monkeypatch):
+        """A running GUI on the port → open its bare URL, never bind (no dead click).
+
+        The desktop icon runs with Terminal=false, so a silent uvicorn "address
+        already in use" reads as a dead click. When a braincell GUI already owns
+        the port, main_map must open the browser (the bare URL — the server's
+        GET / redirect supplies the token) and NOT call run_gui.
+        """
+        opened = []
+        run_gui_called = []
+        monkeypatch.setattr("braincell.launch.port_serves_gui", lambda *a, **k: True)
+        monkeypatch.setattr("braincell.gui.run_gui", lambda **kw: run_gui_called.append(kw))
+        monkeypatch.setattr("webbrowser.open", lambda u: opened.append(u))
+        from braincell.cli import main_map
+
+        main_map([])
+        assert opened == ["http://127.0.0.1:8765/"]
+        assert run_gui_called == []
 
 
 # ── A4: optional GUI token ────────────────────────────────────────────────────
@@ -167,3 +189,59 @@ class TestGuiTokenA4:
         """Only /api/* is guarded — the page itself must load to read the token."""
         with TestClient(_app(tmp_path, auth_token="s3cret")) as client:
             assert client.get("/").status_code == 200
+
+    # ── durable-cookie auth (the "closed the browser → wiped map" fix) ──────────
+
+    def test_index_bare_sets_auth_cookie_and_serves_html(self, tmp_path):
+        """Bare / (no ?t=) serves the page AND sets the durable auth cookie."""
+        with TestClient(_app(tmp_path, auth_token="s3cret")) as client:
+            r = client.get("/", follow_redirects=False)
+        assert r.status_code == 200
+        assert "BrainCell" in r.text
+        sc = r.headers["set-cookie"]
+        assert "bc_gui_token=s3cret" in sc
+        assert "HttpOnly" in sc
+        assert "samesite=strict" in sc.lower()
+        assert "Secure" not in sc  # http loopback — Secure would make browsers drop it
+
+    def test_index_strips_token_from_url_and_sets_cookie(self, tmp_path):
+        """A ?t= is stripped to a clean URL (cookie carries auth now), params kept."""
+        with TestClient(_app(tmp_path, auth_token="s3cret")) as client:
+            r = client.get("/?t=s3cret&scope=family", follow_redirects=False)
+        assert r.status_code == 302
+        assert r.headers["location"] == "/?scope=family"
+        assert "bc_gui_token=s3cret" in r.headers["set-cookie"]
+
+    def test_index_strips_bare_token_to_root(self, tmp_path):
+        """A lone ?t= redirects to a clean "/" and sets the cookie."""
+        with TestClient(_app(tmp_path, auth_token="s3cret")) as client:
+            r = client.get("/?t=s3cret", follow_redirects=False)
+        assert r.status_code == 302
+        assert r.headers["location"] == "/"
+        assert "bc_gui_token=s3cret" in r.headers["set-cookie"]
+
+    def test_cookie_authenticates_api(self, tmp_path):
+        """A request carrying the auth cookie (no ?t=) is accepted by /api/*."""
+        with TestClient(_app(tmp_path, auth_token="s3cret")) as client:
+            client.cookies.set("bc_gui_token", "s3cret")
+            assert client.get("/api/status").status_code == 200
+
+    def test_stale_cookie_rejected(self, tmp_path):
+        """A wrong cookie value is rejected — the cookie is a real credential."""
+        with TestClient(_app(tmp_path, auth_token="s3cret")) as client:
+            client.cookies.set("bc_gui_token", "wrong")
+            assert client.get("/api/status").status_code == 401
+
+    def test_bare_visit_then_api_flows_via_cookie(self, tmp_path):
+        """End-to-end: visit / (bare) sets the cookie, then /api/* just works —
+        the exact 'reopen the address after closing the browser' path."""
+        with TestClient(_app(tmp_path, auth_token="s3cret")) as client:
+            assert client.get("/").status_code == 200          # sets cookie in jar
+            assert client.get("/api/status").status_code == 200  # cookie flows
+
+    def test_index_no_cookie_without_auth(self, tmp_path):
+        """No-auth mode serves the page directly and sets no auth cookie."""
+        with TestClient(_app(tmp_path)) as client:
+            r = client.get("/", follow_redirects=False)
+        assert r.status_code == 200
+        assert "bc_gui_token" not in r.headers.get("set-cookie", "")

@@ -338,6 +338,7 @@ svg.stage:active{cursor:grabbing}
       <span class="tb-sep"></span>
       <button class="btn" id="build-btn" onclick="openIngestModal()" title="Build memory only — no MCP registration">⬇ Build memory (no MCP)</button>
       <button class="btn" id="cmd-btn" onclick="openCommandsModal()" title="Every braincell command — what it does and where to run it">★ Commands</button>
+      <button class="btn" id="service-btn" onclick="toggleService()">⚙ Always-on: …</button>
       <button class="btn" onclick="relax()">↻ Re-tidy</button>
       <button class="btn" id="help-btn" onclick="tourStart()" title="Replay the guided tour">? Help</button>
       <button class="btn" id="rail-reopen" style="display:none" onclick="toggleRail()" title="Reopen the live memory feed">⟨ Live feed</button>
@@ -509,32 +510,50 @@ function withTok(url){
   if(!BC_TOKEN)return url;
   return url+(url.includes("?")?"&":"?")+"t="+encodeURIComponent(BC_TOKEN);
 }
-/* A 401 means the per-launch token no longer matches — the tab outlived its
-   server. One clear toast (not one per failed call) beats a silent empty map. */
-let _staleTokenToasted=false;
+/* A 401 means our cookie/token didn't authenticate — usually a tab that
+   outlived its server, or a stale per-instance cookie. Re-mint by loading /
+   ONCE (GET / sets a fresh auth cookie), guarded one-shot per tab session so a
+   genuine failure can't loop and — critically — a 401 NEVER renders as an empty
+   "wiped" map. Only after a reload still 401s do we surface the toast.
+   credentials:"same-origin" ensures the auth cookie rides every call. */
+let _staleTokenToasted=false,_reauthing=false;
 function staleTokenToast(){
   if(_staleTokenToasted)return;
   _staleTokenToasted=true;
-  toast("Session token invalid — this tab is stale; relaunch braincell gui for a fresh one","err");
+  toast("Session token invalid — relaunch braincell gui for a fresh one","err");
 }
+function on401(){
+  /* true = a re-auth reload was kicked off; caller should bail quietly. */
+  if(_reauthing)return true;                       /* reload already underway */
+  if(sessionStorage.getItem("bc_reauth")){         /* already retried → real failure */
+    staleTokenToast();return false;
+  }
+  _reauthing=true;
+  sessionStorage.setItem("bc_reauth","1");
+  location.replace("/");                            /* GET / sets the cookie → reload authenticates */
+  return true;
+}
+function authOk(){sessionStorage.removeItem("bc_reauth");}
 async function apiFetch(url){
   try{
-    const r=await fetch(withTok(url));
+    const r=await fetch(withTok(url),{credentials:"same-origin"});
     if(!r.ok){
-      if(r.status===401)staleTokenToast();
+      if(r.status===401)on401();
       console.error("API",r.status,url);return null;
     }
+    authOk();
     return await r.json();
   }catch(e){console.error("fetch err",url,e);return null;}
 }
 async function apiPost(url,body){
   try{
-    const r=await fetch(withTok(url),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    const r=await fetch(withTok(url),{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
     if(!r.ok){
-      if(r.status===401){staleTokenToast();throw new Error("401: session token invalid — relaunch braincell gui");}
+      if(r.status===401){on401();throw new Error("401: session expired — reloading");}
       let msg=r.statusText;try{const j=await r.json();msg=j.detail||JSON.stringify(j);}catch(_){}
       throw new Error(`${r.status}: ${msg}`);
     }
+    authOk();
     return await r.json();
   }catch(e){throw e;}
 }
@@ -543,12 +562,13 @@ async function apiPost(url,body){
    collapsing it into null — the drawer maps it to an honest empty state. */
 async function apiFetchView(url){
   try{
-    const r=await fetch(withTok(url));
+    const r=await fetch(withTok(url),{credentials:"same-origin"});
     if(r.status===404)return {notBuilt:true};
     if(!r.ok){
-      if(r.status===401)staleTokenToast();
+      if(r.status===401)on401();
       console.error("API",r.status,url);return null;
     }
+    authOk();
     return await r.json();
   }catch(e){console.error("fetch err",url,e);return null;}
 }
@@ -736,6 +756,7 @@ async function loadAll(){
   maybeAutoStartTour(!!(cfg&&cfg.suggest_tour));
   loadSchedules();
   loadHookState();
+  loadServiceState();
   startFeedPoll();   /* live memory feed rail (idempotent — one interval) */
   /* resume the job chip if an ingest is already running (e.g. page reload) */
   if(status.allow_writes){
@@ -1439,6 +1460,64 @@ async function toggleHook(){
   }catch(e){
     await loadHookState();   /* resync from disk rather than trusting the failed action */
     toast("Hook toggle failed: "+e.message);
+  }
+}
+
+/* ── Always-on Map service toggle (opt-in systemd --user) ────────────────────
+   Mirrors the hook toggle: the service unit on disk is ground truth, so always
+   repaint from the /api/service response — never assume the label is in sync.
+   POST-only for every action (incl. "status"), mounted only under --allow-writes
+   → read-only launches DISABLE the button with an explanatory title rather than
+   hide it. On hover the button's `title` explains exactly what it does. */
+let _svcInstalled=null;   /* null = unknown/unavailable, else boolean */
+function paintServiceBtn(){
+  const b=document.getElementById("service-btn");
+  if(!b)return;
+  if(!status.allow_writes){
+    b.textContent="⚙ Always-on";
+    b.disabled=true;
+    b.title="Read-only view — relaunch with braincell start (or --allow-writes) to manage the always-on service.";
+    return;
+  }
+  b.disabled=false;
+  if(_svcInstalled===null){
+    b.textContent="⚙ Always-on: ?";
+    b.title="Could not read the service state (systemd may be unavailable on this host).";
+  }else if(_svcInstalled){
+    b.textContent="⚙ Always-on: ON";
+    b.title="Installed — the Memory Map runs as a background systemd --user service, so it stays up across logout/reboot and 127.0.0.1:8765 works anytime without launching it. Click to remove the service.";
+  }else{
+    b.textContent="⚙ Always-on: OFF";
+    b.title="Off — click to install a systemd --user service so the Memory Map keeps running in the background (survives logout/reboot; auto-restarts on failure). Opt-in and local-only; removable here anytime.";
+  }
+}
+async function loadServiceState(){
+  if(!status.allow_writes){paintServiceBtn();return;}
+  try{
+    const r=await apiPost("/api/service",{action:"status"});
+    _svcInstalled=!!(r&&r.installed);
+  }catch(e){
+    _svcInstalled=null;   /* endpoint absent/errored — show unknown, never crash init */
+  }
+  paintServiceBtn();
+}
+async function toggleService(){
+  if(!status.allow_writes)return;
+  const want=_svcInstalled?"uninstall":"install";
+  try{
+    const r=await apiPost("/api/service",{action:want});
+    _svcInstalled=!!(r&&r.installed);
+    paintServiceBtn();
+    if(want==="install"){
+      toast(r&&r.active
+        ?"Always-on Map service installed and running — it'll survive logout/reboot."
+        :"Service unit written"+(r&&r.detail?": "+r.detail:" — enable it with systemctl --user if needed."));
+    }else{
+      toast("Always-on Map service removed.");
+    }
+  }catch(e){
+    await loadServiceState();   /* resync from disk rather than trusting the failed action */
+    toast("Service toggle failed: "+e.message);
   }
 }
 function syncSchedUi(nd){

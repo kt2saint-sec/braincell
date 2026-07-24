@@ -85,6 +85,12 @@ class HookBody(BaseModel):
     action: Literal["on", "off", "status"]
 
 
+class ServiceBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["install", "uninstall", "status"]
+
+
 # ── Path validation (SI-4: mirror gui_ingest.py:299-303) ───────────────────────
 
 def _resolve_dir(raw: str) -> Path:
@@ -230,6 +236,23 @@ def mount_install_api(app: FastAPI, *, restart_argv: Optional[list[str]] = None)
                 for name, status, path in results
             ]
         }
+
+    @app.post("/api/service")
+    async def api_service(body: ServiceBody) -> dict:  # type: ignore[type-arg]
+        """Install / uninstall / report the opt-in always-on Map service.
+
+        POST-only for every action (mirrors /api/hook) so it stays under the
+        allow_writes guard. Returns the service status dict; systemctl failures
+        (e.g. no systemd) surface in ``detail`` rather than as a 500.
+        """
+        import anyio
+
+        from .install import install_service, service_status, uninstall_service
+        if body.action == "install":
+            return await anyio.to_thread.run_sync(install_service)
+        if body.action == "uninstall":
+            return await anyio.to_thread.run_sync(uninstall_service)
+        return await anyio.to_thread.run_sync(service_status)
 
     @app.post("/api/restart")
     async def api_restart(request: Request, body: RestartBody) -> dict:  # type: ignore[type-arg]
