@@ -1,0 +1,63 @@
+# .gitignore for the PUBLIC braincell-mcp repo (clean-snapshot allowlist model).
+# The public repo carries ONLY: code, images, guides, testing data,
+# README.md, LICENSE, NOTICE, COMMERCIAL-LICENSE.md.
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# ---- Secrets / env (never commit) ----
+.env
+.env.*
+*.pem
+*.key
+secrets.enc.yaml
+
+# ---- SQLite / braincell runtime data ----
+*.db
+*.sqlite
+*.sqlite3
+*-wal
+*-shm
+*.db-wal
+*.db-shm
+*.bak
+*.bak-*
+*.premerge.bak
+
+# ---- Internal/maintainer files that must never land in the public repo ----
+CLAUDE.md
+.claude/
+CHANGELOG.md
+# CONTRIBUTING.md is KEPT (owner ruling 2026-07-23: it carries the CLA)
+# QUICKSTART.md is KEPT (user-facing getting-started guide)
+docs/PACKAGING-linux.md
+BUGS.md
+docs/STAGE_LOG.md
+docs/*-2026-*.md
+docs/isolation-and-federation.md
+docs/embedder-selection-and-benchmarks.md
+docs/claude-md-pruned-*.md
+evals/
+tests/benchmarks/*.md
+
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# ---- Explicit keeps (defensive re-includes against the globs above) ----
+!docs/add-repo-runbook.md
+!docs/images/*.png
