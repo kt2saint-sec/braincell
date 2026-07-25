@@ -130,6 +130,17 @@ def get_gui_token_path() -> Path:
     return _xdg_data_home() / DATA_NAMESPACE / "gui-token"
 
 
+def get_tour_seen_path() -> Path:
+    """``~/.local/share/<namespace>/gui-tour-seen`` — flag file marking that the
+    GUI's guided tour has been completed or skipped once on this machine.
+
+    Server-side on purpose: the native window's webview profile has no
+    persistent localStorage, so a browser-local flag would re-ambush the user
+    on every native launch. Namespace-level (like the token), not per-project —
+    onboarding is a person-level event, not a brain-level one."""
+    return _xdg_data_home() / DATA_NAMESPACE / "gui-tour-seen"
+
+
 def get_global_db_path() -> Path:
     """Return ``~/.local/share/<namespace>/global/braincell.db`` — the shared global brain.
 

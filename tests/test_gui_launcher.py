@@ -88,20 +88,29 @@ class TestGlobalMissingA2:
 class TestInstallLauncherA3:
     def test_writes_icon_and_desktop(self, tmp_path, monkeypatch):
         xdg = tmp_path / "xdg"
+        proj = tmp_path / "proj"
+        proj.mkdir()
         monkeypatch.setenv("XDG_DATA_HOME", str(xdg))
         from braincell.gui import install_launcher
 
-        icon, desktop = install_launcher()
+        icon, desktop = install_launcher(proj)
         assert icon == xdg / "icons" / "braincell.svg"
+        # Filename stays braincell-map.desktop — GNOME favorites pin the
+        # desktop-file id, so a rename would silently unpin the icon.
         assert desktop == xdg / "applications" / "braincell-map.desktop"
         assert icon.exists() and desktop.exists()
         content = desktop.read_text()
-        # Exec must be an ABSOLUTE path to the console script — a bare name fails
-        # when a desktop environment launches the entry without the venv on PATH.
+        # Exec must run the full launcher (`braincell start <project>`), via an
+        # ABSOLUTE console-script path — a bare name fails when a desktop
+        # environment launches the entry without the venv on PATH. It must NOT
+        # be the old braincell-map global-only viewer (empty map on machines
+        # with only per-project brains).
         exec_line = next(ln for ln in content.splitlines() if ln.startswith("Exec="))
         exec_target = exec_line[len("Exec="):]
-        assert exec_target.endswith("braincell-map")
-        assert exec_target.startswith("/"), f"Exec not absolute: {exec_target!r}"
+        assert "braincell-map" not in exec_target
+        assert f'" start "{proj.resolve()}"' in exec_target
+        assert exec_target.startswith('"/'), f"Exec not absolute: {exec_target!r}"
+        assert exec_target.split(" start ")[0].strip('"').endswith("/braincell")
         assert "Icon=braincell" in content
         assert "Name=BrainCell Map" in content
         assert icon.read_text().startswith("<?xml")
@@ -111,13 +120,27 @@ class TestInstallLauncherA3:
         for size in (48, 128, 256, 512):
             assert (hicolor / f"{size}x{size}" / "apps" / "braincell.png").exists(), size
 
+    def test_default_project_path_is_cwd(self, tmp_path, monkeypatch):
+        xdg = tmp_path / "xdg"
+        cwd = tmp_path / "here"
+        cwd.mkdir()
+        monkeypatch.setenv("XDG_DATA_HOME", str(xdg))
+        monkeypatch.chdir(cwd)
+        from braincell.gui import install_launcher
+
+        _, desktop = install_launcher()
+        exec_line = next(
+            ln for ln in desktop.read_text().splitlines() if ln.startswith("Exec=")
+        )
+        assert f'start "{cwd.resolve()}"' in exec_line
+
     def test_idempotent(self, tmp_path, monkeypatch):
         xdg = tmp_path / "xdg"
         monkeypatch.setenv("XDG_DATA_HOME", str(xdg))
         from braincell.gui import install_launcher
 
-        install_launcher()
-        icon, desktop = install_launcher()  # second run must not error
+        install_launcher(tmp_path)
+        icon, desktop = install_launcher(tmp_path)  # second run must not error
         assert list((xdg / "applications").glob("*.desktop")) == [desktop]
 
     def test_main_map_calls_run_gui_with_documented_kwargs(self, monkeypatch):
@@ -245,3 +268,25 @@ class TestGuiTokenA4:
             r = client.get("/", follow_redirects=False)
         assert r.status_code == 200
         assert "bc_gui_token" not in r.headers.get("set-cookie", "")
+
+
+# ── favicon (the one console 404 every page load logged) ─────────────────────
+
+class TestFavicon:
+    def test_served_from_package_assets(self, tmp_path):
+        """GET /favicon.ico serves the packaged braincell.ico — the same
+        braincell/assets tree the desktop launcher installs from (single
+        source of truth); browsers AND the native webview auto-request it."""
+        from importlib.resources import files
+        with TestClient(_app(tmp_path)) as client:
+            r = client.get("/favicon.ico")
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("image/x-icon")
+        expected = files("braincell").joinpath("assets", "braincell.ico").read_bytes()
+        assert r.content == expected
+
+    def test_not_token_gated(self, tmp_path):
+        """Favicon requests carry no token/cookie context worth gating — the
+        guard covers /api/* only, same posture as GET /."""
+        with TestClient(_app(tmp_path, auth_token="s3cret")) as client:
+            assert client.get("/favicon.ico").status_code == 200

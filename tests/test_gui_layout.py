@@ -193,3 +193,13 @@ class TestPass2Commands:
         assert '${wdis()} onclick="cmdMemLog()"' in html, (
             "Load log must be disabled (never hidden) in read-only mode"
         )
+
+
+class TestToolbarTooltips:
+    def test_retidy_button_has_tooltip(self, tmp_path):
+        """Every toolbar action explains itself on hover — Re-tidy was the one
+        button shipping without a title (owner-reported, 2026-07-25)."""
+        html = _page(tmp_path)
+        assert 'onclick="relax()" title="' in html, (
+            "Re-tidy must carry a title= tooltip like its toolbar neighbors"
+        )

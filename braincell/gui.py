@@ -291,6 +291,19 @@ def create_app(
         )
         return resp
 
+    @app.get("/favicon.ico")
+    async def favicon() -> Response:
+        """Serve the packaged icon — kills the one console 404 every page load
+        logged (browser tab AND native webview both auto-request this path).
+        Single source of truth: the same ``braincell/assets`` the desktop
+        launcher installs from."""
+        from importlib.resources import files
+        try:
+            ico = files("braincell").joinpath("assets", "braincell.ico").read_bytes()
+        except FileNotFoundError:  # pragma: no cover — partial install
+            raise HTTPException(404, "icon asset missing")
+        return Response(content=ico, media_type="image/x-icon")
+
     @app.get("/api/status")
     async def api_status(request: Request) -> dict:  # type: ignore[type-arg]
         """Aggregate ingest status + active mode/db path + embedder/MCP health.
@@ -382,13 +395,32 @@ def create_app(
             suggest_tour = status.doc_count == 0 and not others
         except Exception:  # best-effort signal — never break SPA bootstrap
             suggest_tour = False
+        from .config import get_tour_seen_path
         return {
             "seed_project_id": seed_project_id,
             "launch_project_id": seed_project_id,
             "federate_available": seed_project_id is not None,
             "mode": resolve_mode(),
             "suggest_tour": suggest_tour,
+            # Server-persisted first-run signal (POST /api/tour-seen sets it).
+            # localStorage alone cannot carry this: the native window's webview
+            # profile is non-persistent, so a browser-local flag re-ambushes on
+            # every native launch.
+            "tour_seen": get_tour_seen_path().exists(),
         }
+
+    @app.post("/api/tour-seen")
+    async def api_tour_seen() -> dict:  # type: ignore[type-arg]
+        """Mark the guided tour as seen (completed OR skipped) — machine-level.
+
+        Mounted unconditionally like /api/feed: it is a UX flag, not a memory
+        write, and it is token-gated by the /api/* middleware like everything
+        else. Idempotent (touch)."""
+        from .config import get_tour_seen_path
+        path = get_tour_seen_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch(exist_ok=True)
+        return {"ok": True, "tour_seen": True}
 
     @app.get("/api/projects")
     async def api_projects(request: Request) -> list:  # type: ignore[type-arg]
@@ -795,6 +827,7 @@ def run_gui(
     open_browser: bool,
     path: str = ".",
     url_extra_query: Optional[str] = None,
+    native: bool = False,
 ) -> None:
     """Resolve db_path from mode/path, build the app, and serve on 127.0.0.1.
 
@@ -811,11 +844,25 @@ def run_gui(
                       (e.g. ``"tour=1"`` — `braincell start`'s first-run
                       handoff). Never part of restart_argv, so a GUI restart
                       does not re-trigger it.
+        native:       Front the SAME server with a PySide6/QtWebEngine window
+                      instead of a browser tab (requires the ``native`` extra).
+                      Falls back to the browser path — with a warning, never an
+                      abort — when PySide6 or a display is unavailable.
     """
     # Lazy imports: only needed when actually launching.
     import sys
 
     from .config import get_db_path, get_global_db_path, get_project_id
+
+    if native:
+        from . import native_shell
+        if not native_shell.native_available():
+            log.warning(
+                "--native requested but PySide6/QtWebEngine (or a display) is "
+                "unavailable — falling back to the browser. "
+                "Install with: pip install 'braincell-mcp[native]'"
+            )
+            native = False
 
     m = resolve_mode(mode)
     if m == "global":
@@ -844,15 +891,27 @@ def run_gui(
     if url_extra_query:
         open_url += ("&" if "?" in open_url else "/?") + url_extra_query
 
-    # Argv for POST /api/restart's self re-exec. Always --no-browser (the user's
-    # tab is already open and the persisted token file keeps it valid across the
-    # exec — no env stamp needed).
-    restart_argv = [
-        sys.executable, "-m", "braincell.cli", "gui", str(Path(path).resolve()),
-        "--mode", m, "--port", str(port), "--no-browser",
-    ]
-    if allow_writes:
-        restart_argv.append("--allow-writes")
+    # Argv for POST /api/restart's self re-exec. Browser path: always
+    # --no-browser (the user's tab is already open and the persisted token file
+    # keeps it valid across the exec — no env stamp needed). Native path: the
+    # exec replaces the WHOLE process, window included, so the re-exec must
+    # relaunch `start --native` to bring a fresh window up (only cmd_start —
+    # which is always writable — passes native=True, so `start` re-granting
+    # writes is not an escalation).
+    if native:
+        restart_argv = [
+            sys.executable, "-m", "braincell.cli", "start",
+            str(Path(path).resolve()), "--port", str(port), "--native",
+        ]
+        if m == "global":
+            restart_argv.append("--global")
+    else:
+        restart_argv = [
+            sys.executable, "-m", "braincell.cli", "gui", str(Path(path).resolve()),
+            "--mode", m, "--port", str(port), "--no-browser",
+        ]
+        if allow_writes:
+            restart_argv.append("--allow-writes")
 
     app = create_app(
         db_path=db_path,
@@ -864,15 +923,21 @@ def run_gui(
         # instances stay isolated; a stale cross-instance cookie just 401s and
         # GET / re-mints the right one.
         cookie_name=f"bc_gui_{port}",
-        open_browser_url=(open_url if open_browser else None),
+        # Native mode: the Qt window IS the UI — never also pop a browser tab.
+        open_browser_url=(open_url if open_browser and not native else None),
         seed_project_id=project_id,
         restart_argv=restart_argv,
     )
 
     log.info(
-        "BrainCell GUI starting at %s  allow_writes=%s  auth=%s  db=%s",
-        url, allow_writes, bool(auth_token), db_path,
+        "BrainCell GUI starting at %s  allow_writes=%s  auth=%s  db=%s  native=%s",
+        url, allow_writes, bool(auth_token), db_path, native,
     )
+
+    if native:
+        from . import native_shell
+        native_shell.serve_native(app, port=port, url=open_url)
+        return
 
     import uvicorn  # lazy: not a hard dep for tests
     uvicorn.run(app, host="127.0.0.1", port=port)
@@ -893,12 +958,12 @@ StartupNotify=true
 """
 
 
-def _resolve_map_exec() -> str:
-    """Absolute path to the ``braincell-map`` console script for the .desktop Exec.
+def _resolve_cli_exec() -> str:
+    """Absolute path to the ``braincell`` console script for the .desktop Exec.
 
     A desktop environment launches ``.desktop`` entries with the *login/session*
     PATH, which almost never includes a project virtualenv's ``bin`` dir. A bare
-    ``Exec=braincell-map`` therefore fails silently (icon does nothing) whenever
+    ``Exec=braincell …`` therefore fails silently (icon does nothing) whenever
     braincell is installed in a venv. Resolve an absolute path so the launcher
     works regardless of the session PATH; fall back to the bare name only if the
     script cannot be located.
@@ -906,13 +971,13 @@ def _resolve_map_exec() -> str:
     import shutil
     import sys
 
-    found = shutil.which("braincell-map")
+    found = shutil.which("braincell")
     if found:
         return found
-    sibling = Path(sys.executable).with_name("braincell-map")
+    sibling = Path(sys.executable).with_name("braincell")
     if sibling.exists():
         return str(sibling)
-    return "braincell-map"  # last resort — bare name (relies on session PATH)
+    return "braincell"  # last resort — bare name (relies on session PATH)
 
 
 def _xdg_data_home() -> Path:
@@ -925,8 +990,15 @@ def _xdg_data_home() -> Path:
 _ICON_PNG_SIZES = (48, 128, 256, 512)
 
 
-def install_launcher() -> tuple[Path, Path]:
+def install_launcher(project_path: Optional[Path] = None) -> tuple[Path, Path]:
     """Install the desktop icon + .desktop entry (idempotent). Returns (icon, desktop).
+
+    ``project_path`` is the project folder the icon launches (default: cwd).
+    The Exec line is ``braincell start "<project_path>"`` — the full one-command
+    launcher (single-instance reuse, preflight, per-project GUI). It was
+    ``braincell-map`` (the global-only viewer) before 2026-07-25; that opened an
+    EMPTY map on machines with only per-project brains, which read as "the icon
+    doesn't launch the GUI".
 
     Icons go into the XDG *hicolor* theme tree — the location GNOME/KDE actually
     resolve ``Icon=braincell`` from:
@@ -934,12 +1006,16 @@ def install_launcher() -> tuple[Path, Path]:
       ``$XDG_DATA_HOME/icons/hicolor/<S>x<S>/apps/braincell.png`` (48/128/256/512)
     A legacy loose copy at ``$XDG_DATA_HOME/icons/braincell.svg`` is kept for
     DEs that scan that directory. Writes
-    ``$XDG_DATA_HOME/applications/braincell-map.desktop``, then best-effort runs
+    ``$XDG_DATA_HOME/applications/braincell-map.desktop`` — the FILENAME stays
+    ``braincell-map.desktop`` on purpose: GNOME favorites pin the desktop-file
+    id, so renaming it would silently unpin the icon. Then best-effort runs
     ``update-desktop-database`` + ``gtk-update-icon-cache`` so the entry and
-    icon show up without a re-login.  Safe to re-run: files are overwritten
-    with identical content, no duplicates.
+    icon show up without a re-login.  Safe to re-run: files are overwritten,
+    no duplicates.
     """
     from importlib.resources import files
+
+    root = (project_path or Path.cwd()).resolve()
 
     data_home = _xdg_data_home()
     icons_dir = data_home / "icons"
@@ -970,8 +1046,14 @@ def install_launcher() -> tuple[Path, Path]:
     icon_dst.write_bytes(svg_bytes)
 
     desktop_dst = apps_dir / "braincell-map.desktop"
+    # Quote both parts (Desktop Entry spec quoting) so venv/project paths with
+    # spaces survive the shell-like Exec splitting. --native fronts the GUI
+    # with a PySide6 window when available; cmd_start degrades to the browser
+    # (with a warning) when PySide6 or a display is absent, so the icon works
+    # either way.
+    exec_line = f'"{_resolve_cli_exec()}" start "{root}" --native'
     desktop_dst.write_text(
-        _DESKTOP_ENTRY_TEMPLATE.format(exec=_resolve_map_exec()), encoding="utf-8"
+        _DESKTOP_ENTRY_TEMPLATE.format(exec=exec_line), encoding="utf-8"
     )
 
     # Refresh menu + icon caches — best effort; absent on minimal distros.

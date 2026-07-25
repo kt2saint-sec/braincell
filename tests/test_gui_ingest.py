@@ -369,3 +369,44 @@ class TestTemplateHasIngestUi:
         with TestClient(_app(tmp_path)) as client:
             html = client.get("/").text
         assert 'prompt("New pool name' not in html
+
+
+class TestIngestLogStreaming:
+    def test_log_streams_while_job_still_running(self, tmp_path, monkeypatch):
+        """Child stdout must land in job.log DURING the run, not only at exit.
+
+        The build child is spawned with PYTHONUNBUFFERED=1: with stdout piped
+        (no tty) a Python child block-buffers, so pre-fix the GUI's live build
+        log stayed empty for the entire run and only filled at completion —
+        the owner-reported "I don't see the ingest happening" (2026-07-25).
+        """
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        app = _app(tmp_path)
+        with TestClient(app) as client:
+            mgr = app.state.ingest_manager
+            monkeypatch.setattr(
+                mgr, "command_for",
+                lambda path: [
+                    sys.executable, "-c",
+                    "import time; print('early-line'); time.sleep(30)",
+                ],
+            )
+            client.post("/api/ingest", json={"path": str(proj)})
+            deadline = time.time() + 8.0
+            seen_early = False
+            while time.time() < deadline:
+                job = client.get("/api/ingest/status").json()["job"]
+                if job["state"] != "running":
+                    break
+                if any("early-line" in ln for ln in job["log"]):
+                    seen_early = True
+                    break
+                time.sleep(0.1)
+            assert seen_early, (
+                "child stdout must stream into job.log while the job runs "
+                "(PYTHONUNBUFFERED in the child env) — not arrive only at exit"
+            )
+            if mgr._proc is not None:  # tear down the sleeping child
+                mgr._proc.terminate()
+            _wait_done(client)

@@ -16,6 +16,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
 /* ══ Self-contained. DARK "Doom regalia" theme — silver/platinum chrome,
       gold regal accents, living green cells, distinct pool hues. ══ */
 :root{
+  /* dark UA widgets (scrollbars, form controls) — without this Chromium draws
+     its light-grey default scrollbars over the dark theme */
+  color-scheme:dark;
   --void:#070b09; --bg2:#0a0f0c;
   --panel:rgba(14,20,16,.62); --surface:rgba(18,25,20,.7); --surface2:rgba(12,17,13,.6);
   /* emerald / ivory / silver theme (2026-07-23) — the --gold* token NAMES are
@@ -35,6 +38,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
   --shadow:0 40px 90px -34px rgba(0,0,0,.85),0 10px 30px -14px rgba(0,0,0,.7);
 }
 *{box-sizing:border-box}
+/* themed scrollbars — the standard properties (Chromium 121+/Firefox) plus the
+   ::-webkit-scrollbar set for older Chromium; palette-matched, track invisible */
+*{scrollbar-width:thin;scrollbar-color:var(--steel) transparent}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--steel);border-radius:8px;border:2px solid transparent;background-clip:padding-box}
+::-webkit-scrollbar-thumb:hover{background:var(--silver-d)}
+::-webkit-scrollbar-corner{background:transparent}
 html,body{height:100%}
 body{margin:0;color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.5;
   -webkit-font-smoothing:antialiased;overflow:hidden;
@@ -52,7 +63,10 @@ body{margin:0;color:var(--ink);font-family:var(--sans);font-size:14px;line-heigh
 /* top-level ROW: left column (.main = header/toolbar/map/dock) + full-height feed rail */
 .app{position:relative;z-index:2;height:100vh;display:flex}
 .main{flex:1;min-width:0;display:flex;flex-direction:column;padding:0 16px 14px}
-header{display:flex;align-items:center;gap:16px;padding:22px 4px 14px}
+/* flex-wrap: header controls (search, active chip, scope, chips) must wrap
+   inside .main at narrow widths — unwrapped they overflowed under the feed
+   rail and became unclickable (same defect as the toolbar). */
+header{display:flex;flex-wrap:wrap;align-items:center;gap:16px;padding:22px 4px 14px}
 .mark{display:flex;align-items:center;gap:13px}
 .glyph{width:40px;height:40px;filter:drop-shadow(0 0 10px var(--glow-g))}
 .word{font-family:var(--disp);font-size:26px;font-weight:700;letter-spacing:-.02em;line-height:1;color:var(--silver-h)}
@@ -94,8 +108,18 @@ header{display:flex;align-items:center;gap:16px;padding:22px 4px 14px}
   -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude}
 svg.stage{width:100%;height:100%;display:block;touch-action:none;cursor:grab}
 svg.stage:active{cursor:grabbing}
-.toolbar{position:absolute;top:14px;left:14px;display:flex;gap:8px;z-index:3}
-.legend{position:absolute;left:14px;bottom:14px;z-index:3;color:var(--mut);font-size:11.5px;background:var(--panel);border:1px solid rgba(200,207,216,.14);border-radius:12px;padding:9px 13px;backdrop-filter:blur(10px);max-width:350px;line-height:1.6;box-shadow:inset 0 1px 0 rgba(255,255,255,.05)}
+/* Toolbar is bounded (left AND right) and wraps: absolutely-positioned chrome
+   reserves no flex space, so without a right edge its min-content width jutted
+   past the stage and UNDER the opaque feed rail at narrow viewports — buttons
+   rendered but elementFromPoint hit the rail (dead controls at ≤1366px).
+   pointer-events:none on the container + auto on children keeps the (now
+   full-width) toolbar box from blocking map clicks between buttons. */
+.toolbar{position:absolute;top:14px;left:14px;right:14px;display:flex;flex-wrap:wrap;gap:8px;z-index:3;pointer-events:none}
+.toolbar>*{pointer-events:auto}
+/* pointer-events:none — the legend is informational text with zero handlers;
+   as absolutely-positioned chrome it must never eat clicks meant for the map
+   or the (wrapping) toolbar when a small window brings them into contact. */
+.legend{pointer-events:none;position:absolute;left:14px;bottom:14px;z-index:3;color:var(--mut);font-size:11.5px;background:var(--panel);border:1px solid rgba(200,207,216,.14);border-radius:12px;padding:9px 13px;backdrop-filter:blur(10px);max-width:350px;line-height:1.6;box-shadow:inset 0 1px 0 rgba(255,255,255,.05)}
 .legend b{color:var(--silver-h);font-weight:600}
 .btn{font-family:var(--disp);font-size:12.5px;font-weight:500;color:var(--silver-h);cursor:pointer;transition:.16s;background:rgba(200,207,216,.06);border:1px solid rgba(200,207,216,.24);border-radius:10px;padding:8px 14px;backdrop-filter:blur(8px);box-shadow:inset 0 1px 0 rgba(255,255,255,.08)}
 .btn:hover{background:rgba(200,207,216,.14);border-color:var(--silver);transform:translateY(-1px)}
@@ -136,17 +160,21 @@ svg.stage:active{cursor:grabbing}
 .overlay-inner code{color:var(--gold);font-family:var(--mono);font-size:12px}
 
 /* ── INSPECTOR DOCK — bottom of the left column (was a right slide-in drawer) ── */
-.dock{flex:0 0 300px;margin-top:12px;display:none;min-height:0;border-radius:16px;overflow:hidden;
+/* Height is CONTENT-SIZED up to a cap (was a rigid 300px, ~50px shorter than
+   the panels' natural content — every column grew a permanent scrollbar and
+   read as cut off). Columns wrap instead of forcing a horizontal scrollbar
+   when the main column is narrow (rigid bases used to sum past its width). */
+.dock{flex:0 1 auto;margin-top:12px;display:none;min-height:0;max-height:min(46vh,440px);border-radius:16px;overflow:hidden;
   background:linear-gradient(180deg,rgba(14,20,16,.96),rgba(9,13,10,.94));backdrop-filter:blur(16px);border:1px solid rgba(200,207,216,.16);box-shadow:var(--shadow)}
-.dock.open{display:flex}
+.dock.open{display:flex;flex-wrap:wrap;overflow-y:auto}
 .dock .col{padding:12px 16px;border-right:1px solid rgba(200,207,216,.1);overflow-y:auto;min-width:0}
 .dock .col:last-child{border-right:none}
-.dock .c-head{flex:0 0 230px}
-.dock .c-stats{flex:0 0 280px}  /* Store stats + MCP block; inherits .col overflow-y:auto so nothing clips */
+.dock .c-head{flex:1 0 230px}
+.dock .c-stats{flex:1 0 280px}  /* Store stats + MCP block; inherits .col overflow-y:auto so nothing clips */
 .mcp-status{font-size:11.5px;color:var(--silver);margin-top:2px;line-height:1.45}
 .mcp-note{font-size:10px;color:var(--faint);margin-top:6px;line-height:1.5}
-.dock .c-search{flex:0 0 260px}
-.dock .c-notes{flex:1}
+.dock .c-search{flex:1 0 260px}
+.dock .c-notes{flex:2 1 320px}
 .dock .close{float:right;cursor:pointer;color:var(--faint);font-size:16px;line-height:1}
 .dock .close:hover{color:var(--silver)}
 .dr-name{font-family:var(--disp);font-weight:600;font-size:16px;letter-spacing:-.01em;display:flex;align-items:center;gap:9px;color:var(--silver-h)}
@@ -214,7 +242,11 @@ svg.stage:active{cursor:grabbing}
 
 /* ── LIVE MEMORY FEED — full-height right rail (flex sibling of .main; OUTSIDE
       #stage so the 60fps draw() rebuild never touches it) ── */
-.rail{flex:0 0 640px;min-height:0;display:flex;flex-direction:column;
+/* Responsive width: a rigid 640px ate HALF of a 1280px viewport and forced the
+   main column under it. clamp keeps the full 640px on wide screens (≥~1883px —
+   the owner's 1920 maximized view is unchanged) and scales down to a 300px
+   floor on laptops so the main column always keeps ~2/3 of the width. */
+.rail{flex:0 0 clamp(300px,34vw,640px);min-height:0;display:flex;flex-direction:column;
   background:linear-gradient(180deg,rgba(14,20,16,.92),rgba(9,13,10,.9));backdrop-filter:blur(14px);border-left:1px solid rgba(200,207,216,.14)}
 .rail.collapsed{display:none}
 .rail-hd{display:flex;align-items:center;gap:9px;padding:16px 18px;font-family:var(--disp);font-size:12.5px;font-weight:600;letter-spacing:.08em;color:var(--silver-h);border-bottom:1px solid rgba(200,207,216,.1)}
@@ -248,6 +280,20 @@ svg.stage:active{cursor:grabbing}
   border:1px solid rgba(24,201,138,.5);border-right:none;
   box-shadow:-8px 0 22px -8px var(--glow-g),inset 0 1px 0 rgba(255,255,255,.35)}
 .rail-tab:hover{filter:brightness(1.12)}
+
+/* ── Tutorial dropdown — the discoverable onboarding entry (owner request):
+      one labeled toolbar control, two entries: guided tour + Command List.
+      The tour entry IS the historical help-btn (same id, same tourStart()). ── */
+/* position:FIXED, anchored in JS: an absolute dropdown inside .stage-wrap gets
+   cut by its overflow:hidden at short windows (the clipped area then belongs
+   to the dock — item unclickable). Fixed escapes the clip, like the tour card. */
+.tut-dd{position:fixed;z-index:20;min-width:280px;border-radius:12px;overflow:hidden;
+  background:linear-gradient(180deg,rgba(16,22,18,.98),rgba(9,13,10,.97));border:1px solid rgba(200,207,216,.18);box-shadow:var(--shadow)}
+.td-item{display:block;width:100%;text-align:left;padding:10px 14px;cursor:pointer;border:none;background:transparent;
+  border-bottom:1px solid rgba(200,207,216,.06);color:var(--silver-h);font-family:var(--disp);font-size:12.5px;font-weight:600}
+.td-item:last-child{border-bottom:none}
+.td-item:hover{background:rgba(200,207,216,.08)}
+.td-sub{display:block;font-size:10.5px;color:var(--mut);font-weight:500;margin-top:2px}
 
 /* ── toolbar numbered-group separator (happy path | secondary actions) ── */
 .tb-sep{width:1px;align-self:stretch;margin:2px 3px;background:rgba(200,207,216,.22)}
@@ -339,8 +385,8 @@ svg.stage:active{cursor:grabbing}
       <button class="btn" id="build-btn" onclick="openIngestModal()" title="Build memory only — no MCP registration">⬇ Build memory (no MCP)</button>
       <button class="btn" id="cmd-btn" onclick="openCommandsModal()" title="Every braincell command — what it does and where to run it">★ Commands</button>
       <button class="btn" id="service-btn" onclick="toggleService()">⚙ Always-on: …</button>
-      <button class="btn" onclick="relax()">↻ Re-tidy</button>
-      <button class="btn" id="help-btn" onclick="tourStart()" title="Replay the guided tour">? Help</button>
+      <button class="btn" onclick="relax()" title="Re-settle the map layout — spreads overlapping cells apart">↻ Re-tidy</button>
+      <button class="btn" id="tut-btn" onclick="toggleTutorialMenu()" title="Learn the map — guided tour and command reference">🎓 Tutorial ▾</button>
       <button class="btn" id="rail-reopen" style="display:none" onclick="toggleRail()" title="Reopen the live memory feed">⟨ Live feed</button>
     </div>
     <svg class="stage" id="stage"></svg>
@@ -441,6 +487,15 @@ svg.stage:active{cursor:grabbing}
 <div class="rail-tab" id="rail-tab" style="display:none" onclick="toggleRail()" title="Expand the live memory feed">▸ Live feed</div>
 
 <div class="toastwrap" id="toasts"></div>
+
+<!-- Tutorial dropdown — BODY-level like the tour card and toasts: .stage-wrap's
+     backdrop-filter makes it the containing block (and clip) for any fixed
+     element inside it, and its stacking context can never paint above the
+     dock. Anchored to #tut-btn by toggleTutorialMenu(). -->
+<div class="tut-dd" id="tut-dd" style="display:none">
+  <button class="td-item" id="help-btn" onclick="tourStart()" title="? Help — replay the guided tour">Tutorial<span class="td-sub">the guided tour of the map</span></button>
+  <button class="td-item" id="tut-cmds" onclick="openCommandsModal()" title="Every braincell command — what it does and where to run it">Command List<span class="td-sub">every braincell command, explained</span></button>
+</div>
 
 <div id="modal-root" onclick="if(event.target===this)closeModal()">
   <div class="modal">
@@ -697,6 +752,31 @@ addEventListener("click",e=>{
   const dd=document.getElementById("active-dd");
   if(dd&&dd.style.display!=="none"&&!e.target.closest("#active-wrap"))dd.style.display="none";
 });
+/* ── Tutorial dropdown (mirrors the active-project dropdown pattern) ── */
+function toggleTutorialMenu(){
+  const dd=document.getElementById("tut-dd");
+  if(dd.style.display!=="none"){dd.style.display="none";return;}
+  dd.style.display="";
+  /* fixed-position anchor: below the button, flipped above when the window is
+     too short, clamped to the right edge — never clipped, never off-screen */
+  const b=document.getElementById("tut-btn").getBoundingClientRect();
+  const w=dd.offsetWidth,h=dd.offsetHeight;
+  dd.style.left=Math.max(8,Math.min(b.left,innerWidth-w-8))+"px";
+  dd.style.top=((b.bottom+6+h<=innerHeight-8)?b.bottom+6:Math.max(8,b.top-h-6))+"px";
+}
+addEventListener("click",e=>{
+  const dd=document.getElementById("tut-dd");
+  if(!dd||dd.style.display==="none")return;
+  /* the trigger's own onclick already toggled — closing here would re-open */
+  if(e.target.closest("#tut-btn"))return;
+  dd.style.display="none";   /* outside click AND item clicks (post-onclick) */
+});
+/* fixed-position anchor goes stale when the window resizes — close; the next
+   open recomputes it against the button's new position */
+addEventListener("resize",()=>{
+  const dd=document.getElementById("tut-dd");
+  if(dd&&dd.style.display!=="none")dd.style.display="none";
+});
 function setActiveProject(pid){
   activeProjectId=pid||null;
   const dd=document.getElementById("active-dd");
@@ -753,7 +833,7 @@ async function loadAll(){
   paintOverlayState();
   /* first-run guided tour — checked once per page load, after the model is
      built (the predicate needs nodes + allow_writes + /api/config.suggest_tour) */
-  maybeAutoStartTour(!!(cfg&&cfg.suggest_tour));
+  maybeAutoStartTour(!!(cfg&&cfg.suggest_tour),!!(cfg&&cfg.tour_seen));
   loadSchedules();
   loadHookState();
   loadServiceState();
@@ -1816,6 +1896,12 @@ function cmdProjOptions(){
   return nodes.map(n=>`<option value="${esc(n.id)}" data-path="${esc(n.path)}"${n.id===selected?" selected":""}>${esc(n.name)}</option>`).join("");
 }
 function cmdFamOptions(){
+  /* 0 families used to render a bare empty <select> (owner-reported: a tiny
+     unlabeled box). Render an explanatory disabled placeholder instead; the
+     select itself is also disabled (see openCommandsModal) and cmdPool's
+     guard keeps Run from ever posting a blank family. */
+  if(!families.length)
+    return `<option value="">no families yet — ＋ New family creates one</option>`;
   return families.map(f=>`<option value="${esc(f.name)}">${esc(f.name)}</option>`).join("");
 }
 function cmdSelProj(){const s=document.getElementById("cmd-proj");return s?s.value:"";}
@@ -1890,7 +1976,7 @@ function openCommandsModal(){
        "prune deleted" also removes global rows whose source rows were deleted since the last pool.
        (Each family's <b>◉ Pool now</b> button on the map does the plain single-family run.)</div>
        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:11.5px;color:var(--mut)">
-         <select class="mo-input" id="cmd-pool-fam" style="width:auto;padding:4px 8px">${cmdFamOptions()}</select>
+         <select class="mo-input" id="cmd-pool-fam" style="width:auto;padding:4px 8px"${families.length?"":' disabled title="No families yet — create one with ＋ New family; the all-projects checkbox still works"'}>${cmdFamOptions()}</select>
          <label><input type="checkbox" id="cmd-pool-all"> all projects</label>
          <label><input type="checkbox" id="cmd-pool-prune"> prune deleted</label>
          <button class="btn"${wdis()} onclick="cmdPool()">Run</button>
@@ -2058,7 +2144,11 @@ async function cmdPool(){
       const res=await apiPost("/api/pool",{family:all?null:fam,all_projects:all,prune});
       const pooled=res.pooled||[];
       const totNotes=pooled.reduce((a,p)=>a+(p.notes_copied||0),0);
-      toast(`Pooled ${pooled.length} project(s) → global · ${totNotes} notes copied${prune?` · pruned ${res.pruned!=null?res.pruned:0}`:""}`);
+      /* the endpoint has no top-level "pruned" — the real counts ride each
+         PoolStats row (notes_pruned/docs_pruned); summing res.pruned always
+         showed "pruned 0" no matter what was actually pruned */
+      const pruned=pooled.reduce((a,p)=>a+(p.notes_pruned||0)+(p.docs_pruned||0),0);
+      toast(`Pooled ${pooled.length} project(s) → global · ${totNotes} notes copied${prune?` · pruned ${pruned}`:""}`);
       await loadAll();
     }catch(err){toast(`Pool failed: ${err.message}`,"err");}
   };
@@ -2426,8 +2516,11 @@ function tourEnd(done){
   tourStep=-1;
   document.getElementById("tour").style.display="none";
   if(_tourPoll){clearInterval(_tourPoll);_tourPoll=null;}
-  /* Finish AND Skip both set the flag — never re-ambush next launch */
+  /* Finish AND Skip both set the flag — never re-ambush next launch. The
+     server-side mark is the durable one (native webview localStorage does not
+     persist); fire-and-forget, a failure just means one more auto-offer. */
   try{localStorage.setItem("bcTourDone","1");}catch(_){}
+  try{apiPost("/api/tour-seen",{}).catch(()=>{});}catch(_){}
   /* strip ?tour=1 so a reload of this tab doesn't force a re-run */
   const u=new URL(location.href);
   if(u.searchParams.has("tour")){u.searchParams.delete("tour");history.replaceState(null,"",u.toString());}
@@ -2497,19 +2590,25 @@ function tourReposition(){
   }
   card.style.left=cl+"px";card.style.top=ct+"px";
 }
-function tourShouldAutoStart(suggest){
+function tourShouldAutoStart(suggest,seenServer){
   const p=new URLSearchParams(location.search).get("tour");
   if(p==="0")return false;
   if(p==="1")return true;   /* explicit handoff wins over the done-flag */
   let done=false;
   try{done=!!localStorage.getItem("bcTourDone");}catch(_){}
   if(done)return false;
-  return status.allow_writes&&(suggest||!nodes.length);
+  /* Server-persisted flag (/api/config.tour_seen, set by POST /api/tour-seen
+     when the tour finishes or is skipped). This is the durable suppressor:
+     localStorage alone dies with the native window's non-persistent webview
+     profile, and !nodes.length made onboarding unreachable for anyone with a
+     populated brain. First run on this machine => guide, once. */
+  if(seenServer)return false;
+  return status.allow_writes;
 }
-function maybeAutoStartTour(suggest){
+function maybeAutoStartTour(suggest,seenServer){
   if(_tourChecked)return;   /* later loadAll() calls (post-build) never retrigger */
   _tourChecked=true;
-  if(tourShouldAutoStart(suggest))tourStart();
+  if(tourShouldAutoStart(suggest,seenServer))tourStart();
 }
 addEventListener("resize",()=>{if(tourActive())tourReposition();});
 

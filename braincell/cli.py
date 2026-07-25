@@ -1005,8 +1005,10 @@ def cmd_gui(args: argparse.Namespace) -> None:
     """Launch the BrainCell local web viewer (or install its desktop launcher)."""
     if getattr(args, "install_launcher", False):
         from .gui import install_launcher
-        icon, desktop = install_launcher()
+        root = Path(args.path).resolve()
+        icon, desktop = install_launcher(root)
         print(f"Installed BrainCell Map launcher:\n  icon:    {icon}\n  desktop: {desktop}")
+        print(f"The icon runs `braincell start {root}`.")
         print("Open your app menu and search for “BrainCell Map”.")
         return
     if getattr(args, "rotate_token", False):
@@ -1034,27 +1036,38 @@ def cmd_start(args: argparse.Namespace) -> None:
     print-and-continue, NEVER auto-register), and the first-run tour handoff
     (``tour=1`` via run_gui's url_extra_query).
     """
-    from . import launch
+    from . import launch, native_shell
 
     mode = "global" if args.global_brain else "project"
+    native = getattr(args, "native", False)
+    native_ok = native and native_shell.native_available()
     pre = launch.preflight(Path(args.path), mode=mode, port=args.port)
 
     if pre.action == "reuse":
-        import webbrowser
         print(
             f"BrainCell GUI already running on port {args.port} "
             f"({pre.expected_db}) — opening the existing map."
         )
-        webbrowser.open(pre.reuse_url)
+        if native_ok:
+            # Native reuse: front the RUNNING server with a fresh window —
+            # no second server, exactly like reopening the browser tab.
+            native_shell.open_window(pre.reuse_url)
+        else:
+            import webbrowser
+            webbrowser.open(pre.reuse_url)
         return
     if pre.action == "conflict":
-        print(
-            f"ERROR: port {args.port} already serves a DIFFERENT brain:\n"
+        conflict_msg = (
+            f"Port {args.port} already serves a DIFFERENT brain:\n"
             f"  running: {pre.conflict_db}\n"
             f"  target:  {pre.expected_db or Path(args.path).resolve()}\n"
-            f"Pick another port: braincell start --port <port>",
-            file=sys.stderr,
+            f"Pick another port: braincell start --port <port>"
         )
+        print(f"ERROR: {conflict_msg}", file=sys.stderr)
+        if native_ok:
+            # The desktop icon runs with Terminal=false — without a dialog
+            # this refusal would read as a dead click.
+            native_shell.show_error(conflict_msg)
         raise SystemExit(1)
 
     for line in pre.report_lines:
@@ -1067,6 +1080,7 @@ def cmd_start(args: argparse.Namespace) -> None:
         open_browser=not args.no_browser,
         path=args.path,
         url_extra_query="tour=1" if pre.first_run else None,
+        native=native,
     )
 
 
@@ -1654,6 +1668,15 @@ def main(argv: list[str] | None = None) -> None:
         "--global", dest="global_brain", action="store_true", default=False,
         help="Open the shared global brain instead (mirrors braincell-map).",
     )
+    pstart.add_argument(
+        "--native", action="store_true", default=False,
+        help=(
+            "Open the map in a native window instead of a browser tab "
+            "(requires the optional PySide6 dependency: "
+            "pip install 'braincell-mcp[native]'; falls back to the browser "
+            "when unavailable)."
+        ),
+    )
     pstart.set_defaults(func=cmd_start)
 
     pgui = sub.add_parser("gui", help="Launch the BrainCell local web viewer.")
@@ -1686,7 +1709,11 @@ def main(argv: list[str] | None = None) -> None:
     )
     pgui.add_argument(
         "--install-launcher", action="store_true", default=False,
-        help="Install the desktop icon + .desktop entry (Linux XDG) and exit.",
+        help=(
+            "Install the desktop icon + .desktop entry (Linux XDG) for the "
+            "given project folder (the icon runs `braincell start <path>`) "
+            "and exit."
+        ),
     )
     pgui.add_argument("-v", "--verbose", action="store_true")
     pgui.set_defaults(func=cmd_gui)

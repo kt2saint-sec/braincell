@@ -128,10 +128,16 @@ class IngestManager:
                 cmd += ["--mode", "global"]
             if job.reembed:
                 cmd.append("--reembed")
+            # PYTHONUNBUFFERED: with stdout piped (no tty) the child
+            # block-buffers, so the whole build log used to arrive only at
+            # completion — the GUI's live log/chip sat empty for the entire
+            # run ("I don't see the ingest happening"). Unbuffered, lines
+            # stream into job.log as the build prints them.
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
+                env={**os.environ, "PYTHONUNBUFFERED": "1"},
             )
             self._proc = proc
             assert proc.stdout is not None
