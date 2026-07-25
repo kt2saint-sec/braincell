@@ -1550,6 +1550,8 @@ async function toggleHook(){
    → read-only launches DISABLE the button with an explanatory title rather than
    hide it. On hover the button's `title` explains exactly what it does. */
 let _svcInstalled=null;   /* null = unknown/unavailable, else boolean */
+let _svcFailing=false;    /* true when the unit is failed/crash-looping */
+let _svcFailure="";       /* last actionable journal line (why it failed) */
 function paintServiceBtn(){
   const b=document.getElementById("service-btn");
   if(!b)return;
@@ -1563,6 +1565,11 @@ function paintServiceBtn(){
   if(_svcInstalled===null){
     b.textContent="⚙ Always-on: ?";
     b.title="Could not read the service state (systemd may be unavailable on this host).";
+  }else if(_svcInstalled&&_svcFailing){
+    b.textContent="⚙ Always-on: FAILING";
+    b.title="The always-on service is installed but failing to start."
+      +(_svcFailure?"\n\nLast error: "+_svcFailure:"")
+      +"\n\nFull log: journalctl --user -u braincell-map.service\nClick to remove the service.";
   }else if(_svcInstalled){
     b.textContent="⚙ Always-on: ON";
     b.title="Installed — the Memory Map runs as a background systemd --user service, so it stays up across logout/reboot and 127.0.0.1:8765 works anytime without launching it. Click to remove the service.";
@@ -1576,8 +1583,14 @@ async function loadServiceState(){
   try{
     const r=await apiPost("/api/service",{action:"status"});
     _svcInstalled=!!(r&&r.installed);
+    _svcFailing=!!(r&&r.failing);
+    _svcFailure=(r&&r.failure)||"";
+    if(_svcInstalled&&_svcFailing&&_svcFailure){
+      toast("Always-on Map service is FAILING: "+_svcFailure);
+    }
   }catch(e){
     _svcInstalled=null;   /* endpoint absent/errored — show unknown, never crash init */
+    _svcFailing=false;_svcFailure="";
   }
   paintServiceBtn();
 }

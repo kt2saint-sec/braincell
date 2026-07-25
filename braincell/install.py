@@ -240,7 +240,18 @@ def _service_unit_text(port: int, namespace: str) -> str:
     return (
         "[Unit]\n"
         "Description=BrainCell Memory Map (local, always-on)\n"
-        "After=default.target\n\n"
+        "After=default.target\n"
+        # Rate-limit restarts so a PERMANENT config-level failure (e.g. an
+        # embedder-fingerprint mismatch) lands the unit in `failed` instead of
+        # crash-looping forever. systemd's defaults (10 s interval, burst 5)
+        # can NEVER trip with RestartSec=3 — five 3s-apart restarts span ~25 s,
+        # outside any 10 s window — which is exactly how this unit once burned
+        # ~2 s CPU every 3 s across 800+ restarts. 5 failures inside 2 minutes
+        # → give up (transient one-off crashes still restart fine); recover
+        # with `systemctl --user restart braincell-map` once the cause is
+        # fixed. These directives belong in [Unit] (systemd ≥ 229).
+        "StartLimitIntervalSec=120\n"
+        "StartLimitBurst=5\n\n"
         "[Service]\n"
         "Type=simple\n"
         f"Environment=BRAINCELL_DATA_NAMESPACE={namespace}\n"
@@ -325,14 +336,72 @@ def uninstall_service() -> dict:
 
 
 def service_status() -> dict:
-    """Report the Map service state: unit present? active? enabled?"""
+    """Report the Map service state: unit present? active? enabled? failing?
+
+    ``state``/``substate``/``result``/``restarts`` come from ``systemctl show``
+    so a crash-looping or start-limit-hit unit is VISIBLE (not just
+    ``active: False`` with no explanation). ``failure`` carries the last
+    journal error lines when the unit is failing, so the GUI can tell the user
+    WHY (e.g. an embedder-fingerprint mismatch) instead of dying silently.
+    All best-effort: a faked/absent systemctl degrades to the original shape.
+    """
     unit_path = systemd_user_dir() / _SERVICE_UNIT
-    return {
+    status: dict = {
         "unit_path": str(unit_path),
         "installed": unit_path.exists(),
         "active": _svc_active(),
         "enabled": _svc_enabled(),
     }
+    rc, out = _run_systemctl([
+        "show", _SERVICE_UNIT,
+        "-p", "ActiveState,SubState,Result,NRestarts",
+    ])
+    if rc == 0 and out:
+        props = dict(
+            line.split("=", 1) for line in out.splitlines() if "=" in line
+        )
+        status["state"] = props.get("ActiveState", "")
+        status["substate"] = props.get("SubState", "")
+        status["result"] = props.get("Result", "")
+        try:
+            status["restarts"] = int(props.get("NRestarts", "0"))
+        except ValueError:
+            status["restarts"] = 0
+        status["failing"] = (
+            status["state"] == "failed"
+            or status["substate"] == "auto-restart"
+            or status["result"] not in ("", "success")
+        )
+        if status["failing"]:
+            failure = _service_failure_reason()
+            if failure:
+                status["failure"] = failure
+    return status
+
+
+def _service_failure_reason() -> str:
+    """Best-effort: the most recent actionable error line from the unit's journal.
+
+    Prefers the ``FATAL:`` line the GUI logs for permanent config-level
+    failures (e.g. embedder-fingerprint mismatch — gui.py logs it clean, no
+    traceback); falls back to the journal's last line. Empty string when
+    journalctl is unavailable or has nothing.
+    """
+    journalctl = shutil.which("journalctl")
+    if not journalctl:
+        return ""
+    proc = subprocess.run(
+        [journalctl, "--user", "-u", _SERVICE_UNIT,
+         "-n", "50", "-o", "cat", "--no-pager"],
+        capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        return ""
+    lines = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
+    for line in reversed(lines):
+        if "FATAL:" in line:
+            return line[line.index("FATAL:"):]
+    return lines[-1] if lines else ""
 
 
 # ── Claude Code MCP registration (via the official CLI) ───────────────────────

@@ -129,6 +129,34 @@ def show_error(message: str, *, title: str = WINDOW_TITLE) -> None:
     QMessageBox.critical(None, title, message)
 
 
+def alert(message: str, *, title: str = WINDOW_TITLE) -> bool:
+    """Best-effort VISIBLE error — never raises, never silent by design.
+
+    The desktop icon runs with ``Terminal=false``: anything printed to stderr
+    is invisible, so every launch failure must surface through something the
+    user can see. Order: Qt modal dialog (when PySide6 + a display work) →
+    ``notify-send`` desktop notification (when Qt itself is what's broken).
+    Returns True when something was (probably) shown.
+    """
+    try:
+        if native_available():
+            show_error(message, title=title)
+            return True
+    except Exception:  # noqa: BLE001 — Qt broken ≠ stay silent; fall through
+        log.exception("Qt error dialog failed — falling back to notify-send")
+    try:
+        import subprocess
+
+        subprocess.run(
+            ["notify-send", "--urgency=critical", title, message],
+            check=False, timeout=10,
+        )
+        return True
+    except Exception:  # noqa: BLE001 — last resort exhausted; caller printed to stderr
+        log.exception("notify-send fallback failed")
+        return False
+
+
 def _make_server(app, *, port: int):
     """Build the uvicorn Server (seam — tests substitute a fake here)."""
     import uvicorn
@@ -160,7 +188,10 @@ def serve_native(app, *, port: int, url: str, startup_timeout: float = 20.0) -> 
         if time.monotonic() > deadline:
             server.should_exit = True
             raise RuntimeError(
-                f"GUI server did not start within {startup_timeout:.0f}s"
+                f"GUI server did not start within {startup_timeout:.0f}s — "
+                "the brain database may be locked by a running build/ingest, "
+                "or a schema migration is waiting on it. Let the build finish "
+                "(or stop it) and click again."
             )
         time.sleep(0.05)
     try:

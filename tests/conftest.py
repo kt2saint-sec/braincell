@@ -12,12 +12,30 @@ Isolation guarantees:
   embed_spec.DIM dimensions and call upsert_chunk / store.recall directly.
 """
 
+import os
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 # ── Isolate XDG before any braincell import resolves paths ───────────────────
+
+# Freeze-at-import guard (root cause of the TestApiPool order flake):
+# braincell/config.py snapshots BRAINCELL_DATA_NAMESPACE into the module
+# constant DATA_NAMESPACE at IMPORT time, and several test modules import
+# braincell at module scope — so pytest COLLECTION (which runs before any
+# fixture) freezes the constant from the raw shell env ("braincell").
+# The per-test fixture below then sets the env to "braincell_test", and helpers
+# that read the env at call time (e.g. test_gui._init_global_db) diverge from
+# config.get_global_db_path(), which uses the frozen constant. Whether a run
+# passed depended on whether test_global.py's importlib.reload(config) happened
+# to run first and repair the constant as a side effect.
+# conftest.py is imported before any test module is collected, so setting the
+# env HERE guarantees every collection-time import freezes the test namespace.
+# (embed_spec.py freezes BRAINCELL_EMBED_PROVIDER the same way — mirrored too.)
+os.environ["BRAINCELL_DATA_NAMESPACE"] = "braincell_test"
+os.environ["BRAINCELL_EMBED_PROVIDER"] = "ollama"
+
 
 @pytest.fixture(autouse=True)
 def isolate_xdg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

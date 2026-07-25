@@ -269,7 +269,9 @@ class MemoryNote(BaseModel):
     # judged rather than assumed. 'direct' = matched the query; 'resolved' = the
     # current answer, reached by following a superseded note that matched
     # (`resolved_from` / `history` say what it replaced); 'linked' = an "also-see"
-    # note pulled in over the note graph from `linked_from`.
+    # note pulled in over the note graph from `linked_from`; 'chunk' = a ranked
+    # transcript EXCERPT (kind='excerpt', NEGATIVE id — never a real note id)
+    # backfilled when curated notes are sparse. Corpus text, not curated memory.
     retrieval_origin: str = "direct"
     resolved_from: Optional[int] = None
     history: list[dict] = []
@@ -470,6 +472,112 @@ async def search(
     ]
 
 
+# ── Chunk fallback (cold-start recall degradation) ───────────────────────────
+
+def _chunk_fallback_enabled() -> bool:
+    """True unless BRAINCELL_RECALL_CHUNK_FALLBACK is 0/false/off (default ON).
+
+    The fallback is the cold-start fix: a freshly built brain has thousands of
+    searchable chunks and ~zero curated notes, so recall (and the proactive
+    family-recall hook, which is `recall --scope family`) delivered nothing on
+    day one. Backfilling recall with provenance-marked transcript excerpts makes
+    a fresh brain useful immediately; excerpts fade out as curated notes accrue.
+    """
+    val = os.environ.get("BRAINCELL_RECALL_CHUNK_FALLBACK", "").strip().lower()
+    return val not in ("0", "false", "off")
+
+
+def _chunk_fallback_min_cosine() -> float:
+    """Cosine floor for fallback excerpts (BRAINCELL_RECALL_FALLBACK_COS).
+
+    Vector-ranked chunks below this floor are dropped so the hook never injects
+    off-topic transcript text. FTS-matched chunks (keyword hit on the user's own
+    prompt words) are kept regardless — lexical match is its own relevance
+    signal. Default 0.50 was measured on a real qwen3-embedding:4b@1024 brain
+    (263-doc corpus): on-topic queries scored 0.60-0.70; off-topic queries
+    ("sourdough bread starter hydration", "olympic swimming world records")
+    topped out at 0.21-0.34 (nearest neighbors only, no true match in corpus).
+    """
+    try:
+        return float(os.environ.get("BRAINCELL_RECALL_FALLBACK_COS", "0.50") or 0.50)
+    except ValueError:
+        return 0.50
+
+
+def _looks_like_ulid(s: str) -> bool:
+    return len(s) == 26 and s.isalnum()
+
+
+def _hit_to_excerpt_note(h: Hit) -> Note:
+    """Adapt a chunk-search Hit to a provenance-marked pseudo-note.
+
+    Honest-provenance contract (do not blur):
+      - ``retrieval_origin='chunk'`` — machine-retrieved transcript excerpt,
+        never a curated note a user wrote via `remember`.
+      - ``kind='excerpt'`` — deliberately NOT a valid `remember` kind, so an
+        excerpt can never be mistaken for (or written back as) curated memory.
+      - ``id=-chunk_id`` — negative, so it can never address a real note:
+        `forget`/`supersede` on it are safe no-ops (note ids are positive).
+    """
+    pid = h.doc_key.split(":", 1)[0] if ":" in h.doc_key else ""
+    return Note(
+        id=-h.chunk_id,
+        project_id=pid if _looks_like_ulid(pid) else "",
+        scope="project",
+        kind="excerpt",
+        content=h.snippet,
+        tags=[],
+        confidence=None,
+        source_hint=h.source_path or h.doc_key,
+        superseded_by=None,
+        created_at="",
+        retrieval_origin="chunk",
+    )
+
+
+async def _chunk_fallback(
+    store: SqliteStore,
+    notes: list[Note],
+    query: str,
+    qvec,
+    k: int,
+    plan,
+    proj_filter,
+) -> list[Note]:
+    """Backfill a sparse note recall with ranked transcript-chunk excerpts.
+
+    Curated notes always rank first and are returned unchanged; excerpts only
+    fill the remaining slots up to ``k``. Any failure returns the notes as-is —
+    the fallback must never break recall (mirrors the hook's fail-quiet rule).
+    """
+    try:
+        deficit = k - len(notes)
+        rank = "hybrid" if qvec is not None else "keyword"
+        from .federate import federated_search
+        if plan is not None:
+            hits = await federated_search(store, plan, qvec, query, k, rank)
+        else:
+            hits = await store.search(qvec, query, proj_filter, k, rank)
+        floor = _chunk_fallback_min_cosine()
+        # Seeded with curated-note text so an excerpt never repeats a note; grows
+        # as excerpts are kept so identical chunk text (e.g. a duplicated
+        # transcript snippet across two chunks) is only ever surfaced once.
+        seen_texts = {n.content for n in notes}
+        kept: list[Note] = []
+        for h in hits:
+            relevant = (h.cosine is not None and h.cosine >= floor) or h.fts_matched
+            if not relevant or h.snippet in seen_texts:
+                continue
+            seen_texts.add(h.snippet)
+            kept.append(_hit_to_excerpt_note(h))
+            if len(kept) == deficit:
+                break
+        return notes + kept
+    except Exception as exc:
+        log.warning("recall chunk fallback failed (non-fatal): %s", exc)
+        return notes
+
+
 # ── Recall core (shared by the MCP `recall` tool + the CLI `braincell recall`) ─
 
 async def recall_notes(
@@ -517,17 +625,32 @@ async def recall_notes(
     # Returns None (→ normal single-store path) unless federation applies.
     from .federate import build_federation_plan, federated_recall
     plan = build_federation_plan(project, scope, projects)
+    proj_filter = None
     if plan is not None:
-        return await federated_recall(
+        notes = await federated_recall(
             store, plan, qvec, k,
             qtext=query, min_cosine=min_cosine, dedup=dedup,
             include_superseded=include_superseded,
         )
-    proj_filter = _resolve_filter(projects, project, scope)
-    return await store.recall(
-        qvec, proj_filter, k, qtext=query, min_cosine=min_cosine, dedup=dedup,
-        include_superseded=include_superseded,
-    )
+    else:
+        proj_filter = _resolve_filter(projects, project, scope)
+        notes = await store.recall(
+            qvec, proj_filter, k, qtext=query, min_cosine=min_cosine, dedup=dedup,
+            include_superseded=include_superseded,
+        )
+    # Cold-start graceful degradation: when fewer than k curated notes came back
+    # and there is a query to rank against, fill the remainder with transcript
+    # excerpts from chunk search, provenance-marked (retrieval_origin='chunk',
+    # kind='excerpt', negative ids). Gated off for history/audit views
+    # (include_superseded) and for empty queries (recency listing stays notes-only).
+    if (
+        _chunk_fallback_enabled()
+        and not include_superseded
+        and query and query.strip()
+        and len(notes) < k
+    ):
+        notes = await _chunk_fallback(store, notes, query, qvec, k, plan, proj_filter)
+    return notes
 
 
 # ── Tool: recall ─────────────────────────────────────────────────────────────
@@ -588,7 +711,13 @@ async def recall(
         List of memory notes ranked by relevance (recency- and confidence-weighted
         in the hybrid path), with kind/content/confidence/superseded_by and the
         retrieval provenance fields. At most k results; may be fewer after
-        min_cosine, dedup, or supersession resolution.
+        min_cosine, dedup, or supersession resolution. When fewer than k curated
+        notes match a non-empty query, remaining slots are backfilled with ranked
+        transcript excerpts (retrieval_origin='chunk', kind='excerpt', negative
+        id) so a freshly built brain is useful before notes accumulate — these
+        are machine-retrieved corpus text, not curated notes; never pass their
+        negative ids to forget/supersede. Disable via
+        BRAINCELL_RECALL_CHUNK_FALLBACK=off.
     """
     notes = await recall_notes(
         _store(ctx), query, project=project, k=k, min_cosine=min_cosine,

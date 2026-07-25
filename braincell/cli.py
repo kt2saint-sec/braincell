@@ -36,7 +36,7 @@ from .config import (
 from .embed import embed_texts, prewarm_embed_model
 from .mode import resolve_mode
 from .project_registry import register_path
-from .store import SqliteStore
+from .store import EmbedderMismatchError, SqliteStore
 from .transcript_ingest import _LEDGER_FILENAME, ingest_transcripts
 
 
@@ -143,7 +143,23 @@ def _run_build(
     db_path = get_global_db_path() if m == "global" else get_db_path(project_id)
 
     store = SqliteStore(db_path)
-    store.assert_schema_version()
+    try:
+        store.assert_schema_version()
+    except EmbedderMismatchError as exc:
+        if not reembed:
+            raise
+        print(
+            f"  --reembed: switching embedding space "
+            f"{exc.built_with!r} -> {exc.configured!r} "
+            f"(wiping all documents/chunks, clearing note embeddings)."
+        )
+        stats = store.reset_embedding_space()
+        print(
+            f"  --reembed: reset {stats['docs_wiped']} documents, "
+            f"cleared {stats['note_embeddings_cleared']} note embeddings, "
+            f"restamped fingerprint."
+        )
+        store.assert_schema_version()  # must pass now — restamped
 
     if reembed:
         _reembed_wipe(project_id, store)
@@ -1064,24 +1080,33 @@ def cmd_start(args: argparse.Namespace) -> None:
             f"Pick another port: braincell start --port <port>"
         )
         print(f"ERROR: {conflict_msg}", file=sys.stderr)
-        if native_ok:
-            # The desktop icon runs with Terminal=false — without a dialog
-            # this refusal would read as a dead click.
-            native_shell.show_error(conflict_msg)
+        if native:
+            # The desktop icon runs with Terminal=false — without something
+            # visible this refusal would read as a dead click. alert() shows a
+            # Qt dialog when Qt works and degrades to notify-send when Qt is
+            # what's broken.
+            native_shell.alert(conflict_msg)
         raise SystemExit(1)
 
     for line in pre.report_lines:
         print(line)
     from .gui import run_gui
-    run_gui(
-        mode=mode,
-        port=args.port,
-        allow_writes=True,
-        open_browser=not args.no_browser,
-        path=args.path,
-        url_extra_query="tour=1" if pre.first_run else None,
-        native=native,
-    )
+    try:
+        run_gui(
+            mode=mode,
+            port=args.port,
+            allow_writes=True,
+            open_browser=not args.no_browser,
+            path=args.path,
+            url_extra_query="tour=1" if pre.first_run else None,
+            native=native,
+        )
+    except Exception as exc:  # noqa: BLE001 — Terminal=false: NEVER die silently
+        msg = f"BrainCell failed to start: {exc}"
+        print(f"ERROR: {msg}", file=sys.stderr)
+        if native:
+            native_shell.alert(msg)
+        raise SystemExit(1) from exc
 
 
 def main_map(argv: list[str] | None = None) -> None:

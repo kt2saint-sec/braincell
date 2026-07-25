@@ -39,7 +39,7 @@ from .project_registry import (
     normalize_path,
     remove_family,
 )
-from .store import SqliteStore
+from .store import EmbedderMismatchError, SqliteStore
 
 log = _get_log("braincell.gui")
 
@@ -126,7 +126,15 @@ def create_app(
         import asyncio
 
         store = SqliteStore(db_path)
-        store.assert_schema_version()
+        try:
+            store.assert_schema_version()
+        except EmbedderMismatchError as exc:
+            # Permanent config-level failure: one clean, actionable line
+            # (journal/terminal) BEFORE starlette's traceback noise. The
+            # "FATAL:" marker is what install._service_failure_reason greps
+            # for so the GUI's Always-on status can show WHY the unit failed.
+            log.error("FATAL: %s", exc)
+            raise
         log.info("BrainCell GUI store opened: %s", db_path)
         app.state.store = store
         # Scheduled ingestion runs only while the GUI server is up (local tool).
@@ -143,6 +151,12 @@ def create_app(
         finally:
             if sched_task is not None:
                 sched_task.cancel()
+            # A dying GUI must not leave a build subprocess running (it holds
+            # the SQLite write lock). Graceful path here; hard parent death is
+            # covered by the child's PR_SET_PDEATHSIG (gui_ingest).
+            ingest = getattr(app.state, "ingest_manager", None)
+            if ingest is not None:
+                await ingest.shutdown()
             await store.aclose()
             log.info("BrainCell GUI store closed")
 

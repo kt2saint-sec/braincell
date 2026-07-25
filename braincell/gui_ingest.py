@@ -68,6 +68,40 @@ class ScheduleBody(BaseModel):
 
 # ── Ingest job manager ─────────────────────────────────────────────────────────
 
+_SHUTDOWN_GRACE_S = 5.0   # SIGTERM → this long → SIGKILL on GUI shutdown
+
+
+def _pdeathsig_preexec(parent_pid: int):
+    """Return a preexec_fn tying the build child's life to the GUI's (Linux).
+
+    Runs in the forked child before exec: PR_SET_PDEATHSIG makes the kernel
+    deliver SIGKILL to the child the moment the GUI process dies — including
+    HARD deaths (SIGKILL, crash, "Event loop is closed") where no cleanup code
+    runs at all. That hard-death case is what actually orphaned builds: a
+    GUI-spawned `braincell build` survived its dead parent for 24+ minutes,
+    held the SQLite write lock, and peaked at 4.9 GB RSS. SIGKILL (not TERM)
+    because nothing escorts the child after a hard parent death and the store
+    is WAL/crash-safe; the getppid check closes the fork-vs-parent-death race
+    (pdeathsig only arms AFTER prctl — a parent that died in between means the
+    child is already reparented, so it must exit itself). Returns None off
+    Linux (prctl is Linux-only; preexec must never break spawning).
+    """
+    if sys.platform != "linux":
+        return None
+
+    def _preexec() -> None:  # pragma: no cover — runs in the forked child
+        try:
+            import ctypes
+            import signal as _signal
+            libc = ctypes.CDLL(None, use_errno=True)
+            libc.prctl(1, _signal.SIGKILL, 0, 0, 0)  # 1 = PR_SET_PDEATHSIG
+            if os.getppid() != parent_pid:
+                os._exit(112)  # parent died before prctl armed
+        except Exception:  # noqa: BLE001 — never abort the spawn from preexec
+            pass
+
+    return _preexec
+
 @dataclass
 class IngestJob:
     path: str
@@ -138,6 +172,9 @@ class IngestManager:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 env={**os.environ, "PYTHONUNBUFFERED": "1"},
+                # Tie the child to the GUI's lifetime: a dead GUI (even
+                # SIGKILL'd) must never leave a build running forever.
+                preexec_fn=_pdeathsig_preexec(os.getpid()),
             )
             self._proc = proc
             assert proc.stdout is not None
@@ -160,6 +197,42 @@ class IngestManager:
         """Await the in-flight job (test/scheduler helper)."""
         if self._task is not None:
             await self._task
+
+    async def shutdown(self) -> None:
+        """Terminate any in-flight build; called from the GUI lifespan finally.
+
+        Product decision: closing the GUI CANCELS a running build rather than
+        letting it finish headless — the GUI is the only place the build is
+        observable, an invisible orphan holds the SQLite write lock (the exact
+        failure that made the taskbar icon look dead), and builds are
+        incremental (ledger + content-hash skip), so a cancelled build resumes
+        where it left off on the next run. Grace: SIGTERM, then SIGKILL after
+        _SHUTDOWN_GRACE_S. The store stays sane either way (WAL — an
+        interrupted transaction rolls back). This covers GRACEFUL shutdown;
+        hard parent death is covered by _pdeathsig_preexec.
+        """
+        proc = self._proc
+        if proc is not None and proc.returncode is None:
+            if self.job is not None and self.job.state == "running":
+                self.job.log.append(
+                    "build cancelled: GUI shutting down (rerun to resume)"
+                )
+            try:
+                proc.terminate()
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(proc.wait(), _SHUTDOWN_GRACE_S)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+        if self._task is not None and not self._task.done():
+            # _run finishes promptly once the child is dead (EOF + wait);
+            # bound it anyway so shutdown can never hang the lifespan.
+            try:
+                await asyncio.wait_for(self._task, _SHUTDOWN_GRACE_S)
+            except asyncio.TimeoutError:
+                self._task.cancel()
 
 
 # ── Schedules (persisted JSON + asyncio driver) ────────────────────────────────

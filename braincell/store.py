@@ -126,6 +126,41 @@ _VEC_P95_TRIGGER_MS: float = _env_float("BRAINCELL_VEC_P95_TRIGGER_MS", 50.0)
 
 # ── Errors ────────────────────────────────────────────────────────────────────
 
+class EmbedderMismatchError(RuntimeError):
+    """Raised when a store's embed fingerprint differs from the configured one.
+
+    This is a PERMANENT config-level failure (restarting cannot fix it) — the
+    brain on disk was embedded under one model and the process is configured
+    with another. Carries structured fields so surfaces (journal, CLI, GUI
+    service status) can render one clean actionable line instead of a
+    traceback. Subclasses RuntimeError so existing ``except RuntimeError`` /
+    ``pytest.raises(RuntimeError)`` handlers keep working unchanged.
+    """
+
+    #: Stable machine-readable discriminator.
+    error = "embedder_mismatch"
+
+    def __init__(self, db_path: Path, built_with: str, configured: str):
+        self.db_path = Path(db_path)
+        self.built_with = built_with
+        self.configured = configured
+        # The global brain lives at <namespace>/global/braincell.db — its
+        # rebuild needs --mode global; a per-project brain does not.
+        self.rebuild_cmd = (
+            "braincell build --mode global --reembed"
+            if self.db_path.parent.name == "global"
+            else "braincell build --reembed"
+        )
+        super().__init__(
+            f"BrainCell embedding-space mismatch in {db_path}: "
+            f"store was built with {built_with!r} but the configured embedder "
+            f"is {configured!r}. Mixing vector spaces corrupts search. "
+            f"Restore the original embedder env "
+            f"(BRAINCELL_EMBED_PROVIDER/BRAINCELL_EMBED_MODEL/BRAINCELL_EMBED_DIM), "
+            f"or rebuild with `{self.rebuild_cmd}` to re-embed under the new model."
+        )
+
+
 class SupersedeConflict(ValueError):
     """Raised when a supersede loses a race against a concurrent writer.
 
@@ -829,14 +864,24 @@ class SqliteStore:
         try:
             con.execute("PRAGMA busy_timeout=30000")
             con.execute("PRAGMA journal_mode=WAL")
-            # Probe FTS5 availability.
+            # Probe FTS5 availability against a throwaway in-memory db: FTS5 is
+            # a property of the sqlite LIBRARY, not of this file. Probing in the
+            # store itself was a REAL write on EVERY open, which serialized
+            # behind any concurrent writer's lock (busy_timeout 30 s) — so a
+            # running `braincell build` made GUI startup hang past serve_native's
+            # 20 s budget and the desktop icon (Terminal=false) dead-clicked.
+            # On an already-current db every remaining statement below is a
+            # no-op `IF NOT EXISTS` / read, so opening never needs the write
+            # lock and stays instant while a build is writing.
+            probe = sqlite3.connect(":memory:")
             try:
-                con.execute("CREATE VIRTUAL TABLE IF NOT EXISTS _bc_fts5_probe USING fts5(x)")
-                con.execute("DROP TABLE IF EXISTS _bc_fts5_probe")
+                probe.execute("CREATE VIRTUAL TABLE _bc_fts5_probe USING fts5(x)")
                 self._fts5_ok = True
             except sqlite3.OperationalError:
                 self._fts5_ok = False
                 log.warning("FTS5 not available in this sqlite3 build — falling back to LIKE scan")
+            finally:
+                probe.close()
             # Run init DDL (all idempotent CREATE IF NOT EXISTS).
             for stmt in BRAINCELL_INIT_STMTS:
                 if "fts5" in stmt.lower() and not self._fts5_ok:
@@ -965,12 +1010,8 @@ class SqliteStore:
                 )
                 con.commit()
             elif frow[0] != embed_spec.FINGERPRINT:
-                raise RuntimeError(
-                    f"BrainCell embedding-space mismatch in {self._db_path}: "
-                    f"store was built with {frow[0]!r} but the configured embedder "
-                    f"is {embed_spec.FINGERPRINT!r}. Mixing vector spaces corrupts "
-                    f"search. Restore the original embedder env, or rebuild with "
-                    f"`braincell build --reembed` to re-embed under the new model."
+                raise EmbedderMismatchError(
+                    self._db_path, frow[0], embed_spec.FINGERPRINT
                 )
         finally:
             con.close()
@@ -1010,6 +1051,60 @@ class SqliteStore:
                     pass
             cf.commit()
             return n
+        finally:
+            cf.close()
+
+    def reset_embedding_space(self) -> dict:
+        """Reset the embedding space fingerprint and clear all vectors (sync sqlite3).
+
+        The ONE sanctioned escape from EmbedderMismatchError. When a fingerprint
+        mismatch prevents opening the store, this wipes ALL documents/chunks
+        (fingerprint switch invalidates every vector in the DB across all projects)
+        and clears note embeddings (old-space vectors must not survive into the
+        new space — NULL is honest; FTS keyword recall still works and
+        `braincell reembed-notes` backfills). Then restamps the fingerprint so
+        `assert_schema_version()` passes on next call.
+
+        Only `build --reembed` may call this; mixing vector spaces corrupts search.
+
+        Returns {"docs_wiped": int, "note_embeddings_cleared": int,
+                 "fingerprint": str}.
+        """
+        cf = sqlite3.connect(str(self._db_path))
+        try:
+            cf.execute("PRAGMA busy_timeout=30000")
+            # Count docs before wiping
+            docs_count = cf.execute("SELECT COUNT(*) FROM bc_documents").fetchone()[0]
+            # Count notes with embeddings before clearing
+            notes_count = cf.execute(
+                "SELECT COUNT(*) FROM memory_notes WHERE embedding IS NOT NULL"
+            ).fetchone()[0]
+            # Delete all chunks (fingerprint switch invalidates every vector)
+            cf.execute("DELETE FROM bc_chunks")
+            # Delete all documents
+            cf.execute("DELETE FROM bc_documents")
+            # Rebuild the external-content FTS index to drop now-stale rows.
+            if self._fts5_ok:
+                try:
+                    cf.execute(
+                        "INSERT INTO bc_chunks_fts(bc_chunks_fts) VALUES('rebuild')"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+            # Clear note embeddings (old-space vectors must not survive)
+            cf.execute("UPDATE memory_notes SET embedding = NULL")
+            # Restamp the fingerprint
+            cf.execute("DELETE FROM embed_fingerprint")
+            cf.execute(
+                "INSERT INTO embed_fingerprint(fingerprint) VALUES (?)",
+                (embed_spec.FINGERPRINT,),
+            )
+            cf.commit()
+            return {
+                "docs_wiped": docs_count,
+                "note_embeddings_cleared": notes_count,
+                "fingerprint": embed_spec.FINGERPRINT,
+            }
         finally:
             cf.close()
 

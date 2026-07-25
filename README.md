@@ -17,24 +17,53 @@ to sibling project brains live and read-only (`BRAINCELL_FEDERATE=on`), and stor
 one SQLite file per project brain by default — with a separate opt-in global brain, and families
 that are just a named grouping of project IDs, not a brain of their own.
 
-## What's new in v0.2
+## What's new in v0.3.0
 
 ![braincell onboarding — the first-run guided tour, step by step](docs/images/onboarding.gif)
 
-v0.2 makes braincell far easier to get into, and sharper once you're in.
+v0.3.0 turns the Memory Map into a real desktop app and hardens the paths that used to bite.
 
-**New onboarding**
+**A native desktop window**
+- **`braincell start --native`** — the Memory Map in its own PySide6/QtWebEngine window instead
+  of a browser tab. Same server, same app; closing the window shuts the server down — no orphaned
+  background process. Optional extra: `pip install 'braincell-mcp[native]'`; without it (or
+  without a display) `--native` falls back to the browser, never aborts.
+- **The desktop icon launches the real GUI** — it now opens the per-project Memory Map
+  (previously the global-only viewer, which showed an empty map), and reuses an already-running
+  map instead of dead-clicking on a port conflict.
+
+**Stability fixes**
+- **Fresh brains recall on day one** — when curated notes are still sparse, `recall` backfills
+  with ranked transcript excerpts, clearly provenance-marked (`kind='excerpt'`, negative ids) so
+  they can never be mistaken for, or written back as, curated memory.
+- **Switching embedders no longer wedges the store** — `braincell build --reembed` now recovers
+  from an embedding-fingerprint mismatch (wipe + restamp) instead of crash-looping the always-on
+  map service against an error only `--reembed` could fix.
+- **Builds die with the GUI** — closing the GUI can no longer orphan a background build child,
+  and the build log streams live instead of appearing only at completion.
+- **Fully responsive chrome** — toolbar, header, feed rail, and inspector reflow at any window
+  size; no more controls hidden under overlapping panels. Dark scrollbars to match.
+
+**Redo the tutorial anytime**
+- **🎓 Tutorial ▾** — a labeled toolbar menu with two entries: replay the guided tour, or open
+  the Command List (every braincell command, explained). The first-run tour offers itself once
+  per machine — even across the native window's fresh browser profiles — and never nags after a
+  finish or skip.
+
+<details>
+<summary>Previously in v0.2 — onboarding, live feed, MCP controls</summary>
+
 - **`braincell start`** — one command launches the Memory Map and, on a first run, an 8-step guided tour.
-- **Numbered happy path** — the toolbar walks you through *1 · Add project → 2 · New family → 3 · Family recall*; **? Help** replays the tour anytime.
-- **Embedder preflight** — `start` checks Ollama and the model first and prints the exact fix if it's down, so you never hit a broken build.
-- **Plain `pip install braincell-mcp`** now ships the GUI — no `[gui]` extra needed.
-
-**New features**
-- **Active-project memory** — switch which project's memory the map is viewing, with honest per-project counts; sibling projects open read-only.
-- **Live Memory feed** — a scrollable rail streams new notes and ingested documents as plain text as they land.
-- **MCP status & controls** — Register / Deregister the MCP from the GUI, with an honest "reconnect via `/mcp`" note.
+- **Numbered happy path** — the toolbar walks you through *1 · Add project → 2 · New family → 3 · Family recall*.
+- **Embedder preflight** — `start` checks Ollama and the model first and prints the exact fix if it's down.
+- **Plain `pip install braincell-mcp`** ships the GUI — no `[gui]` extra needed.
+- **Active-project memory** — switch which project's memory the map is viewing, with honest per-project counts.
+- **Live Memory feed** — a scrollable rail streams new notes and ingested documents as they land.
+- **MCP status & controls** — Register / Deregister the MCP from the GUI.
 - **Embedder gate** — building while the embedder is down no longer silently produces NULL-embedded chunks.
-- **Bottom-dock inspector**, **family-colored cells**, and a **durable GUI token** (restarts stop orphaning open tabs).
+- **Bottom-dock inspector**, **family-colored cells**, and a **durable GUI token**.
+
+</details>
 
 ## How it works
 
@@ -272,8 +301,8 @@ chips (`Mode`, `Projects`, `Families`, a writes indicator, an embedder-status ch
 turns red — with a click-for-the-fix modal — when the local embedder is unreachable, and a
 pulsing chip while a background build job is running). Below a small toolbar — the numbered
 happy path `1 · ✚ Add project`, `2 · ＋ New family`, `3 · ◌ Family recall`, then
-`⬇ Build memory (no MCP)`, `★ Commands`, `↻ Re-tidy`, and `? Help`, which replays the
-guided tour — is the map itself, inside a rounded,
+`⬇ Build memory (no MCP)`, `★ Commands`, `↻ Re-tidy`, and `🎓 Tutorial ▾`, whose menu
+replays the guided tour or opens the Command List — is the map itself, inside a rounded,
 softly bordered stage: each registered project renders as a glowing emerald-green cell, families
 render as membranes in their own hue, and the global brain — once built — renders as a
 brighter central organism with a luminous silver core ringed in emerald. Drag a cell into a membrane
@@ -283,7 +312,7 @@ a new family saves the moment you drop the first cell into it. A legend in the c
 interactions.
 
 - `braincell start` opens the map writable with a first-run guided tour (replay it anytime
-  from **? Help**); `braincell gui` is read-only by default — pass `--allow-writes` to
+  from **🎓 Tutorial ▾**); `braincell gui` is read-only by default — pass `--allow-writes` to
   enable edits (forget notes, manage families, pool, build).
 - **✚ Add project** wizard (writable mode) walks pick → build → register MCP → family in one
   guided flow: pick a folder (a native OS folder dialog is offered when available — zenity on
