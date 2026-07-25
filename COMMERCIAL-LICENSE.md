@@ -30,7 +30,7 @@ author and copyright holder, is the only party able to grant this commercial lic
 For commercial licensing enquiries, email **Karl Toussaint** at
 **kt2saint.create@gmail.com**, or open a thread in the project's GitHub Discussions:
 
-**https://github.com/kt2saint-sec/braincell-mcp/discussions**
+**https://github.com/kt2saint-sec/braincell/discussions**
 
 (The copyright holder will follow up to negotiate scope, support, and pricing.)
 

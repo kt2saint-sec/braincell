@@ -99,11 +99,11 @@ not just this one. If you didn't pass `--federate` at install time and try the s
 `scope='family' requires global mode. …` — that's the opt-in gate working as intended;
 re-run `braincell install --federate` to enable it.
 
-## GUI users: the Add-repo wizard
+## GUI users: the Add project wizard
 
 If you'd rather not type the four commands by hand, `braincell gui --allow-writes` (or
-`braincell-map`) has a **✚ Add repo** button that walks the exact same sequence — pick a
-folder (with a native OS folder picker where available), build, install (with an
+`braincell-map`) has a **✚ Add project** button that walks the exact same sequence — pick a
+folder with the Qt system dialog or embedded folder navigator, build, install (with an
 "Enable cross-project federation" checkbox, checked by default), and optionally add it to
 a family — finishing with a reminder to restart your MCP client.
 

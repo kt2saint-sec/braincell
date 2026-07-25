@@ -119,7 +119,7 @@ class TestPreflight:
         )
         pre = launch.preflight(repo, mode="project", port=8765)
         assert pre.action == "reuse"
-        assert pre.reuse_url == "http://127.0.0.1:8765/?t=tok"
+        assert pre.activation_token == "tok"
         assert pre.expected_db == str(db)
 
     def test_conflict_when_running_db_differs(self, tmp_path, monkeypatch):
@@ -259,10 +259,15 @@ def test_doc_count_reads_real_store(tmp_path):
 # ── cmd_start (thin CLI wiring) ───────────────────────────────────────────────
 
 class TestCmdStart:
-    def _args(self, path, **kw):
-        defaults = dict(
-            path=str(path), port=8765, no_browser=True, global_brain=False
+    @pytest.fixture(autouse=True)
+    def _native_available(self, monkeypatch):
+        monkeypatch.setattr(
+            "braincell.native_shell.native_available", lambda: True
         )
+        monkeypatch.setattr("braincell.native_shell.alert", lambda *a, **k: True)
+
+    def _args(self, path, **kw):
+        defaults = dict(path=str(path), port=8765, global_brain=False)
         defaults.update(kw)
         return argparse.Namespace(**defaults)
 
@@ -281,8 +286,8 @@ class TestCmdStart:
         cmd_start(self._args(repo))
         assert captured["mode"] == "project"
         assert captured["allow_writes"] is True
-        assert captured["open_browser"] is False
         assert captured["url_extra_query"] == "tour=1"
+        assert captured["restart_command"] == "start"
 
     def test_no_tour_when_not_first_run(self, tmp_path, monkeypatch):
         from braincell.cli import cmd_start
@@ -304,7 +309,7 @@ class TestCmdStart:
         cmd_start(self._args(repo))
         assert captured["url_extra_query"] is None
 
-    def test_reuse_opens_browser_and_skips_run_gui(self, tmp_path, monkeypatch):
+    def test_reuse_activates_window_and_skips_run_gui(self, tmp_path, monkeypatch):
         from braincell.cli import cmd_start
         from braincell.config import get_db_path, get_project_id
         repo = tmp_path / "repo"
@@ -315,14 +320,18 @@ class TestCmdStart:
         monkeypatch.setattr(
             launch, "probe_status", lambda *a, **k: {"db_path": str(db)}
         )
-        opened: list = []
-        monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url))
+        activated: list = []
+        monkeypatch.setattr(
+            launch,
+            "activate_existing",
+            lambda port, token: activated.append((port, token)) or True,
+        )
         ran: list = []
         monkeypatch.setattr(
             "braincell.gui.run_gui", lambda **kw: ran.append(kw)
         )
         cmd_start(self._args(repo))
-        assert opened == ["http://127.0.0.1:8765/?t=tok"]
+        assert activated == [(8765, "tok")]
         assert ran == []
 
     def test_conflict_exits_1_without_run_gui(self, tmp_path, monkeypatch):
@@ -378,30 +387,38 @@ class TestCmdStart:
 
 class TestRunGuiExtraQuery:
     def _run(self, tmp_path, monkeypatch, **kw):
-        import uvicorn
-        from braincell import gui
+        from braincell import gui, native_shell
         captured: dict = {}
         monkeypatch.setattr(
             gui, "create_app", lambda **k: captured.update(k) or object()
         )
-        monkeypatch.setattr(uvicorn, "run", lambda *a, **k: None)
+        monkeypatch.setattr(native_shell, "native_available", lambda: True)
+        monkeypatch.setattr(
+            native_shell,
+            "serve_native",
+            lambda app, **k: captured.update(serve_native=k),
+        )
         monkeypatch.setenv("BRAINCELL_GUI_TOKEN", "tok")
         gui.run_gui(
-            mode="project", port=8123, allow_writes=True, open_browser=True,
-            path=str(tmp_path), **kw,
+            mode="project", port=8123, allow_writes=True, path=str(tmp_path), **kw,
         )
         return captured
 
-    def test_appends_extra_query_to_opened_url(self, tmp_path, monkeypatch):
+    def test_appends_extra_query_to_native_url(self, tmp_path, monkeypatch):
         captured = self._run(tmp_path, monkeypatch, url_extra_query="tour=1")
-        assert captured["open_browser_url"] == "http://127.0.0.1:8123/?t=tok&tour=1"
+        assert (
+            captured["serve_native"]["url"]
+            == "http://127.0.0.1:8123/?t=tok&tour=1"
+        )
         # restart_argv must NOT carry the tour param — a GUI restart must not
         # re-trigger the tour.
         assert not any("tour" in a for a in captured["restart_argv"])
 
     def test_default_has_no_extra_query(self, tmp_path, monkeypatch):
         captured = self._run(tmp_path, monkeypatch)
-        assert captured["open_browser_url"] == "http://127.0.0.1:8123/?t=tok"
+        assert (
+            captured["serve_native"]["url"] == "http://127.0.0.1:8123/?t=tok"
+        )
 
 
 # ── embed.embedder_status (stubbed ollama client) ────────────────────────────

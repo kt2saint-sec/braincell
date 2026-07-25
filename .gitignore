@@ -94,12 +94,17 @@ Desktop.ini
 *.bak-*
 *.bak.*
 *.backup
+*.backup-*
+*.backup.*
 
 # ── Internal working notes — keep LOCAL, never publish ───────────────────────
 # Maintainer-only state (status flags, licensing/provenance strategy, deployment
-# details). Tracked locally on the maintainer's machine but excluded from the
-# remote. See the file itself for why it must not be public-facing.
+# details). Maintained locally on the maintainer's machine and excluded from
+# Git history. See each file for why it must not be public-facing.
 CLAUDE.md
+# Codex project instructions point at the internal CLAUDE.md and carry the same
+# maintainer-only architecture/publishing state.
+/AGENTS.md
 # Internal planning / spec / review / design-mockup artifacts (root-level).
 # These are working notes, not user-facing product docs — keep them local.
 # (braincell-mcp-wrapper.sh is a shipped launcher, NOT matched by these.)
@@ -112,6 +117,7 @@ CLAUDE.md
 /docs/*-plan-*.md
 # CLAUDE.md restructure spillover (internal status + licensing strategy) — keep local.
 /docs/claude-md-pruned-2026-07-21.md
+/docs/claude-md-pruned-2026-07-25.md
 # Path-scoped area conventions (.claude/rules/*.md) + any other agent working state.
 # Same class as CLAUDE.md — internal maintainer notes, not user-facing product docs —
 # so they follow the same "never committed" policy. Git history cannot be retracted.

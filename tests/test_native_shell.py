@@ -1,57 +1,17 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""
-test_native_shell.py — regression tests for the optional PySide6 native shell
-(braincell/native_shell.py + the `braincell start --native` wiring).
-
-Hermetic: NO real Qt, NO real uvicorn server, NO sockets. Qt-touching
-functions (open_window / show_error) and the uvicorn seam (_make_server) are
-monkeypatched; PySide6 need not be installed for this file to pass — the one
-availability test that wants the real import skips when it is absent.
-
-Pinned invariants:
-  - `start --native` reaches run_gui(native=True); the flag is additive
-    (default False, old argparse namespaces keep working via getattr).
-  - run_gui native path: serve_native() replaces uvicorn.run, no browser tab
-    is scheduled, and restart_argv re-execs `start --native` (the exec kills
-    the window, so the relaunch must recreate it).
-  - PySide6 missing => graceful fallback to the browser path, never an abort.
-  - Reuse => front the RUNNING server with a window (no second server).
-    Conflict => a visible error dialog (Terminal=false icons must never
-    dead-click).
-  - serve_native: window opens only after the server binds; window close
-    always shuts the server down (finally).
-"""
+"""Regression tests for the mandatory PySide6 native application shell."""
 
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 
 import pytest
 
 from braincell import launch, native_shell
 
 
-def _stub_embedder(monkeypatch):
-    monkeypatch.setattr(
-        launch, "embedder_status",
-        lambda *a, **k: {
-            "provider": "ollama", "model": "stub", "dim": 4,
-            "reachable": True, "model_present": True, "ok": True, "detail": "",
-        },
-    )
-
-
-def _isolate_client_configs(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("BRAINCELL_CLAUDE_JSON", str(tmp_path / "no-claude.json"))
-    monkeypatch.setenv("BRAINCELL_CODEX_CONFIG", str(tmp_path / "no-codex.toml"))
-
-
 def _start_args(path, **kw):
-    defaults = dict(
-        path=str(path), port=8765, no_browser=True, global_brain=False,
-        native=False,
-    )
+    defaults = dict(path=str(path), port=8765, global_brain=False, native=False)
     defaults.update(kw)
     return argparse.Namespace(**defaults)
 
@@ -96,81 +56,86 @@ class TestNativeAvailable:
 # ── cmd_start wiring ──────────────────────────────────────────────────────────
 
 class TestStartNativeWiring:
-    def test_native_flag_reaches_run_gui(self, tmp_path, monkeypatch):
+    def test_start_always_reaches_native_run_gui(self, tmp_path, monkeypatch):
         from braincell.cli import cmd_start
         repo = tmp_path / "repo"
         repo.mkdir()
-        monkeypatch.setattr("braincell.gui._resolve_gui_token", lambda: "tok")
-        monkeypatch.setattr(launch, "probe_status", lambda *a, **k: None)
-        _stub_embedder(monkeypatch)
-        _isolate_client_configs(monkeypatch, tmp_path)
+        monkeypatch.setattr(native_shell, "native_available", lambda: True)
+        monkeypatch.setattr(
+            launch, "preflight", lambda *a, **k: launch.Preflight(action="launch")
+        )
+        captured: dict = {}
+        monkeypatch.setattr("braincell.gui.run_gui", lambda **kw: captured.update(kw))
+        cmd_start(_start_args(repo))
+        assert captured["restart_command"] == "start"
+        assert "open_browser" not in captured
+        assert "native" not in captured
+
+    def test_hidden_native_flag_is_compatibility_only(self, tmp_path, monkeypatch):
+        from braincell.cli import cmd_start
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        monkeypatch.setattr(native_shell, "native_available", lambda: True)
+        monkeypatch.setattr(
+            launch, "preflight", lambda *a, **k: launch.Preflight(action="launch")
+        )
         captured: dict = {}
         monkeypatch.setattr("braincell.gui.run_gui", lambda **kw: captured.update(kw))
         cmd_start(_start_args(repo, native=True))
-        assert captured["native"] is True
+        assert captured["restart_command"] == "start"
 
-    def test_old_namespace_without_native_still_works(self, tmp_path, monkeypatch):
-        """The flag is additive — a namespace lacking .native means False."""
+    def test_reuse_activates_existing_window(self, tmp_path, monkeypatch):
         from braincell.cli import cmd_start
         repo = tmp_path / "repo"
         repo.mkdir()
-        monkeypatch.setattr("braincell.gui._resolve_gui_token", lambda: "tok")
-        monkeypatch.setattr(launch, "probe_status", lambda *a, **k: None)
-        _stub_embedder(monkeypatch)
-        _isolate_client_configs(monkeypatch, tmp_path)
-        captured: dict = {}
-        monkeypatch.setattr("braincell.gui.run_gui", lambda **kw: captured.update(kw))
-        ns = _start_args(repo)
-        del ns.native
-        cmd_start(ns)
-        assert captured["native"] is False
-
-    def test_reuse_native_opens_window_not_browser(self, tmp_path, monkeypatch):
-        from braincell.cli import cmd_start
-        from braincell.config import get_db_path, get_project_id
-        repo = tmp_path / "repo"
-        repo.mkdir()
-        pid = get_project_id(repo)
-        db = get_db_path(pid)
-        monkeypatch.setattr("braincell.gui._resolve_gui_token", lambda: "tok")
-        monkeypatch.setattr(launch, "probe_status", lambda *a, **k: {"db_path": str(db)})
         monkeypatch.setattr(native_shell, "native_available", lambda: True)
-        windows: list = []
-        monkeypatch.setattr(native_shell, "open_window", lambda url, **k: windows.append(url))
-        opened: list = []
-        monkeypatch.setattr("webbrowser.open", lambda u: opened.append(u))
+        monkeypatch.setattr(
+            launch,
+            "preflight",
+            lambda *a, **k: launch.Preflight(
+                action="reuse", activation_token="tok", expected_db="/brain.db"
+            ),
+        )
+        activated: list = []
+        monkeypatch.setattr(
+            launch,
+            "activate_existing",
+            lambda port, token: activated.append((port, token)) or True,
+        )
         ran: list = []
         monkeypatch.setattr("braincell.gui.run_gui", lambda **kw: ran.append(kw))
-        cmd_start(_start_args(repo, native=True))
-        assert windows == ["http://127.0.0.1:8765/?t=tok"]
-        assert opened == []
+        cmd_start(_start_args(repo))
+        assert activated == [(8765, "tok")]
         assert ran == []
 
-    def test_reuse_falls_back_to_browser_when_unavailable(self, tmp_path, monkeypatch):
+    def test_unavailable_native_is_a_visible_hard_failure(self, tmp_path, monkeypatch):
         from braincell.cli import cmd_start
-        from braincell.config import get_db_path, get_project_id
         repo = tmp_path / "repo"
         repo.mkdir()
-        db = get_db_path(get_project_id(repo))
-        monkeypatch.setattr("braincell.gui._resolve_gui_token", lambda: "tok")
-        monkeypatch.setattr(launch, "probe_status", lambda *a, **k: {"db_path": str(db)})
         monkeypatch.setattr(native_shell, "native_available", lambda: False)
-        opened: list = []
-        monkeypatch.setattr("webbrowser.open", lambda u: opened.append(u))
-        cmd_start(_start_args(repo, native=True))
-        assert opened == ["http://127.0.0.1:8765/?t=tok"]
+        alerts: list = []
+        monkeypatch.setattr(native_shell, "alert", lambda msg: alerts.append(msg))
+        with pytest.raises(SystemExit) as exc:
+            cmd_start(_start_args(repo))
+        assert exc.value.code == 1
+        assert alerts and "graphical desktop" in alerts[0]
 
     def test_conflict_native_shows_dialog_and_exits_1(self, tmp_path, monkeypatch):
         from braincell.cli import cmd_start
         repo = tmp_path / "repo"
         repo.mkdir()
-        monkeypatch.setattr("braincell.gui._resolve_gui_token", lambda: "tok")
-        monkeypatch.setattr(launch, "probe_status", lambda *a, **k: {"db_path": "/other.db"})
         monkeypatch.setattr(native_shell, "native_available", lambda: True)
+        monkeypatch.setattr(
+            launch,
+            "preflight",
+            lambda *a, **k: launch.Preflight(
+                action="conflict", conflict_db="/other.db", expected_db="/target.db"
+            ),
+        )
         dialogs: list = []
-        monkeypatch.setattr(native_shell, "show_error", lambda msg, **k: dialogs.append(msg))
+        monkeypatch.setattr(native_shell, "alert", lambda msg: dialogs.append(msg))
         with pytest.raises(SystemExit) as exc:
-            cmd_start(_start_args(repo, native=True))
+            cmd_start(_start_args(repo))
         assert exc.value.code == 1
         assert len(dialogs) == 1 and "DIFFERENT brain" in dialogs[0]
 
@@ -179,77 +144,84 @@ class TestStartNativeWiring:
 
 class TestRunGuiNative:
     def _run(self, tmp_path, monkeypatch, *, available=True, **kw):
-        import uvicorn
         from braincell import gui
         captured: dict = {}
         served: list = []
-        uv_runs: list = []
         monkeypatch.setattr(
             gui, "create_app", lambda **k: captured.update(k) or object()
         )
-        monkeypatch.setattr(uvicorn, "run", lambda *a, **k: uv_runs.append(k))
         monkeypatch.setattr(native_shell, "native_available", lambda: available)
         monkeypatch.setattr(
             native_shell, "serve_native", lambda app, **k: served.append(k)
         )
         monkeypatch.setenv("BRAINCELL_GUI_TOKEN", "tok")
         gui.run_gui(
-            mode="project", port=8123, allow_writes=True, open_browser=True,
-            path=str(tmp_path), **kw,
+            mode="project", port=8123, allow_writes=True, path=str(tmp_path), **kw,
         )
-        return captured, served, uv_runs
+        return captured, served
 
-    def test_native_serves_via_shell_not_uvicorn(self, tmp_path, monkeypatch):
-        captured, served, uv_runs = self._run(tmp_path, monkeypatch, native=True)
-        assert served == [{"port": 8123, "url": "http://127.0.0.1:8123/?t=tok"}]
-        assert uv_runs == []
-        # The Qt window IS the UI — the lifespan must not also open a browser.
-        assert captured["open_browser_url"] is None
+    def test_serves_via_native_shell(self, tmp_path, monkeypatch):
+        captured, served = self._run(tmp_path, monkeypatch)
+        assert served[0]["port"] == 8123
+        assert served[0]["url"] == "http://127.0.0.1:8123/?t=tok"
+        assert served[0]["bridge"] is captured["native_bridge"]
 
-    def test_native_restart_argv_relaunches_start_native(self, tmp_path, monkeypatch):
-        captured, _, _ = self._run(tmp_path, monkeypatch, native=True)
+    def test_restart_argv_relaunches_start(self, tmp_path, monkeypatch):
+        captured, _ = self._run(
+            tmp_path, monkeypatch, restart_command="start"
+        )
         argv = captured["restart_argv"]
-        assert "start" in argv and "--native" in argv
+        assert "start" in argv and "--native" not in argv
         assert "gui" not in argv
-        # The tour must never ride a restart.
         assert not any("tour" in a for a in argv)
 
-    def test_native_url_keeps_extra_query(self, tmp_path, monkeypatch):
-        """`start --native` first-run: the window URL carries tour=1."""
-        _, served, _ = self._run(
-            tmp_path, monkeypatch, native=True, url_extra_query="tour=1"
+    def test_window_url_keeps_extra_query(self, tmp_path, monkeypatch):
+        _, served = self._run(
+            tmp_path, monkeypatch, url_extra_query="tour=1"
         )
         assert served[0]["url"] == "http://127.0.0.1:8123/?t=tok&tour=1"
 
-    def test_fallback_to_browser_when_unavailable(self, tmp_path, monkeypatch):
-        captured, served, uv_runs = self._run(
-            tmp_path, monkeypatch, native=True, available=False
-        )
-        assert served == []
-        assert len(uv_runs) == 1
-        # Full browser behavior restored, including the browser open and the
-        # plain `gui` restart argv.
-        assert captured["open_browser_url"] == "http://127.0.0.1:8123/?t=tok"
-        assert "gui" in captured["restart_argv"]
+    def test_unavailable_native_never_builds_the_app(self, tmp_path, monkeypatch):
+        from braincell import gui
+        monkeypatch.setattr(native_shell, "native_available", lambda: False)
+        built: list = []
+        monkeypatch.setattr(gui, "create_app", lambda **k: built.append(k))
+        with pytest.raises(RuntimeError, match="graphical desktop"):
+            gui.run_gui(
+                mode="project", port=8123, allow_writes=True, path=str(tmp_path)
+            )
+        assert built == []
 
-    def test_default_stays_browser(self, tmp_path, monkeypatch):
-        captured, served, uv_runs = self._run(tmp_path, monkeypatch)
-        assert served == []
-        assert len(uv_runs) == 1
-        assert captured["open_browser_url"] == "http://127.0.0.1:8123/?t=tok"
+
+class TestNativeBridge:
+    def test_activation_and_picker_cross_thread_callbacks(self, tmp_path):
+        bridge = native_shell.NativeBridge()
+        activated: list = []
+
+        def pick(request):
+            request.finish({"path": str(tmp_path)})
+
+        bridge.attach(activate=lambda: activated.append(True), pick_folder=pick)
+        assert bridge.activate() is True
+        assert activated == [True]
+        assert bridge.pick_folder() == {"path": str(tmp_path)}
+        bridge.detach()
+        assert bridge.activate() is False
 
 
 # ── serve_native orchestration (fake server, fake window) ─────────────────────
 
 class _FakeServer:
-    def __init__(self, *, bind=True):
+    def __init__(self, *, bind=True, linger=False):
         self._bind = bind
+        self._linger = linger
         self.started = False
         self.should_exit = False
 
     def run(self):
         if self._bind:
             self.started = True
+        if self._bind or self._linger:
             # Simulate serving until asked to exit (bounded for safety).
             import time
             for _ in range(2000):
@@ -294,11 +266,25 @@ class TestServeNative:
             native_shell.serve_native(object(), port=1, url="http://u")
         assert windows == []
 
+    def test_startup_timeout_stops_and_joins_server_thread(self, monkeypatch):
+        server = _FakeServer(bind=False, linger=True)
+        monkeypatch.setattr(native_shell, "_make_server", lambda app, port: server)
+        monkeypatch.setattr(
+            native_shell,
+            "open_window",
+            lambda *a, **k: pytest.fail("window must not open before server bind"),
+        )
+        with pytest.raises(RuntimeError, match="did not start"):
+            native_shell.serve_native(
+                object(), port=1, url="http://u", startup_timeout=0.01
+            )
+        assert server.should_exit is True
 
-# ── launcher Exec carries --native ────────────────────────────────────────────
+
+# ── launcher Exec uses the native-by-default command ──────────────────────────
 
 class TestLauncherNativeExec:
-    def test_desktop_exec_ends_with_native(self, tmp_path, monkeypatch):
+    def test_desktop_exec_needs_no_mode_flag(self, tmp_path, monkeypatch):
         xdg = tmp_path / "xdg"
         proj = tmp_path / "proj"
         proj.mkdir()
@@ -309,4 +295,5 @@ class TestLauncherNativeExec:
         exec_line = next(
             ln for ln in desktop.read_text().splitlines() if ln.startswith("Exec=")
         )
-        assert exec_line.endswith(f'start "{proj.resolve()}" --native')
+        assert exec_line.endswith(f'start "{proj.resolve()}"')
+        assert "--native" not in exec_line

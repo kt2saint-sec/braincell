@@ -2,6 +2,10 @@
 
 A local-first persistent-memory MCP server.
 
+**Naming:** the installable Python package and MCP server command are still
+`braincell-mcp`; the public source repository is
+`kt2saint-sec/braincell`.
+
 Runs entirely on your machine over SQLite. No data leaves the box by default. It gives an MCP
 client a per-project (or shared) "brain": ingested documents and transcripts searchable with a
 hybrid of vector similarity and full-text keyword ranking, plus curated memory notes you can
@@ -21,33 +25,37 @@ that are just a named grouping of project IDs, not a brain of their own.
 
 ![braincell onboarding — the first-run guided tour, step by step](docs/images/onboarding.gif)
 
-v0.3.0 turns the Memory Map into a real desktop app and hardens the paths that used to bite.
+v0.3.0 makes the fully interactive Memory Map a native desktop application and hardens the paths
+that used to bite.
 
-**A native desktop window**
-- **`braincell start --native`** — the Memory Map in its own PySide6/QtWebEngine window instead
-  of a browser tab. Same server, same app; closing the window shuts the server down — no orphaned
-  background process. Optional extra: `pip install 'braincell-mcp[native]'`; without it (or
-  without a display) `--native` falls back to the browser, never aborts.
+**The native Memory Map**
+- **`braincell start`, `braincell gui`, and `braincell-map` are native** — each creates or
+  activates the required PySide6/QtWebEngine window. PySide6 ships in the base install; there is
+  no external-viewer or headless-GUI fallback. The localhost FastAPI server and SPA remain
+  private rendering and transport internals.
 - **The desktop icon launches the real GUI** — it now opens the per-project Memory Map
-  (previously the global-only viewer, which showed an empty map), and reuses an already-running
-  map instead of dead-clicking on a port conflict.
+  (previously the global-only viewer, which showed an empty map). Reusing a matching process
+  raises its existing window; a different brain on the same port remains a visible conflict.
+- **Folder selection is native** — the Add project flow uses Qt's system folder dialog, with the
+  embedded folder navigator available in the application.
 
-**Stability fixes**
+**Lifecycle and stability**
+- **The window owns the GUI lifecycle** — closing it, pressing `Ctrl+C`, or delivering
+  `SIGTERM` shuts down the embedded server and any GUI-owned build. The former always-on
+  `braincell-map.service` is retired; `braincell legacy-service status|remove` cleans up residue.
 - **Fresh brains recall on day one** — when curated notes are still sparse, `recall` backfills
   with ranked transcript excerpts, clearly provenance-marked (`kind='excerpt'`, negative ids) so
   they can never be mistaken for, or written back as, curated memory.
 - **Switching embedders no longer wedges the store** — `braincell build --reembed` now recovers
-  from an embedding-fingerprint mismatch (wipe + restamp) instead of crash-looping the always-on
-  map service against an error only `--reembed` could fix.
-- **Builds die with the GUI** — closing the GUI can no longer orphan a background build child,
-  and the build log streams live instead of appearing only at completion.
+  from an embedding-fingerprint mismatch by rebuilding the vector space, and the build log
+  streams live instead of appearing only at completion.
 - **Fully responsive chrome** — toolbar, header, feed rail, and inspector reflow at any window
   size; no more controls hidden under overlapping panels. Dark scrollbars to match.
 
 **Redo the tutorial anytime**
 - **🎓 Tutorial ▾** — a labeled toolbar menu with two entries: replay the guided tour, or open
   the Command List (every braincell command, explained). The first-run tour offers itself once
-  per machine — even across the native window's fresh browser profiles — and never nags after a
+  per machine — even across the native window's fresh renderer profiles — and never nags after a
   finish or skip.
 
 <details>
@@ -107,7 +115,7 @@ note attached as `history`. So asking "should we use Redis?" surfaces the decisi
 it, even when the replacement never mentions Redis; if the whole chain ends in a retraction, you
 get nothing rather than a revived answer. Pass `include_superseded=true` (or `braincell recall
 --include-superseded`) for the historical view — what the project used to believe, ranked on its
-own merits. The Memory Map GUI uses that view: it is a history browser, not an answer engine.
+own merits. The Memory Map GUI uses that view: it is a history viewer, not an answer engine.
 
 **The note-links graph** (`bc_note_links`) is built automatically: writing a note compares its
 vector against a project's recent notes and inserts bidirectional "related" links above a cosine
@@ -188,10 +196,11 @@ This puts three commands on your PATH:
 
 - `braincell` — the CLI (start, build, search-tuning, maintenance, install).
 - `braincell-mcp` — the MCP server (stdio).
-- `braincell-map` — opens the Memory Map in your browser (global brain, writable).
+- `braincell-map` — opens the native Memory Map (global brain, writable).
 
-The Memory Map GUI ships in the base install (no extra needed), and the default embedder is
-a local Ollama model, so no API key is required out of the box.
+The PySide6/QtWebEngine Memory Map ships in the base install and is the required GUI surface;
+there is no external-viewer or headless-GUI mode. The default embedder is a local Ollama
+model, so no API key is required out of the box.
 
 ## Start
 
@@ -206,6 +215,8 @@ straight into a short guided tour on a first run. The tour's **✚ Add project**
 Builds the folder's memory, Registers the MCP server for your client, and optionally joins
 a Family — ending with the reminder to reconnect your client (`/mcp` in Claude Code).
 Run it again anytime: it reuses the already-running map instead of starting a second one.
+Reusing raises the existing native window. Closing that window or stopping the foreground
+command with `Ctrl+C` shuts down its internal localhost server and exits the application.
 
 ![Getting started — where you run the commands, and where your memory actually lives](docs/images/getting-started.png)
 
@@ -293,8 +304,8 @@ the same by passing `federate=true` to its notes/search API — see the federati
 
 ![Memory Map](docs/images/gui-memory-map.png)
 
-`braincell start` (or `braincell gui`, or the one-click `braincell-map`) serves a
-localhost-only interactive map, skinned in a dark emerald, ivory, and silver theme — a
+`braincell start` (or `braincell gui`, or the one-click `braincell-map`) opens a native,
+fully interactive map, skinned in a dark emerald, ivory, and silver theme — a
 near-black canvas with pale ivory text and emerald highlights. The header carries the
 BrainCell wordmark and a "memory map" tag, a "Search all memory…" bar, and a row of status
 chips (`Mode`, `Projects`, `Families`, a writes indicator, an embedder-status chip that
@@ -315,9 +326,8 @@ interactions.
   from **🎓 Tutorial ▾**); `braincell gui` is read-only by default — pass `--allow-writes` to
   enable edits (forget notes, manage families, pool, build).
 - **✚ Add project** wizard (writable mode) walks pick → build → register MCP → family in one
-  guided flow: pick a folder (a native OS folder dialog is offered when available — zenity on
-  Linux; it degrades automatically to the built-in server-side folder browser if zenity isn't
-  installed or there's no display), build it, register the MCP server for a client
+  guided flow: pick a folder with the Qt system dialog or the embedded folder navigator,
+  build it, register the MCP server for a client
   (`POST /api/install`, with "Enable cross-project federation" checked by default), and
   optionally add it to a family — finishing with a reminder to restart your MCP client.
 - **◉ Family recall** (writable mode) arms or disarms the proactive family-recall hook — the
@@ -334,19 +344,25 @@ interactions.
   shows the same status at all times).
 - One family caveat carries over from the CLI: members only fully participate in vector
   recall if built with the same embedder (mismatched siblings degrade to keyword-only).
-- Even a read-only launch requires an access token (carried as `?t=` in the opened URL) so the
-  project/family enumeration endpoints aren't open to any other local process or tab. The token
-  is minted once and persisted (0600) per data namespace, so restarting the GUI keeps
-  already-open tabs working; rotate it with `braincell gui --rotate-token`, or set
+- Even a read-only launch requires an access token so project/family enumeration is not open
+  to other local processes. The embedded renderer receives the token during its initial
+  loopback navigation and keeps it in an HttpOnly cookie. The token is minted once and
+  persisted (0600) per data namespace, so restarting the GUI remains seamless; rotate it with
+  `braincell gui --rotate-token`, or set
   `BRAINCELL_GUI_TOKEN` to use an explicit token instead (never written to disk).
 - `braincell gui --install-launcher` adds a desktop icon and a **BrainCell Map** menu entry (Linux).
   Portable launchers for macOS/Linux/Windows live in `scripts/`.
+- The GUI is lifecycle-bound to its native window and foreground process. Window close,
+  `SIGINT`, and `SIGTERM` all stop the embedded server; it is not installed as an always-on
+  service.
+  For residue from the retired service feature, use
+  `braincell legacy-service status|remove`; cleanup never touches MCP registration or brain data.
 
 ## Testing & quality
 
 ![Testing & quality — passing test suite, ruff-clean, and the opt-in federation latency benchmark](docs/images/testing-metrics.png)
 
-The test suite currently sits at **875 passing tests** (`pytest -q`), and the package source
+The public test suite currently sits at **924 passing tests** (`pytest -q`), and the package source
 (`braincell/`) is ruff-clean. A dedicated benchmark (`scripts/federate_bench.py`, no live embedder
 required — it uses synthetic unit vectors) measures the cost of opt-in federation: with 6 sibling
 brains of 200 notes each, a single-store recall averages **1.90 ms** (p95 2.09 ms), while fanning
@@ -359,7 +375,7 @@ when you opt in with `BRAINCELL_FEDERATE=on`.
 
 | Command | Purpose |
 |---|---|
-| `start` | One-command launcher: embedder preflight, then the writable Memory Map (+ first-run guided tour). Reuses an already-running map on the same port instead of starting a second one. |
+| `start` | One-command native launcher: embedder preflight, then the writable Memory Map (+ first-run guided tour). Raises an already-running matching window instead of starting a second one. |
 | `build` / `sync` | Ingest (or incrementally refresh) documents and transcripts into a brain. |
 | `register` | Mint/confirm the project ULID (no ingest). |
 | `serve` | Run the MCP stdio server. |
@@ -367,7 +383,8 @@ when you opt in with `BRAINCELL_FEDERATE=on`.
 | `search` | Hybrid search over ingested documents and transcripts (same engine as the MCP `search` tool). `--rank hybrid\|semantic\|keyword` picks the ranking strategy; `--mode project\|global` picks the brain. |
 | `install` / `uninstall` | Wire (or remove) braincell's MCP registration for a client (`--client claude\|codex\|vscode`), plus the Claude Code family-recall hook. `--federate` stamps `BRAINCELL_FEDERATE=on` so `scope='family'` fans out across the project's family (off by default). `--skills` also installs the packaged `/braincell-init` and `/braincell-sync` Claude Code skills into `~/.claude/skills` — never overwriting an existing skill of the same name. |
 | `hook` | Arm (`on`) / disarm (`off`) / report (`status`) the proactive family-recall hook. |
-| `gui` | Launch the Memory Map (`--install-launcher` to install the desktop icon). |
+| `gui` | Launch the native Memory Map (`--install-launcher` to install the desktop icon). |
+| `legacy-service` | Inspect or remove a retired `braincell-map.service` unit (`status` / `remove`); never installs or starts one. |
 | `pool` | Merge existing per-project brains into the global brain, without re-embedding. |
 | `family` | Manage project families (`add` / `rm` / `ls`). |
 | `reembed-notes` | Backfill embeddings for older notes. |

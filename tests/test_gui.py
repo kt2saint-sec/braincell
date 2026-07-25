@@ -816,30 +816,12 @@ class TestHostBinding:
         assert "0.0.0.0" not in source, "run_gui must not reference 0.0.0.0"
 
     def test_run_gui_passes_host_kwarg_to_uvicorn(self, tmp_path):
-        """Intercept uvicorn.run via patch and confirm host='127.0.0.1' is passed."""
+        """The native shell's uvicorn server remains localhost-only."""
         _seed_notes(tmp_path, "HOSTTEST0001", ["host test note"])
         from braincell.project_registry import register_path
         register_path(str(tmp_path), "HOSTTEST0001")
 
-        captured: dict = {}
+        from braincell import native_shell
 
-        def _fake_uvicorn_run(app, **kwargs):
-            captured.update(kwargs)
-
-        # Patch uvicorn at the point run_gui imports it (lazy import inside the fn)
-        with patch("uvicorn.run", side_effect=_fake_uvicorn_run):
-            try:
-                import braincell.gui as gui_mod
-                gui_mod.run_gui(
-                    mode="project",
-                    port=19999,
-                    allow_writes=False,
-                    open_browser=False,
-                    path=str(tmp_path),
-                )
-            except Exception:
-                pass  # uvicorn.run was intercepted; any subsequent error is fine
-
-        assert captured.get("host") == "127.0.0.1", (
-            f"uvicorn.run received host={captured.get('host')!r}, expected '127.0.0.1'"
-        )
+        server = native_shell._make_server(object(), port=19999)
+        assert server.config.host == "127.0.0.1"

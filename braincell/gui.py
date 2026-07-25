@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request
@@ -41,32 +41,10 @@ from .project_registry import (
 )
 from .store import EmbedderMismatchError, SqliteStore
 
+if TYPE_CHECKING:
+    from .native_shell import NativeBridge
+
 log = _get_log("braincell.gui")
-
-
-# ── Browser-open helper (A1: schedule after the server is bound) ──────────────
-
-def _schedule_browser_open(url: str, delay: float = 0.2) -> None:
-    """Open *url* in a browser shortly after the caller returns.
-
-    Called from the FastAPI lifespan (after the store is ready) so the opened
-    tab always lands on a live, listening server — fixing the connection-refused
-    race where ``webbrowser.open`` fired before uvicorn had bound the socket.
-
-    When a running event loop is present (the normal serve path) the open is
-    deferred with ``call_later`` so it happens just after the loop starts
-    accepting connections.  With no running loop (defensive) it opens inline.
-    """
-    import asyncio
-    import webbrowser
-
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        webbrowser.open(url)
-        return
-    loop.call_later(delay, webbrowser.open, url)
-
 
 # ── Write-endpoint Pydantic models (module-level for FastAPI schema gen) ──────
 
@@ -95,9 +73,9 @@ def create_app(
     allow_writes: bool = False,
     auth_token: Optional[str] = None,
     cookie_name: str = "bc_gui_token",
-    open_browser_url: Optional[str] = None,
     seed_project_id: Optional[str] = None,
     restart_argv: Optional[list[str]] = None,
+    native_bridge: Optional["NativeBridge"] = None,
 ) -> FastAPI:
     """Build and return a FastAPI application backed by a SqliteStore on db_path.
 
@@ -113,10 +91,6 @@ def create_app(
         auth_token:   When set (A4), all ``/api/*`` requests must present a
                       matching ``t`` query param or ``X-BrainCell-Token`` header
                       or get a 401.  Default None = no auth (behaviour unchanged).
-        open_browser_url: When set (A1), the lifespan schedules a single
-                      ``webbrowser.open`` once the server is bound.  Default None
-                      opens nothing (e.g. ``--no-browser`` / test / TestClient).
-
     Returns:
         A configured FastAPI app ready for use with TestClient or uvicorn.
     """
@@ -129,10 +103,8 @@ def create_app(
         try:
             store.assert_schema_version()
         except EmbedderMismatchError as exc:
-            # Permanent config-level failure: one clean, actionable line
-            # (journal/terminal) BEFORE starlette's traceback noise. The
-            # "FATAL:" marker is what install._service_failure_reason greps
-            # for so the GUI's Always-on status can show WHY the unit failed.
+            # Permanent config-level failure: log one clean, actionable line
+            # before Starlette's traceback noise.
             log.error("FATAL: %s", exc)
             raise
         log.info("BrainCell GUI store opened: %s", db_path)
@@ -142,10 +114,6 @@ def create_app(
         if allow_writes:
             from .gui_ingest import scheduler_loop
             sched_task = asyncio.ensure_future(scheduler_loop(app.state.ingest_manager))
-        # A1: open the browser only now that the app is ready and (imminently)
-        # bound — never before uvicorn is listening.
-        if open_browser_url:
-            _schedule_browser_open(open_browser_url)
         try:
             yield
         finally:
@@ -171,10 +139,10 @@ def create_app(
             if request.url.path.startswith("/api/"):
                 # Accept the token from (in precedence order) an explicit ?t=,
                 # the X-BrainCell-Token header, or the durable auth COOKIE that
-                # GET / sets. The cookie is what lets a reopened bare-address tab
-                # authenticate with no URL state — closing the browser no longer
-                # strands the SPA on 401s (which used to render as an empty
-                # "wiped" map). Explicit ?t=/header still win so env-token curl
+                # GET / sets. The cookie lets a restarted embedded renderer
+                # authenticate with no URL state instead of stranding the SPA on
+                # a 401 (which used to render as an empty "wiped" map).
+                # Explicit ?t=/header still win so env-token curl
                 # scripting and a correct ?t= recovering from a stale cookie both
                 # keep working. Constant-time compare avoids a timing oracle.
                 supplied = (
@@ -273,24 +241,22 @@ def create_app(
 
     @app.get("/")
     async def index(request: Request):  # type: ignore[no-untyped-def]
-        # Durable-cookie auth (the fix for "closed the browser → reopened the
-        # bare 127.0.0.1:<port> → empty 'wiped' map"). GET / hands the browser
-        # the server's own token as an HttpOnly, SameSite=Strict cookie, so every
-        # subsequent /api/* call authenticates automatically with NO token in the
-        # URL — surviving tab close, bookmarks, and the desktop-icon reuse path,
-        # with zero dependency on any agent restarting anything.
+        # Durable-cookie auth survives an embedded-renderer restart. GET / hands
+        # the renderer the server's own token as an HttpOnly, SameSite=Strict
+        # cookie, so subsequent /api/* calls authenticate with no token in the
+        # visible URL.
         #
         # Posture (user-approved): the token still guards /api/*; only the
         # localhost PAGE navigation self-heals. Safe because the server binds
         # 127.0.0.1 only and the token is a same-user 0600 on-disk secret already
         # readable by this user's processes. HttpOnly keeps it out of SPA JS
         # (no XSS exfil); SameSite=Strict blocks cross-site sends; no Secure flag
-        # because browsers drop Secure cookies on plain-http 127.0.0.1.
+        # because Chromium does not send Secure cookies over plain HTTP loopback.
         if not auth_token:
             return HTMLResponse(content=INDEX_HTML)
         # If a ?t= rode in (first launch, an old bookmark, a stale link), strip it
         # to a clean URL — the cookie carries auth now, so the token no longer
-        # needs to live in the address bar (or browser history / screenshots).
+        # needs to live in the visible address or screenshots.
         if request.query_params.get("t") is not None:
             from urllib.parse import urlencode
             params = dict(request.query_params)
@@ -307,10 +273,11 @@ def create_app(
 
     @app.get("/favicon.ico")
     async def favicon() -> Response:
-        """Serve the packaged icon — kills the one console 404 every page load
-        logged (browser tab AND native webview both auto-request this path).
+        """Serve the packaged icon requested by the embedded renderer.
+
         Single source of truth: the same ``braincell/assets`` the desktop
-        launcher installs from."""
+        launcher installs from.
+        """
         from importlib.resources import files
         try:
             ico = files("braincell").joinpath("assets", "braincell.ico").read_bytes()
@@ -380,6 +347,13 @@ def create_app(
             "mcp": mcp,
         }
 
+    @app.post("/api/activate")
+    async def api_activate() -> dict:  # type: ignore[type-arg]
+        """Raise and focus the existing native window."""
+        if native_bridge is None or not native_bridge.activate():
+            raise HTTPException(409, "Native window is not ready.")
+        return {"ok": True}
+
     @app.get("/api/config")
     async def api_config(request: Request) -> dict:  # type: ignore[type-arg]
         """SPA bootstrap config for the scope toggle.
@@ -397,8 +371,8 @@ def create_app(
         ``suggest_tour`` is the server-side first-run signal (same predicate as
         `braincell start`'s ``tour=1`` handoff): an empty launch brain and no
         OTHER registered project — the seed itself is minted at launch, so it
-        never counts against "first run". Lets a manually-opened tab (no
-        ``?tour=1``) still get the SPA's own first-run prompt.
+        never counts against "first run". Lets a direct lower-level GUI launch
+        (no ``?tour=1``) still get the SPA's own first-run prompt.
         """
         suggest_tour = False
         try:
@@ -417,8 +391,8 @@ def create_app(
             "mode": resolve_mode(),
             "suggest_tour": suggest_tour,
             # Server-persisted first-run signal (POST /api/tour-seen sets it).
-            # localStorage alone cannot carry this: the native window's webview
-            # profile is non-persistent, so a browser-local flag re-ambushes on
+            # localStorage alone cannot carry this: the native window's renderer
+            # profile is non-persistent, so a profile-local flag re-ambushes on
             # every native launch.
             "tour_seen": get_tour_seen_path().exists(),
         }
@@ -780,10 +754,15 @@ def create_app(
                 raise HTTPException(409, str(e))
             return {"pooled": [s.__dict__ for s in stats], "skipped": skipped}
 
-        # Ingestion management (folder browse / ingest jobs / clear / schedules).
+        # Ingestion management (folder navigation / build jobs / clear / schedules).
         from .gui_ingest import IngestManager, mount_ingest_api
         app.state.ingest_manager = IngestManager()
-        mount_ingest_api(app, db_path=db_path, manager=app.state.ingest_manager)
+        mount_ingest_api(
+            app,
+            db_path=db_path,
+            manager=app.state.ingest_manager,
+            pick_folder=(native_bridge.pick_folder if native_bridge is not None else None),
+        )
 
         # MCP client install/uninstall + family-recall hook management.
         from .gui_install import mount_install_api
@@ -806,8 +785,8 @@ def _resolve_gui_token() -> str:
     Precedence: explicit ``BRAINCELL_GUI_TOKEN`` env override (ephemeral, NEVER
     written) > persisted per-namespace file > mint + persist (0600, atomic
     tmp-then-replace). Persisting means a GUI restart reuses the same token, so
-    already-open tabs (whose URLs carry ``?t=``) keep working instead of being
-    orphaned into 401. Rotate via ``braincell gui --rotate-token``.
+    the embedded renderer can reauthenticate instead of being stranded on 401.
+    Rotate via ``braincell gui --rotate-token``.
     """
     import os
     import secrets
@@ -838,45 +817,37 @@ def run_gui(
     mode: Optional[str],
     port: int,
     allow_writes: bool,
-    open_browser: bool,
     path: str = ".",
     url_extra_query: Optional[str] = None,
-    native: bool = False,
+    restart_command: str = "gui",
 ) -> None:
-    """Resolve db_path from mode/path, build the app, and serve on 127.0.0.1.
+    """Resolve the brain, build the app, and run the native GUI.
 
-    The host is hardcoded to 127.0.0.1 — the GUI is a local tool and must
-    never be exposed on a public interface.
+    FastAPI remains bound to 127.0.0.1 as the private transport between the
+    QtWebEngine renderer and the application API.
 
     Args:
         mode:         "project" | "global" | None (resolved from env / default).
         port:         TCP port to listen on (e.g. 8765).
         allow_writes: Mount write endpoints (POST /api/forget, /api/family, /api/pool).
-        open_browser: Call webbrowser.open() after starting the server.
         path:         Project root for project-mode db resolution (default cwd).
-        url_extra_query: Extra query string appended to the OPENED url only
+        url_extra_query: Extra query string appended to the window URL only
                       (e.g. ``"tour=1"`` — `braincell start`'s first-run
                       handoff). Never part of restart_argv, so a GUI restart
                       does not re-trigger it.
-        native:       Front the SAME server with a PySide6/QtWebEngine window
-                      instead of a browser tab (requires the ``native`` extra).
-                      Falls back to the browser path — with a warning, never an
-                      abort — when PySide6 or a display is unavailable.
+        restart_command: ``"start"`` for the full interactive launcher or
+                      ``"gui"`` for the lower-level command.
     """
-    # Lazy imports: only needed when actually launching.
     import sys
 
+    from . import native_shell
     from .config import get_db_path, get_global_db_path, get_project_id
 
-    if native:
-        from . import native_shell
-        if not native_shell.native_available():
-            log.warning(
-                "--native requested but PySide6/QtWebEngine (or a display) is "
-                "unavailable — falling back to the browser. "
-                "Install with: pip install 'braincell-mcp[native]'"
-            )
-            native = False
+    if not native_shell.native_available():
+        raise RuntimeError(
+            "PySide6/QtWebEngine cannot open a native window in this session. "
+            "Run BrainCell from a graphical desktop session."
+        )
 
     m = resolve_mode(mode)
     if m == "global":
@@ -886,16 +857,9 @@ def run_gui(
         project_id = get_project_id(Path(path).resolve())
         db_path = get_db_path(project_id)
 
-    # A4 + edge-#1 hardening: use an explicit BRAINCELL_GUI_TOKEN when set;
-    # otherwise resolve the DURABLE per-namespace token (persisted on first
-    # launch, reused thereafter) — read-only launches included. The read
-    # endpoints enumerate every registered project (ULID + absolute path)
-    # from the namespace-wide registry (/api/projects, /api/families), so even the
-    # read-only API is gated to the launched tab rather than open to any local
-    # process/tab. The opened URL carries ?t= for the first hop, but GET / then
-    # sets the token as a durable HttpOnly cookie and strips ?t= (see index()),
-    # so a manually-opened / bookmarked / reopened bare-address tab authenticates
-    # via the cookie with no URL token — the user never copies a token by hand.
+    # Gate the namespace-wide API even though it is localhost-only. The first
+    # QtWebEngine navigation carries the token; GET / stores it as an HttpOnly
+    # same-origin cookie and strips it from the visible URL.
     auth_token = _resolve_gui_token()
 
     url = f"http://127.0.0.1:{port}"
@@ -905,56 +869,42 @@ def run_gui(
     if url_extra_query:
         open_url += ("&" if "?" in open_url else "/?") + url_extra_query
 
-    # Argv for POST /api/restart's self re-exec. Browser path: always
-    # --no-browser (the user's tab is already open and the persisted token file
-    # keeps it valid across the exec — no env stamp needed). Native path: the
-    # exec replaces the WHOLE process, window included, so the re-exec must
-    # relaunch `start --native` to bring a fresh window up (only cmd_start —
-    # which is always writable — passes native=True, so `start` re-granting
-    # writes is not an escalation).
-    if native:
+    # POST /api/restart replaces the complete process, including the Qt window.
+    if restart_command == "start":
         restart_argv = [
             sys.executable, "-m", "braincell.cli", "start",
-            str(Path(path).resolve()), "--port", str(port), "--native",
+            str(Path(path).resolve()), "--port", str(port),
         ]
         if m == "global":
             restart_argv.append("--global")
     else:
         restart_argv = [
             sys.executable, "-m", "braincell.cli", "gui", str(Path(path).resolve()),
-            "--mode", m, "--port", str(port), "--no-browser",
+            "--mode", m, "--port", str(port),
         ]
         if allow_writes:
             restart_argv.append("--allow-writes")
 
+    native_bridge = native_shell.NativeBridge()
     app = create_app(
         db_path=db_path,
         allow_writes=allow_writes,
         auth_token=auth_token,
-        # Cookies are host-scoped, NOT port-scoped: two GUIs on 127.0.0.1 (e.g.
-        # different namespaces on different ports) would otherwise share one
-        # cookie and clobber each other. Key the cookie by port so concurrent
-        # instances stay isolated; a stale cross-instance cookie just 401s and
-        # GET / re-mints the right one.
+        # Cookies are host-scoped, not port-scoped. Key by port so concurrent
+        # native instances do not share credentials.
         cookie_name=f"bc_gui_{port}",
-        # Native mode: the Qt window IS the UI — never also pop a browser tab.
-        open_browser_url=(open_url if open_browser and not native else None),
         seed_project_id=project_id,
         restart_argv=restart_argv,
+        native_bridge=native_bridge,
     )
 
     log.info(
-        "BrainCell GUI starting at %s  allow_writes=%s  auth=%s  db=%s  native=%s",
-        url, allow_writes, bool(auth_token), db_path, native,
+        "BrainCell GUI starting at %s  allow_writes=%s  auth=%s  db=%s",
+        url, allow_writes, bool(auth_token), db_path,
     )
-
-    if native:
-        from . import native_shell
-        native_shell.serve_native(app, port=port, url=open_url)
-        return
-
-    import uvicorn  # lazy: not a hard dep for tests
-    uvicorn.run(app, host="127.0.0.1", port=port)
+    native_shell.serve_native(
+        app, port=port, url=open_url, bridge=native_bridge
+    )
 
 
 # ── Desktop launcher installer (A3, Linux XDG) ────────────────────────────────
@@ -1061,11 +1011,8 @@ def install_launcher(project_path: Optional[Path] = None) -> tuple[Path, Path]:
 
     desktop_dst = apps_dir / "braincell-map.desktop"
     # Quote both parts (Desktop Entry spec quoting) so venv/project paths with
-    # spaces survive the shell-like Exec splitting. --native fronts the GUI
-    # with a PySide6 window when available; cmd_start degrades to the browser
-    # (with a warning) when PySide6 or a display is absent, so the icon works
-    # either way.
-    exec_line = f'"{_resolve_cli_exec()}" start "{root}" --native'
+    # spaces survive Desktop Entry argument splitting.
+    exec_line = f'"{_resolve_cli_exec()}" start "{root}"'
     desktop_dst.write_text(
         _DESKTOP_ENTRY_TEMPLATE.format(exec=exec_line), encoding="utf-8"
     )

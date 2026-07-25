@@ -3,6 +3,9 @@
 Get `braincell-mcp` running in about five minutes. This is the short path; the
 [README](README.md) has the full reference.
 
+The package is named `braincell-mcp`; the public source repository is
+`kt2saint-sec/braincell`.
+
 ## 1. Prerequisites — a local embedder
 
 braincell embeds locally with [Ollama](https://ollama.com) by default, so **no API key is
@@ -39,8 +42,8 @@ braincell start
 ```
 
 One command does the rest. It checks the embedder first — if Ollama is down or the model
-isn't pulled, it prints the exact fix before anything else — then opens the Memory Map in
-your browser. On a first run the map opens straight into a short **guided tour**; follow it
+isn't pulled, it prints the exact fix before anything else — then opens the native Memory
+Map application. On a first run the map opens straight into a short **guided tour**; follow it
 to **1 · ✚ Add project**, one wizard that **Builds** the folder's memory, **Registers the
 MCP** server for your client (Claude Code, Codex, or VS Code), and optionally joins it to a
 **Family** for cross-project recall.
@@ -57,8 +60,13 @@ Two things to expect on a fresh start:
   documents; a folder with no history yet builds a near-empty brain. That's normal —
   memory accrues as you work and `remember` notes land.
 
-Day to day, just run `braincell start` again: it reuses the already-running map instead of
-starting a second one.
+Day to day, just run `braincell start` again: it raises the already-running native window
+instead of starting a second one. Closing the window exits the GUI and releases its localhost port.
+
+The GUI is not a headless service. Its embedded renderer uses a token-protected
+`127.0.0.1` FastAPI server internally, but the supported product surface is the native
+window. Older installs that created `braincell-map.service` can inspect or remove that
+retired unit with `braincell legacy-service status|remove`.
 
 ### Prefer the terminal?
 

@@ -1018,7 +1018,7 @@ def cmd_pool(args: argparse.Namespace) -> None:
 
 
 def cmd_gui(args: argparse.Namespace) -> None:
-    """Launch the BrainCell local web viewer (or install its desktop launcher)."""
+    """Launch the native BrainCell GUI (or install its desktop launcher)."""
     if getattr(args, "install_launcher", False):
         from .gui import install_launcher
         root = Path(args.path).resolve()
@@ -1032,13 +1032,19 @@ def cmd_gui(args: argparse.Namespace) -> None:
         token_path = get_gui_token_path()
         token_path.unlink(missing_ok=True)
         print(f"GUI token rotated: {token_path} removed; a fresh token will be minted.")
+    from .legacy_service import status as legacy_service_status
+    if legacy_service_status()["active"]:
+        raise SystemExit(
+            "The retired braincell-map.service is active. Remove it first with: "
+            "braincell legacy-service remove"
+        )
     from .gui import run_gui
     run_gui(
         mode=getattr(args, "mode", None),
         port=args.port,
         allow_writes=args.allow_writes,
-        open_browser=not args.no_browser,
         path=args.path,
+        restart_command="gui",
     )
 
 
@@ -1046,7 +1052,7 @@ def cmd_start(args: argparse.Namespace) -> None:
     """`braincell start` — the one-command launcher (NAMINGS "Start").
 
     ≡ `braincell gui <path> --allow-writes` plus what `gui` doesn't do: a
-    single-instance probe (reuse the running map instead of dying on "address
+    single-instance probe (activate the running map instead of dying on "address
     already in use"; refuse the port if a DIFFERENT brain owns it), a
     pre-launch report (embedder first, brain state, MCP registration —
     print-and-continue, NEVER auto-register), and the first-run tour handoff
@@ -1055,22 +1061,34 @@ def cmd_start(args: argparse.Namespace) -> None:
     from . import launch, native_shell
 
     mode = "global" if args.global_brain else "project"
-    native = getattr(args, "native", False)
-    native_ok = native and native_shell.native_available()
+    if not native_shell.native_available():
+        msg = (
+            "BrainCell requires a graphical desktop session with "
+            "PySide6/QtWebEngine available."
+        )
+        print(f"ERROR: {msg}", file=sys.stderr)
+        native_shell.alert(msg)
+        raise SystemExit(1)
     pre = launch.preflight(Path(args.path), mode=mode, port=args.port)
 
+    if pre.action == "legacy_service":
+        msg = "\n".join(pre.report_lines)
+        print(f"ERROR: {msg}", file=sys.stderr)
+        native_shell.alert(msg)
+        raise SystemExit(1)
     if pre.action == "reuse":
         print(
             f"BrainCell GUI already running on port {args.port} "
-            f"({pre.expected_db}) — opening the existing map."
+            f"({pre.expected_db}) — activating its window."
         )
-        if native_ok:
-            # Native reuse: front the RUNNING server with a fresh window —
-            # no second server, exactly like reopening the browser tab.
-            native_shell.open_window(pre.reuse_url)
-        else:
-            import webbrowser
-            webbrowser.open(pre.reuse_url)
+        if not (
+            pre.activation_token
+            and launch.activate_existing(args.port, pre.activation_token)
+        ):
+            msg = "The running BrainCell process did not activate its native window."
+            print(f"ERROR: {msg}", file=sys.stderr)
+            native_shell.alert(msg)
+            raise SystemExit(1)
         return
     if pre.action == "conflict":
         conflict_msg = (
@@ -1080,12 +1098,9 @@ def cmd_start(args: argparse.Namespace) -> None:
             f"Pick another port: braincell start --port <port>"
         )
         print(f"ERROR: {conflict_msg}", file=sys.stderr)
-        if native:
-            # The desktop icon runs with Terminal=false — without something
-            # visible this refusal would read as a dead click. alert() shows a
-            # Qt dialog when Qt works and degrades to notify-send when Qt is
-            # what's broken.
-            native_shell.alert(conflict_msg)
+        # The desktop icon runs with Terminal=false, so every refusal also
+        # needs a visible native notification.
+        native_shell.alert(conflict_msg)
         raise SystemExit(1)
 
     for line in pre.report_lines:
@@ -1096,31 +1111,19 @@ def cmd_start(args: argparse.Namespace) -> None:
             mode=mode,
             port=args.port,
             allow_writes=True,
-            open_browser=not args.no_browser,
             path=args.path,
             url_extra_query="tour=1" if pre.first_run else None,
-            native=native,
+            restart_command="start",
         )
     except Exception as exc:  # noqa: BLE001 — Terminal=false: NEVER die silently
         msg = f"BrainCell failed to start: {exc}"
         print(f"ERROR: {msg}", file=sys.stderr)
-        if native:
-            native_shell.alert(msg)
+        native_shell.alert(msg)
         raise SystemExit(1) from exc
 
 
 def main_map(argv: list[str] | None = None) -> None:
-    """Entry point for the ``braincell-map`` console script / desktop icon.
-
-    Opens the Memory-Map in global mode with writes enabled and a browser tab —
-    the one-click experience.  ``--port`` overrides the default port.
-
-    Single-instance probe FIRST (the desktop icon runs with ``Terminal=false``,
-    so a silent uvicorn "address already in use" would just look like a dead
-    click): if a braincell GUI already answers on the port, open the browser to
-    that running map and return instead of trying to bind. Only when nothing is
-    listening do we start a server — whose lifespan opens the browser once bound.
-    """
+    """Compatibility entry point for the native global Memory Map."""
     p = argparse.ArgumentParser(
         prog="braincell-map",
         description="Open the BrainCell Memory-Map (global brain, writable).",
@@ -1128,27 +1131,12 @@ def main_map(argv: list[str] | None = None) -> None:
     p.add_argument("--port", type=int, default=8765, help="TCP port (default: 8765).")
     ns = p.parse_args(argv)
 
-    from .gui import run_gui
-    from .launch import port_serves_gui
-
-    # The map is a namespace-wide viewer, so ANY running braincell GUI on the
-    # port is the map the user wants — reuse it (open its tab) rather than fail
-    # to bind. Open the BARE URL: the running server's GET / redirect fills in
-    # the correct ?t=, so this works even if that server launched with a
-    # different (e.g. ephemeral) token than the one persisted on disk.
-    if port_serves_gui(ns.port):
-        import webbrowser
-        url = f"http://127.0.0.1:{ns.port}/"
-        print(f"BrainCell Map already running on port {ns.port} — opening it.")
-        webbrowser.open(url)
-        return
-
-    run_gui(
-        mode="global",
-        port=ns.port,
-        allow_writes=True,
-        open_browser=True,
-        path=".",
+    cmd_start(
+        argparse.Namespace(
+            path=".",
+            port=ns.port,
+            global_brain=True,
+        )
     )
 
 
@@ -1256,18 +1244,6 @@ def cmd_install(args: argparse.Namespace) -> None:
                     print(f"⚠ skill /{name} EXISTS with different content — left "
                           f"untouched: {path}", file=sys.stderr)
 
-    # Opt-in always-on service (systemd --user) — orthogonal to MCP wiring.
-    if getattr(args, "service", False):
-        from .install import install_service
-        res = install_service()
-        if res["active"]:
-            print(f"✓ always-on Map service installed + started → {res['unit_path']}")
-        else:
-            print(f"• Map service unit written → {res['unit_path']}")
-            if res["detail"]:
-                print(f"  systemctl said: {res['detail']}", file=sys.stderr)
-        print("  Manage: systemctl --user status|stop|disable braincell-map.service")
-
     restart = {"claude": "Claude Code", "codex": "Codex", "vscode": "VS Code"}[args.client]
     print("\nNext steps:")
     print(f"  1. Restart {restart} so it loads the new MCP server.")
@@ -1311,14 +1287,6 @@ def cmd_uninstall(args: argparse.Namespace) -> None:
             _family_hook_flag().unlink(missing_ok=True)
             print("✓ disarmed the hook flag")
 
-    if getattr(args, "service", False):
-        from .install import uninstall_service
-        res = uninstall_service()
-        print(f"✓ removed always-on Map service ({res['unit_path']})" if res["removed"]
-              else "• no always-on Map service unit found")
-        if res["detail"]:
-            print(f"  systemctl said: {res['detail']}", file=sys.stderr)
-
 
 def cmd_hook(args: argparse.Namespace) -> None:
     """Arm / disarm / report the proactive family-recall hook (flag file)."""
@@ -1332,6 +1300,33 @@ def cmd_hook(args: argparse.Namespace) -> None:
         print(f"✓ family-recall hook DISARMED (flag removed: {flag})")
     else:  # status
         print(f"family-recall hook: {'ARMED' if flag.is_file() else 'disarmed'} ({flag})")
+
+
+def cmd_legacy_service(args: argparse.Namespace) -> None:
+    """Inspect or remove the retired always-on GUI unit."""
+    from . import legacy_service
+
+    if args.legacy_service_cmd == "status":
+        result = legacy_service.status()
+        state = (
+            "active" if result["active"]
+            else "enabled" if result["enabled"]
+            else "installed" if result["installed"]
+            else "absent"
+        )
+        print(f"Legacy GUI service: {state}")
+        print(f"  unit: {result['unit_path']}")
+        return
+
+    result = legacy_service.remove()
+    if result["removed"]:
+        print(f"✓ removed retired GUI service: {result['unit_path']}")
+    elif result.get("installed"):
+        print(f"✗ retired GUI service was not removed: {result['unit_path']}")
+    else:
+        print("• no retired GUI service unit found")
+    if result["detail"]:
+        print(f"  systemctl said: {result['detail']}", file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -1571,10 +1566,6 @@ def main(argv: list[str] | None = None) -> None:
                     help="Also install the packaged /braincell-init and /braincell-sync "
                          "Claude Code skills into ~/.claude/skills (never overwrites an "
                          "existing skill of the same name).")
-    pi.add_argument("--service", action="store_true",
-                    help="Also install an opt-in systemd --user service so the Memory Map "
-                         "stays running across logout/reboot (always-on; manage with "
-                         "`systemctl --user … braincell-map.service`).")
     pi.add_argument("--python", default=None,
                     help="Interpreter for the hook command (default: this interpreter).")
     pi.add_argument("--federate", action="store_true",
@@ -1592,14 +1583,23 @@ def main(argv: list[str] | None = None) -> None:
                     help="Claude Code scope to remove from (must match how it was installed).")
     pu.add_argument("--disarm", action="store_true",
                     help="Also remove the hook arm-flag (disarm) while uninstalling (Claude Code).")
-    pu.add_argument("--service", action="store_true",
-                    help="Also remove the always-on systemd --user Map service.")
     pu.set_defaults(func=cmd_uninstall)
 
     ph = sub.add_parser("hook", help="Arm/disarm/status the proactive family-recall hook.")
     ph.add_argument("hook_cmd", choices=["on", "off", "status"],
                     help="on=arm, off=disarm, status=report.")
     ph.set_defaults(func=cmd_hook)
+
+    pls = sub.add_parser(
+        "legacy-service",
+        help="Inspect or remove the retired braincell-map.service unit.",
+    )
+    pls.add_argument(
+        "legacy_service_cmd",
+        choices=["status", "remove"],
+        help="status=inspect legacy residue; remove=disable, stop, and delete it.",
+    )
+    pls.set_defaults(func=cmd_legacy_service)
 
     pst = sub.add_parser(
         "stats",
@@ -1673,8 +1673,8 @@ def main(argv: list[str] | None = None) -> None:
     pstart = sub.add_parser(
         "start",
         help=(
-            "Start the Memory Map for a project folder (writable, opens the "
-            "browser; reuses an already-running map on the same port)."
+            "Start the native Memory Map for a project folder (writable; "
+            "activates an already-running map on the same port)."
         ),
     )
     pstart.add_argument(
@@ -1686,25 +1686,16 @@ def main(argv: list[str] | None = None) -> None:
         help="TCP port to listen on (default: 8765).",
     )
     pstart.add_argument(
-        "--no-browser", action="store_true", default=False,
-        help="Skip opening a browser tab on startup.",
-    )
-    pstart.add_argument(
         "--global", dest="global_brain", action="store_true", default=False,
         help="Open the shared global brain instead (mirrors braincell-map).",
     )
     pstart.add_argument(
         "--native", action="store_true", default=False,
-        help=(
-            "Open the map in a native window instead of a browser tab "
-            "(requires the optional PySide6 dependency: "
-            "pip install 'braincell-mcp[native]'; falls back to the browser "
-            "when unavailable)."
-        ),
+        help=argparse.SUPPRESS,
     )
     pstart.set_defaults(func=cmd_start)
 
-    pgui = sub.add_parser("gui", help="Launch the BrainCell local web viewer.")
+    pgui = sub.add_parser("gui", help="Launch the native BrainCell GUI.")
     pgui.add_argument(
         "path", nargs="?", default=".",
         help="Project path (default: cwd, project mode only).",
@@ -1722,14 +1713,10 @@ def main(argv: list[str] | None = None) -> None:
         help="Enable write endpoints (forget notes, manage families). Default: read-only.",
     )
     pgui.add_argument(
-        "--no-browser", action="store_true", default=False,
-        help="Skip opening a browser tab on startup.",
-    )
-    pgui.add_argument(
         "--rotate-token", action="store_true", default=False,
         help=(
             "Delete the persisted GUI token so a fresh one is minted "
-            "(invalidates existing tab links)."
+            "(invalidates existing renderer sessions)."
         ),
     )
     pgui.add_argument(

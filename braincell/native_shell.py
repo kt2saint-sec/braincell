@@ -1,19 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (c) 2026 Karl Toussaint (kt2saint)
 """
-native_shell.py — optional PySide6/QtWebEngine window around the EXISTING GUI.
+native_shell.py — PySide6/QtWebEngine host for the interactive BrainCell GUI.
 
-An ADDITIVE native front door, not a replacement: the FastAPI + uvicorn server
-and the embedded SPA stay exactly as they are (browser access keeps working
-unchanged), and the Qt window is just a webview pointed at
-``http://127.0.0.1:<port>/?t=…`` — the same origin the SPA is served from, so
-its ``fetch()`` calls stay same-origin (no CORS, no custom scheme handlers, no
-JS bridge, no SPA rewrite). QtWebEngine is Chromium, so rendering + fetch
-behave as in a browser tab.
-
-PySide6 is an OPTIONAL extra (``pip install braincell-mcp[native]``); every
-caller must degrade to the browser path when it is absent —
-:func:`native_available` is the one gate (import + display check).
+The embedded SPA and FastAPI API communicate over a localhost-only same-origin
+connection. Qt owns the visible application; uvicorn is an implementation
+detail running on a background thread. There is no external-viewer fallback.
 
 Qt must own the MAIN thread, so :func:`serve_native` inverts run_gui's usual
 arrangement: uvicorn runs on a daemon thread (uvicorn skips signal-handler
@@ -25,8 +17,13 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
+import sys
 import threading
 import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Optional
 
 log = logging.getLogger("braincell.native")
 
@@ -36,17 +33,18 @@ WINDOW_TITLE = "BrainCell"
 # (gui.install_launcher writes braincell-map.desktop).
 DESKTOP_FILE_ID = "braincell-map"
 _WINDOW_SIZE = (1280, 860)
+_PICKER_TIMEOUT_S = 180.0
+_SIGNAL_POLL_MS = 200
 
 
 def native_available() -> bool:
     """True when the native window can actually open here.
 
-    Two conditions: PySide6's QtWebEngine imports, and a display is reachable
-    (X11/Wayland — or an explicit ``QT_QPA_PLATFORM``, e.g. ``offscreen`` in
-    tests). Callers use this to fall back to the browser path, so it must
-    never raise.
+    Linux requires an X11/Wayland display (or an explicit Qt platform for
+    deterministic offscreen tests). Windows and macOS do not advertise their
+    desktop sessions through those environment variables.
     """
-    if not (
+    if sys.platform.startswith("linux") and not (
         os.environ.get("DISPLAY")
         or os.environ.get("WAYLAND_DISPLAY")
         or os.environ.get("QT_QPA_PLATFORM")
@@ -57,6 +55,59 @@ def native_available() -> bool:
     except Exception:  # noqa: BLE001 — absent/broken install = unavailable
         return False
     return True
+
+
+@dataclass
+class _PickerRequest:
+    done: threading.Event
+    result: Optional[dict] = None
+
+    def finish(self, result: dict) -> None:
+        self.result = result
+        self.done.set()
+
+
+class NativeBridge:
+    """Thread-safe bridge from FastAPI's server thread to Qt's main thread."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._activate: Optional[Callable[[], None]] = None
+        self._pick: Optional[Callable[[object], None]] = None
+
+    def attach(
+        self,
+        *,
+        activate: Callable[[], None],
+        pick_folder: Callable[[object], None],
+    ) -> None:
+        with self._lock:
+            self._activate = activate
+            self._pick = pick_folder
+
+    def detach(self) -> None:
+        with self._lock:
+            self._activate = None
+            self._pick = None
+
+    def activate(self) -> bool:
+        with self._lock:
+            callback = self._activate
+        if callback is None:
+            return False
+        callback()
+        return True
+
+    def pick_folder(self, timeout: float = _PICKER_TIMEOUT_S) -> dict:
+        with self._lock:
+            callback = self._pick
+        if callback is None:
+            return {"unavailable": True, "reason": "native window is not ready"}
+        request = _PickerRequest(done=threading.Event())
+        callback(request)
+        if not request.done.wait(timeout):
+            return {"unavailable": True, "reason": "folder picker timed out"}
+        return request.result or {"cancelled": True}
 
 
 def _load_icon():
@@ -96,28 +147,105 @@ def _qt_app():
     return app
 
 
-def open_window(url: str, *, title: str = WINDOW_TITLE) -> int:
-    """Open a webview window at *url* and block until it closes.
+def _install_quit_signal_handlers(quit_callback: Callable[[], None]) -> dict:
+    """Route terminal/service shutdown signals through Qt's normal exit."""
+    previous = {}
 
-    Returns the Qt exit code. The URL may carry ``?t=`` — the server's GET /
-    strips it and hands the token back as the durable cookie, exactly as in a
-    browser tab.
-    """
-    from PySide6.QtCore import QUrl
+    def request_quit(_signum, _frame) -> None:
+        quit_callback()
+
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        try:
+            old_handler = signal.getsignal(signum)
+            signal.signal(signum, request_quit)
+        except (OSError, ValueError):
+            # Signal handlers can only be installed from Python's main thread.
+            continue
+        previous[signum] = old_handler
+    return previous
+
+
+def _restore_signal_handlers(previous: dict) -> None:
+    for signum, handler in previous.items():
+        try:
+            signal.signal(signum, handler)
+        except (OSError, ValueError):
+            log.warning("Could not restore signal handler for %s", signum)
+
+
+def open_window(
+    url: str,
+    *,
+    title: str = WINDOW_TITLE,
+    bridge: Optional[NativeBridge] = None,
+) -> int:
+    """Open the BrainCell window at *url* and block until it closes."""
+    from PySide6.QtCore import QObject, QTimer, QUrl, Signal, Slot
     from PySide6.QtWebEngineWidgets import QWebEngineView
+    from PySide6.QtWidgets import QFileDialog
+
+    class _WindowController(QObject):
+        activate_requested = Signal()
+        pick_folder_requested = Signal(object)
+
+        def __init__(self, window: QWebEngineView) -> None:
+            super().__init__()
+            self.window = window
+            self.activate_requested.connect(self._activate)
+            self.pick_folder_requested.connect(self._pick_folder)
+
+        @Slot()
+        def _activate(self) -> None:
+            if self.window.isMinimized():
+                self.window.showNormal()
+            else:
+                self.window.show()
+            self.window.raise_()
+            self.window.activateWindow()
+
+        @Slot(object)
+        def _pick_folder(self, request: _PickerRequest) -> None:
+            selected = QFileDialog.getExistingDirectory(
+                self.window, "Select a project folder"
+            )
+            if not selected:
+                request.finish({"cancelled": True})
+                return
+            path = Path(selected).expanduser()
+            if not path.is_dir():
+                request.finish(
+                    {"unavailable": True, "reason": "selected path is not a directory"}
+                )
+                return
+            request.finish({"path": str(path.resolve())})
 
     app = _qt_app()
     view = QWebEngineView()
+    controller = _WindowController(view)
     view.setWindowTitle(title)
-    # Maximized by default: the SPA has always sized itself to a full-width
-    # browser tab — at a fixed 1280 px the inspector dock overflows and grows
-    # an unstyled default scrollbar (owner-reported, 2026-07-25). resize() only
-    # sets the restore geometry for when the user un-maximizes; the window
-    # stays freely resizable.
+    # resize() sets the restore geometry; the window starts maximized and
+    # remains freely resizable.
     view.resize(*_WINDOW_SIZE)
     view.load(QUrl(url))
     view.showMaximized()
-    return app.exec()
+    if bridge is not None:
+        bridge.attach(
+            activate=controller.activate_requested.emit,
+            pick_folder=controller.pick_folder_requested.emit,
+        )
+    # A periodic Python callback lets CPython dispatch SIGINT/SIGTERM while
+    # Qt's C++ event loop is blocking in app.exec().
+    signal_timer = QTimer(app)
+    signal_timer.timeout.connect(lambda: None)
+    signal_timer.start(_SIGNAL_POLL_MS)
+    previous_handlers = _install_quit_signal_handlers(app.quit)
+    try:
+        return app.exec()
+    finally:
+        signal_timer.stop()
+        _restore_signal_handlers(previous_handlers)
+        if bridge is not None:
+            bridge.detach()
 
 
 def show_error(message: str, *, title: str = WINDOW_TITLE) -> None:
@@ -165,37 +293,44 @@ def _make_server(app, *, port: int):
     return uvicorn.Server(config)
 
 
-def serve_native(app, *, port: int, url: str, startup_timeout: float = 20.0) -> None:
+def serve_native(
+    app,
+    *,
+    port: int,
+    url: str,
+    bridge: Optional[NativeBridge] = None,
+    startup_timeout: float = 20.0,
+) -> None:
     """Serve *app* on a background uvicorn thread and front it with a Qt window.
 
     Blocks until the window closes, then shuts the server down — closing the
-    window IS quitting the app (the native shell's whole point: no orphaned
-    "browser tab you might lose track of"). Raises RuntimeError if the server
-    never binds (port taken by a race, etc.) so the caller can report it.
+    window IS quitting the app. Raises RuntimeError if the server never binds
+    (port taken by a race, etc.) so the caller can report it.
     """
     server = _make_server(app, port=port)
     thread = threading.Thread(
         target=server.run, name="braincell-gui-server", daemon=True
     )
     thread.start()
-    deadline = time.monotonic() + startup_timeout
-    while not getattr(server, "started", False):
-        if not thread.is_alive():
-            raise RuntimeError(
-                f"GUI server exited before binding port {port} "
-                "(port already in use?)"
-            )
-        if time.monotonic() > deadline:
-            server.should_exit = True
-            raise RuntimeError(
-                f"GUI server did not start within {startup_timeout:.0f}s — "
-                "the brain database may be locked by a running build/ingest, "
-                "or a schema migration is waiting on it. Let the build finish "
-                "(or stop it) and click again."
-            )
-        time.sleep(0.05)
     try:
-        open_window(url)
+        deadline = time.monotonic() + startup_timeout
+        while not getattr(server, "started", False):
+            if not thread.is_alive():
+                raise RuntimeError(
+                    f"GUI server exited before binding port {port} "
+                    "(port already in use?)"
+                )
+            if time.monotonic() > deadline:
+                raise RuntimeError(
+                    f"GUI server did not start within {startup_timeout:.0f}s — "
+                    "the brain database may be locked by a running build/ingest, "
+                    "or a schema migration is waiting on it. Let the build finish "
+                    "(or stop it) and click again."
+                )
+            time.sleep(0.05)
+        open_window(url, bridge=bridge)
     finally:
         server.should_exit = True
         thread.join(timeout=10)
+        if thread.is_alive():
+            raise RuntimeError("GUI server did not stop within 10 seconds")

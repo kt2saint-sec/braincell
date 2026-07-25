@@ -523,7 +523,7 @@ class TestConfigSuggestTour:
 # ── /api/restart ──────────────────────────────────────────────────────────────
 
 _ARGV = [sys.executable, "-m", "braincell.cli", "gui", "/some/proj",
-         "--mode", "project", "--port", "8765", "--no-browser", "--allow-writes"]
+         "--mode", "project", "--port", "8765", "--allow-writes"]
 
 
 class TestRestartEndpoint:

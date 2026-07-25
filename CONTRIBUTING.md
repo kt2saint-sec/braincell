@@ -97,7 +97,7 @@ break the dual-license). PRs without a sign-off will be asked to amend.
 
 ## Dev setup & checks
 
-The package vendors everything it needs. To work on it:
+The base package includes the native GUI runtime (PySide6/QtWebEngine). To work on it:
 
 ```bash
 python -m venv .venv && . .venv/bin/activate
@@ -107,8 +107,14 @@ pip install -e ".[dev,openai]"
 python -c "import braincell.server, braincell.cli; print('ok')"
 python -m braincell.cli --help
 ruff check braincell
-pytest          # if/when a tests/ suite is added
+python -m pytest
 ```
+
+The Memory Map is a native desktop application backed internally by the existing
+localhost-only FastAPI/uvicorn transport and embedded SPA. Changes must preserve the
+window-owned lifecycle: `braincell start`, `braincell gui`, and `braincell-map` create or
+activate a native window, and closing it stops the server. Do not add an external-viewer or
+headless-GUI fallback, an always-on GUI service, or optionalize PySide6.
 
 ## Scope
 

@@ -18,3 +18,14 @@ formative and inspirational. No gbrain code is used in braincell MCP.
 Ideas, architectures, and methods are not protected by copyright — only expression is.
 braincell-mcp's expression is its own. These acknowledgements are given as a matter of
 intellectual honesty and respect for prior art, not as a license obligation.
+
+
+Third-party runtime
+-------------------
+
+The required native GUI uses Qt for Python (PySide6, PySide6 Addons,
+PySide6 Essentials, and shiboken6), published by The Qt Company Ltd. and other
+contributors. BrainCell uses the community packages under LGPL-3.0-only. See
+https://doc.qt.io/qtforpython-6/ and the license metadata distributed with
+those packages. Qt for Python and Qt include additional third-party components;
+their notices are distributed with the corresponding wheels.

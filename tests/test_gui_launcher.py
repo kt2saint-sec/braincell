@@ -3,15 +3,15 @@
 test_gui_launcher.py — Milestone A regression tests for braincell/gui.py + cli.py.
 
 Covers:
-  A1  browser-open race    — create_app schedules the open only via the lifespan,
-                             and only when open_browser_url is set.
+  A1  native activation    — /api/activate raises the existing Qt window through
+                             the authenticated native bridge.
   A2  global-brain missing — /api/status still 200 with global_brain.exists False.
   A3  one-click launcher   — install_launcher() writes icon + .desktop into XDG;
                              main_map() calls run_gui with the documented kwargs.
   A4  optional GUI token   — /api/* requires ?t= / header when auth_token is set;
                              unset token = unchanged behaviour.
 
-All offline (TestClient), no real uvicorn, no browser, no Ollama.
+All offline (TestClient), no real uvicorn, Qt window, or Ollama.
 """
 
 from __future__ import annotations
@@ -26,42 +26,42 @@ def _app(tmp_path: Path, **kw):
     return create_app(db_path=tmp_path / "braincell.db", **kw)
 
 
-# ── A1: browser-open race ─────────────────────────────────────────────────────
+# ── A1: native activation ─────────────────────────────────────────────────────
 
-class TestBrowserOpenA1:
-    def test_no_open_when_url_none(self, tmp_path, monkeypatch):
-        calls = []
-        monkeypatch.setattr(
-            "braincell.gui._schedule_browser_open", lambda url, *a, **k: calls.append(url)
-        )
-        with TestClient(_app(tmp_path, open_browser_url=None)):
-            pass
-        assert calls == [], "browser open must not be scheduled when url is None"
+class TestNativeActivationA1:
+    class _Bridge:
+        def __init__(self, available=True):
+            self.available = available
+            self.calls = 0
 
-    def test_schedules_exactly_one_open_with_url(self, tmp_path, monkeypatch):
-        calls = []
-        monkeypatch.setattr(
-            "braincell.gui._schedule_browser_open", lambda url, *a, **k: calls.append(url)
-        )
-        url = "http://127.0.0.1:8765"
-        with TestClient(_app(tmp_path, open_browser_url=url)):
-            pass
-        assert calls == [url], "lifespan must schedule exactly one browser open"
+        def activate(self):
+            self.calls += 1
+            return self.available
 
-    def test_schedule_helper_uses_call_later(self, monkeypatch):
-        """With a running loop, _schedule_browser_open defers via call_later."""
-        import asyncio
+    def test_activate_raises_existing_window(self, tmp_path):
+        bridge = self._Bridge()
+        with TestClient(_app(tmp_path, native_bridge=bridge)) as client:
+            response = client.post("/api/activate")
+        assert response.status_code == 200
+        assert bridge.calls == 1
 
-        opened = []
-        monkeypatch.setattr("webbrowser.open", lambda u: opened.append(u))
+    def test_activate_requires_ready_native_window(self, tmp_path):
+        bridge = self._Bridge(available=False)
+        with TestClient(_app(tmp_path, native_bridge=bridge)) as client:
+            response = client.post("/api/activate")
+        assert response.status_code == 409
+        assert bridge.calls == 1
 
-        async def _run():
-            from braincell.gui import _schedule_browser_open
-            _schedule_browser_open("http://x", delay=0)
-            await asyncio.sleep(0.05)  # let the call_later fire
-
-        asyncio.run(_run())
-        assert opened == ["http://x"]
+    def test_activate_is_token_guarded(self, tmp_path):
+        bridge = self._Bridge()
+        with TestClient(
+            _app(tmp_path, native_bridge=bridge, auth_token="s3cret")
+        ) as client:
+            assert client.post("/api/activate").status_code == 401
+            assert client.post(
+                "/api/activate", headers={"X-BrainCell-Token": "s3cret"}
+            ).status_code == 200
+        assert bridge.calls == 1
 
 
 # ── A2: global-brain missing ──────────────────────────────────────────────────
@@ -145,8 +145,13 @@ class TestInstallLauncherA3:
 
     def test_main_map_calls_run_gui_with_documented_kwargs(self, monkeypatch):
         captured = {}
-        # No running GUI on the port → main_map proceeds to bind (run_gui).
-        monkeypatch.setattr("braincell.launch.port_serves_gui", lambda *a, **k: False)
+        from braincell import launch, native_shell
+        monkeypatch.setattr(native_shell, "native_available", lambda: True)
+        monkeypatch.setattr(
+            launch,
+            "preflight",
+            lambda *a, **k: launch.Preflight(action="launch"),
+        )
         monkeypatch.setattr("braincell.gui.run_gui", lambda **kw: captured.update(kw))
         from braincell.cli import main_map
 
@@ -155,13 +160,20 @@ class TestInstallLauncherA3:
             "mode": "global",
             "port": 8765,
             "allow_writes": True,
-            "open_browser": True,
             "path": ".",
+            "url_extra_query": None,
+            "restart_command": "start",
         }
 
     def test_main_map_port_override(self, monkeypatch):
         captured = {}
-        monkeypatch.setattr("braincell.launch.port_serves_gui", lambda *a, **k: False)
+        from braincell import launch, native_shell
+        monkeypatch.setattr(native_shell, "native_available", lambda: True)
+        monkeypatch.setattr(
+            launch,
+            "preflight",
+            lambda *a, **k: launch.Preflight(action="launch"),
+        )
         monkeypatch.setattr("braincell.gui.run_gui", lambda **kw: captured.update(kw))
         from braincell.cli import main_map
 
@@ -169,22 +181,31 @@ class TestInstallLauncherA3:
         assert captured["port"] == 9999
 
     def test_main_map_reuses_running_gui(self, monkeypatch):
-        """A running GUI on the port → open its bare URL, never bind (no dead click).
+        """A running GUI is activated instead of binding a second server."""
+        from braincell import launch, native_shell
 
-        The desktop icon runs with Terminal=false, so a silent uvicorn "address
-        already in use" reads as a dead click. When a braincell GUI already owns
-        the port, main_map must open the browser (the bare URL — the server's
-        GET / redirect supplies the token) and NOT call run_gui.
-        """
-        opened = []
+        activated = []
         run_gui_called = []
-        monkeypatch.setattr("braincell.launch.port_serves_gui", lambda *a, **k: True)
+        monkeypatch.setattr(native_shell, "native_available", lambda: True)
+        monkeypatch.setattr(
+            launch,
+            "preflight",
+            lambda *a, **k: launch.Preflight(
+                action="reuse",
+                activation_token="tok",
+                expected_db="/braincell.db",
+            ),
+        )
+        monkeypatch.setattr(
+            launch,
+            "activate_existing",
+            lambda port, token: activated.append((port, token)) or True,
+        )
         monkeypatch.setattr("braincell.gui.run_gui", lambda **kw: run_gui_called.append(kw))
-        monkeypatch.setattr("webbrowser.open", lambda u: opened.append(u))
         from braincell.cli import main_map
 
         main_map([])
-        assert opened == ["http://127.0.0.1:8765/"]
+        assert activated == [(8765, "tok")]
         assert run_gui_called == []
 
 
@@ -213,7 +234,7 @@ class TestGuiTokenA4:
         with TestClient(_app(tmp_path, auth_token="s3cret")) as client:
             assert client.get("/").status_code == 200
 
-    # ── durable-cookie auth (the "closed the browser → wiped map" fix) ──────────
+    # ── durable-cookie auth across native-window restarts ───────────────────────
 
     def test_index_bare_sets_auth_cookie_and_serves_html(self, tmp_path):
         """Bare / (no ?t=) serves the page AND sets the durable auth cookie."""

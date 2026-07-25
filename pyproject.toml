@@ -40,20 +40,14 @@ dependencies = [
     "httpx>=0.28.0,<1",        # embed.py HTTP client
     "anyio>=4.14.0,<5",        # gui.py async plumbing
     "pydantic>=2.13.0,<3",     # request/response models
+    "PySide6>=6.8,<7",         # interactive desktop GUI + QtWebEngine renderer
 ]
 
 [project.optional-dependencies]
 openai = ["openai>=1.40.0,<3"]   # hosted embed provider (text-embedding-3-*)
-# Native desktop window (braincell start --native): PySide6/QtWebEngine fronts
-# the SAME localhost FastAPI server — no SPA changes, browser access unchanged.
-# Optional on purpose: ~0.5 GB of Qt wheels is wrong to force on headless/MCP-only
-# installs. Supply-chain gate cleared 2026-07-25: The Qt Company's official
-# PyPI package (Qt for Python team), 56 releases over years, wheels-only,
-# latest 6.11.1 uploaded 2026-05-13 (well past the 3-7 day cooldown).
-native = ["PySide6>=6.8,<7"]
-# Back-compat alias: fastapi/uvicorn moved into base dependencies (gui.py needs
-# them unconditionally), so `pip install braincell-mcp[gui]` stays valid but
-# adds nothing.
+# Compatibility aliases: the interactive GUI, FastAPI, uvicorn, and PySide6 are
+# base dependencies. Existing `[gui]` and `[native]` install commands remain valid.
+native = []
 gui = []
 dev = ["pytest>=8.0.0,<9", "ruff>=0.6.0,<1"]
 
@@ -63,7 +57,7 @@ braincell = "braincell.cli:main"
 braincell-map = "braincell.cli:main_map"
 
 [project.urls]
-Homepage = "https://github.com/kt2saint-sec/braincell-mcp"
+Homepage = "https://github.com/kt2saint-sec/braincell"
 
 [tool.setuptools]
 packages = ["braincell"]

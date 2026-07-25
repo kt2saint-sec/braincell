@@ -71,14 +71,14 @@ if [ -n "${BRAINCELL_DEB_REQUIREMENTS:-}" ]; then
     "$PIP" download --quiet --only-binary=:all: --require-hashes \
         --dest "$WHEELHOUSE" -r "$BRAINCELL_DEB_REQUIREMENTS"
 else
-    # Extras syntax on a wheel path is supported by modern pip.
     "$PIP" download --quiet --only-binary=:all: \
-        --dest "$WHEELHOUSE" "${PROJECT_WHEEL}[gui]"
+        --dest "$WHEELHOUSE" "$PROJECT_WHEEL"
 fi
 
-# --- 4. docs: copyright (DEP-5), LICENSE, changelog.Debian.gz ----------------
+# --- 4. docs: copyright, licenses/notices, changelog.Debian.gz ---------------
 install -m 0644 "$REPO_ROOT/packaging/linux/deb/copyright" "$DOCDIR/copyright"
 install -m 0644 "$REPO_ROOT/LICENSE" "$DOCDIR/LICENSE"
+install -m 0644 "$REPO_ROOT/NOTICE" "$DOCDIR/NOTICE"
 DATE_RFC="$(date -R -u)"
 cat > "$BUILD_DIR/changelog.Debian" <<EOF
 braincell-mcp ($DEB_VERSION) unstable; urgency=low

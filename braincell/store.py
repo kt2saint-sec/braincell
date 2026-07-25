@@ -131,9 +131,9 @@ class EmbedderMismatchError(RuntimeError):
 
     This is a PERMANENT config-level failure (restarting cannot fix it) — the
     brain on disk was embedded under one model and the process is configured
-    with another. Carries structured fields so surfaces (journal, CLI, GUI
-    service status) can render one clean actionable line instead of a
-    traceback. Subclasses RuntimeError so existing ``except RuntimeError`` /
+    with another. Carries structured fields so the CLI and GUI can render one
+    clean actionable line instead of a traceback. Subclasses RuntimeError so
+    existing ``except RuntimeError`` /
     ``pytest.raises(RuntimeError)`` handlers keep working unchanged.
     """
 

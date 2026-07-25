@@ -384,7 +384,6 @@ svg.stage:active{cursor:grabbing}
       <span class="tb-sep"></span>
       <button class="btn" id="build-btn" onclick="openIngestModal()" title="Build memory only — no MCP registration">⬇ Build memory (no MCP)</button>
       <button class="btn" id="cmd-btn" onclick="openCommandsModal()" title="Every braincell command — what it does and where to run it">★ Commands</button>
-      <button class="btn" id="service-btn" onclick="toggleService()">⚙ Always-on: …</button>
       <button class="btn" onclick="relax()" title="Re-settle the map layout — spreads overlapping cells apart">↻ Re-tidy</button>
       <button class="btn" id="tut-btn" onclick="toggleTutorialMenu()" title="Learn the map — guided tour and command reference">🎓 Tutorial ▾</button>
       <button class="btn" id="rail-reopen" style="display:none" onclick="toggleRail()" title="Reopen the live memory feed">⟨ Live feed</button>
@@ -558,16 +557,16 @@ let status={allow_writes:false,global_brain:{exists:false,path:""},mode:"project
 let _loading=true,_initDone=false;
 
 /* ════════ API HELPERS ════════ */
-/* A4: when the server launched with an auth token it lives in the tab's URL
+/* A4: the initial embedded navigation carries the auth token
    (?t=…). Carry it on every API call so the guarded /api/* routes accept us. */
 const BC_TOKEN=new URLSearchParams(location.search).get("t");
 function withTok(url){
   if(!BC_TOKEN)return url;
   return url+(url.includes("?")?"&":"?")+"t="+encodeURIComponent(BC_TOKEN);
 }
-/* A 401 means our cookie/token didn't authenticate — usually a tab that
+/* A 401 means our cookie/token didn't authenticate — usually a renderer that
    outlived its server, or a stale per-instance cookie. Re-mint by loading /
-   ONCE (GET / sets a fresh auth cookie), guarded one-shot per tab session so a
+   ONCE (GET / sets a fresh auth cookie), guarded one-shot per renderer session so a
    genuine failure can't loop and — critically — a 401 NEVER renders as an empty
    "wiped" map. Only after a reload still 401s do we surface the toast.
    credentials:"same-origin" ensures the auth cookie rides every call. */
@@ -781,7 +780,7 @@ function setActiveProject(pid){
   activeProjectId=pid||null;
   const dd=document.getElementById("active-dd");
   if(dd)dd.style.display="none";
-  /* ?active= rides the URL beside ?scope= and ?t= — shareable tab state */
+  /* ?active= rides the internal URL beside ?scope= and ?t= */
   const u=new URL(location.href);
   if(activeProjectId)u.searchParams.set("active",activeProjectId);
   else u.searchParams.delete("active");
@@ -817,7 +816,7 @@ async function loadAll(){
   if(cfg){seedProjectId=cfg.seed_project_id||null;federateAvailable=!!cfg.federate_available;}
   /* active project init runs ONCE — later loadAll() calls (post-build etc.)
      must not clobber an in-session switch. launch = launch_project_id (alias
-     of the seed, /api/config Phase D); ?active= wins for shareable tabs. */
+     of the seed, /api/config Phase D); ?active= wins for restored state. */
   if(!_activeInit){
     _activeInit=true;
     activeProjectId=_urlActive||(cfg&&cfg.launch_project_id)||seedProjectId||null;
@@ -836,7 +835,6 @@ async function loadAll(){
   maybeAutoStartTour(!!(cfg&&cfg.suggest_tour),!!(cfg&&cfg.tour_seen));
   loadSchedules();
   loadHookState();
-  loadServiceState();
   startFeedPoll();   /* live memory feed rail (idempotent — one interval) */
   /* resume the job chip if an ingest is already running (e.g. page reload) */
   if(status.allow_writes){
@@ -1056,18 +1054,17 @@ function openModal(title,sub,bodyHtml,footHtml){
 }
 function closeModal(){document.getElementById("modal-root").classList.remove("open");}
 
-/* ════════ FOLDER BROWSER (server-side /api/fs + native GNOME picker) ════════ */
+/* ════════ FOLDER NAVIGATOR (/api/fs + Qt folder dialog) ════════ */
 let fsCur="";
-/* D1: native zenity picker is an enhancement over /api/fs, never a replacement.
-   Once the server reports it unavailable, stop offering it for the rest of
-   the session — every fsHtml() render checks this flag. */
+/* The Qt dialog is the direct path; /api/fs remains an embedded navigator.
+   Once the bridge reports unavailable, every fsHtml() render hides the button. */
 let nativePickerDisabled=false;
 function fsHtml(){
   return `<div class="fs-bar">
     <div class="fs-path" id="fs-path">…</div>
     <button class="btn" onclick="fsUp()" title="Up one level">↑</button>
     <button class="btn" onclick="fsGo('')" title="Home">⌂</button>
-    ${nativePickerDisabled?"":`<button class="btn" id="fs-native-btn" onclick="pickFolderNative()" title="Open the native OS folder picker">📁 Browse (native)…</button>`}
+    ${nativePickerDisabled?"":`<button class="btn" id="fs-native-btn" onclick="pickFolderNative()" title="Open the system folder picker">📁 Browse…</button>`}
   </div>
   <div class="fs-list" id="fs-list"><div class="fs-empty">Loading…</div></div>`;
 }
@@ -1080,16 +1077,16 @@ async function pickFolderNative(){
       fsCur=res.path;fsParent=null;
       const pe=document.getElementById("fs-path");if(pe)pe.textContent=res.path;
       const list=document.getElementById("fs-list");
-      if(list)list.innerHTML=`<div class="fs-empty">Selected via native picker.</div>`;
+      if(list)list.innerHTML=`<div class="fs-empty">Folder selected.</div>`;
     } else if(res.unavailable){
       nativePickerDisabled=true;
       if(btn)btn.remove();
-      toast(res.reason?`Native picker unavailable (${res.reason}) — use the folder browser below`:"Native picker unavailable — use the folder browser below","err");
+      toast(res.reason?`Folder picker unavailable (${res.reason}) — use the folder navigator below`:"Folder picker unavailable — use the folder navigator below","err");
       fsGo(fsCur||"");
     }
     /* {cancelled:true} → no-op, just fall through to re-enable the button */
   }catch(err){
-    toast(`Native picker failed: ${err.message}`,"err");
+    toast(`Folder picker failed: ${err.message}`,"err");
   }finally{
     if(btn&&!nativePickerDisabled)btn.disabled=false;
   }
@@ -1543,76 +1540,6 @@ async function toggleHook(){
   }
 }
 
-/* ── Always-on Map service toggle (opt-in systemd --user) ────────────────────
-   Mirrors the hook toggle: the service unit on disk is ground truth, so always
-   repaint from the /api/service response — never assume the label is in sync.
-   POST-only for every action (incl. "status"), mounted only under --allow-writes
-   → read-only launches DISABLE the button with an explanatory title rather than
-   hide it. On hover the button's `title` explains exactly what it does. */
-let _svcInstalled=null;   /* null = unknown/unavailable, else boolean */
-let _svcFailing=false;    /* true when the unit is failed/crash-looping */
-let _svcFailure="";       /* last actionable journal line (why it failed) */
-function paintServiceBtn(){
-  const b=document.getElementById("service-btn");
-  if(!b)return;
-  if(!status.allow_writes){
-    b.textContent="⚙ Always-on";
-    b.disabled=true;
-    b.title="Read-only view — relaunch with braincell start (or --allow-writes) to manage the always-on service.";
-    return;
-  }
-  b.disabled=false;
-  if(_svcInstalled===null){
-    b.textContent="⚙ Always-on: ?";
-    b.title="Could not read the service state (systemd may be unavailable on this host).";
-  }else if(_svcInstalled&&_svcFailing){
-    b.textContent="⚙ Always-on: FAILING";
-    b.title="The always-on service is installed but failing to start."
-      +(_svcFailure?"\n\nLast error: "+_svcFailure:"")
-      +"\n\nFull log: journalctl --user -u braincell-map.service\nClick to remove the service.";
-  }else if(_svcInstalled){
-    b.textContent="⚙ Always-on: ON";
-    b.title="Installed — the Memory Map runs as a background systemd --user service, so it stays up across logout/reboot and 127.0.0.1:8765 works anytime without launching it. Click to remove the service.";
-  }else{
-    b.textContent="⚙ Always-on: OFF";
-    b.title="Off — click to install a systemd --user service so the Memory Map keeps running in the background (survives logout/reboot; auto-restarts on failure). Opt-in and local-only; removable here anytime.";
-  }
-}
-async function loadServiceState(){
-  if(!status.allow_writes){paintServiceBtn();return;}
-  try{
-    const r=await apiPost("/api/service",{action:"status"});
-    _svcInstalled=!!(r&&r.installed);
-    _svcFailing=!!(r&&r.failing);
-    _svcFailure=(r&&r.failure)||"";
-    if(_svcInstalled&&_svcFailing&&_svcFailure){
-      toast("Always-on Map service is FAILING: "+_svcFailure);
-    }
-  }catch(e){
-    _svcInstalled=null;   /* endpoint absent/errored — show unknown, never crash init */
-    _svcFailing=false;_svcFailure="";
-  }
-  paintServiceBtn();
-}
-async function toggleService(){
-  if(!status.allow_writes)return;
-  const want=_svcInstalled?"uninstall":"install";
-  try{
-    const r=await apiPost("/api/service",{action:want});
-    _svcInstalled=!!(r&&r.installed);
-    paintServiceBtn();
-    if(want==="install"){
-      toast(r&&r.active
-        ?"Always-on Map service installed and running — it'll survive logout/reboot."
-        :"Service unit written"+(r&&r.detail?": "+r.detail:" — enable it with systemctl --user if needed."));
-    }else{
-      toast("Always-on Map service removed.");
-    }
-  }catch(e){
-    await loadServiceState();   /* resync from disk rather than trusting the failed action */
-    toast("Service toggle failed: "+e.message);
-  }
-}
 function syncSchedUi(nd){
   const box=document.getElementById("dr-sched"),sel=document.getElementById("dr-sched-sel"),note=document.getElementById("dr-sched-note");
   if(!status.allow_writes||!nd.path){box.style.display="none";return;}
@@ -2043,7 +1970,7 @@ function openCommandsModal(){
      <div class="note"><div class="k">stats / clear / schedule</div><div class="c">Store counts live in each cell's drawer header; <b>✕ Clear memory</b> and <b>Auto-build</b> sit right beside them.</div></div>
 
      <div class="mo-label">Run from the CLI</div>
-     <div class="note"><div class="k">serve</div><div class="c">Runs the MCP stdio server process for a client — it is launched BY the MCP client (via install), not from a browser tab.</div></div>
+     <div class="note"><div class="k">serve</div><div class="c">Runs the MCP stdio server process for a client — it is launched BY the MCP client (via install), not by this desktop app.</div></div>
      <div class="note"><div class="k">gui</div><div class="c">Starts this very app (<b>braincell gui --allow-writes</b> / braincell-map) — it cannot launch itself.</div></div>
      <div class="note"><div class="k">register</div><div class="c">Mints a project ULID without building — subsumed here by Build memory / Add project, which register automatically.</div></div>`,
     `<button class="btn" onclick="closeModal()">Close</button>`);
@@ -2534,7 +2461,7 @@ function tourEnd(done){
      persist); fire-and-forget, a failure just means one more auto-offer. */
   try{localStorage.setItem("bcTourDone","1");}catch(_){}
   try{apiPost("/api/tour-seen",{}).catch(()=>{});}catch(_){}
-  /* strip ?tour=1 so a reload of this tab doesn't force a re-run */
+  /* strip ?tour=1 so a renderer reload doesn't force a re-run */
   const u=new URL(location.href);
   if(u.searchParams.has("tour")){u.searchParams.delete("tour");history.replaceState(null,"",u.toString());}
   if(done)burstAt(innerWidth/2,innerHeight/2);

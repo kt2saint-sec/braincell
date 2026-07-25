@@ -25,5 +25,5 @@ foreach ($py in @("python", "python3", "py")) {
     }
 }
 
-Write-Error "braincell-map: could not find the 'braincell-map' script or a python that can import braincell. Install with: pip install braincell-mcp[gui]"
+Write-Error "braincell-map: could not find the 'braincell-map' script or a python that can import braincell. Install with: pip install braincell-mcp"
 exit 1

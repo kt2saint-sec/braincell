@@ -6,12 +6,13 @@ Architecture: @ARCH@
 Depends: python3 (>= @PYMIN@), python3 (<< @PYMAX@), python3-venv
 Installed-Size: @INSTALLED_SIZE@
 Maintainer: Karl Toussaint (kt2saint) <kt2saint.create@gmail.com>
-Homepage: https://github.com/kt2saint-sec/braincell-mcp
+Homepage: https://github.com/kt2saint-sec/braincell
 Description: Local-first persistent-memory MCP server (SQLite + hybrid search)
  braincell-mcp is a standalone MCP (Model Context Protocol) server that gives
  coding agents cross-project working memory: per-project brains stored in a
  single SQLite file, hybrid vector + FTS5 ranking, and recall / remember /
- forget / supersede tools, plus a build & sync CLI and an optional local GUI.
+ forget / supersede tools, plus a build & sync CLI and a required interactive
+ native GUI built with PySide6/QtWebEngine.
  .
  The package bundles all Python dependencies as wheels and creates a private
  virtualenv under /opt/braincell-mcp at install time (no network access is

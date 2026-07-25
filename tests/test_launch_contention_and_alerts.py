@@ -144,10 +144,7 @@ class TestAlert:
 # ── 3. cmd_start: a failing launch must be visible, never a dead click ────────
 
 def _start_args(path, **kw):
-    defaults = dict(
-        path=str(path), port=8765, no_browser=True, global_brain=False,
-        native=False,
-    )
+    defaults = dict(path=str(path), port=8765, global_brain=False)
     defaults.update(kw)
     return argparse.Namespace(**defaults)
 
@@ -179,53 +176,25 @@ class TestStartFailureVisibility:
             native_shell, "alert", lambda msg, **k: alerts.append(msg) or True
         )
         with pytest.raises(SystemExit) as exc:
-            cmd_start(_start_args(tmp_path, native=True))
+            cmd_start(_start_args(tmp_path))
         assert exc.value.code == 1
         assert len(alerts) == 1
         assert "failed to start" in alerts[0]
         assert "did not start within" in alerts[0]
 
-    def test_native_alert_fires_even_when_qt_is_the_broken_part(
+    def test_unavailable_native_runtime_alerts_and_exits_before_preflight(
         self, tmp_path, monkeypatch
     ):
-        """--native with PySide6 broken: run_gui falls back internally, but if
-        it still fails, the alert must fire (it degrades to notify-send) —
-        `native` (the request), not `native_ok`, gates the visible surface."""
+        """A missing graphical runtime is a visible hard failure, never fallback."""
         from braincell.cli import cmd_start
 
-        self._patch_launchable_preflight(monkeypatch)
         monkeypatch.setattr(native_shell, "native_available", lambda: False)
-        monkeypatch.setattr(
-            "braincell.gui.run_gui",
-            lambda **k: (_ for _ in ()).throw(RuntimeError("boom")),
-        )
         alerts: list = []
         monkeypatch.setattr(
             native_shell, "alert", lambda msg, **k: alerts.append(msg) or True
         )
         with pytest.raises(SystemExit) as exc:
-            cmd_start(_start_args(tmp_path, native=True))
+            cmd_start(_start_args(tmp_path))
         assert exc.value.code == 1
         assert len(alerts) == 1
-
-    def test_non_native_failure_still_exits_1_without_dialog(
-        self, tmp_path, monkeypatch
-    ):
-        """Browser-path `start` runs in a terminal — stderr is visible, no
-        dialog needed, but the non-zero exit must be preserved."""
-        from braincell.cli import cmd_start
-
-        self._patch_launchable_preflight(monkeypatch)
-        monkeypatch.setattr(native_shell, "native_available", lambda: False)
-        monkeypatch.setattr(
-            "braincell.gui.run_gui",
-            lambda **k: (_ for _ in ()).throw(RuntimeError("boom")),
-        )
-        alerts: list = []
-        monkeypatch.setattr(
-            native_shell, "alert", lambda msg, **k: alerts.append(msg) or True
-        )
-        with pytest.raises(SystemExit) as exc:
-            cmd_start(_start_args(tmp_path, native=False))
-        assert exc.value.code == 1
-        assert alerts == []
+        assert "graphical desktop session" in alerts[0]

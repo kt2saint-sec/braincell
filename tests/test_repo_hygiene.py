@@ -23,21 +23,7 @@ import re
 import subprocess
 from pathlib import Path
 
-import pytest
-
 REPO = Path(__file__).resolve().parent.parent
-
-# Dated planning/spec artifacts: point-in-time records of decisions already made,
-# not navigation aids. They legitimately quote the internal notes they were written
-# against, and rewriting them would falsify the record — so they are exempt from the
-# dangling-reference rule. New docs do NOT get added here; fix the reference instead.
-_HISTORICAL_ARTIFACTS = frozenset({
-    "docs/add-repo-gui-install-spec-2026-07-08.md",
-    "docs/embedder-and-client-roadmap-2026-07-04.md",
-    "docs/global-mcp-routing-spike-2026-07-08.md",
-    "tests/benchmarks/embedder-recommendation-2026-07-04.md",
-    "evals/task-ab/STATUS.md",
-})
 
 # A reference is REPO-relative only when it is not rooted at a home directory:
 # braincell legitimately reads the user's own `~/.claude/projects` transcripts, and
@@ -71,8 +57,8 @@ def test_no_tracked_file_references_a_gitignored_path():
     """A published file must not point at a file that was never published."""
     candidates: dict[str, list[tuple[str, int, str]]] = {}
     for rel in _tracked_text_files():
-        if rel == ".gitignore" or rel in _HISTORICAL_ARTIFACTS:
-            continue  # .gitignore must name ignored paths; artifacts are exempt above
+        if rel == ".gitignore":
+            continue  # .gitignore must name ignored paths
         if rel == Path(__file__).name or rel.endswith("test_repo_hygiene.py"):
             continue  # this file names the paths it polices
         try:
@@ -122,10 +108,23 @@ def test_no_tracked_file_contains_the_maintainers_home_path():
     )
 
 
-@pytest.mark.parametrize("path", sorted(_HISTORICAL_ARTIFACTS))
-def test_historical_artifact_exemptions_still_exist(path):
-    """Keep the exemption list honest — a stale entry silently widens the hole."""
-    assert (REPO / path).exists(), (
-        f"{path} is exempted from the dangling-reference check but no longer exists; "
-        f"remove it from _HISTORICAL_ARTIFACTS."
+def test_runtime_has_no_retired_external_viewer_paths():
+    """The Memory Map is native-only; retired launch paths must not regrow."""
+    forbidden = (
+        "webbrowser",
+        "open_browser",
+        "_schedule_browser_open",
+        "port_serves_gui",
+        "--no-browser",
+        "zenity",
+    )
+    violations = []
+    for path in sorted((REPO / "braincell").glob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        for token in forbidden:
+            if token in text:
+                violations.append(f"{path.relative_to(REPO)} contains {token!r}")
+    assert not violations, (
+        "Retired external-viewer runtime paths returned:\n  - "
+        + "\n  - ".join(violations)
     )

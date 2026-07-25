@@ -4,7 +4,7 @@
 launch.py — `braincell start` preflight: single-instance probe + pre-launch report.
 
 `braincell start` ≡ `braincell gui <path> --allow-writes` plus the three things
-`gui` does not do: reuse an already-running map on the same port (instead of
+`gui` does not do: activate an already-running map on the same port (instead of
 dying on uvicorn "address already in use"), print a pre-launch report (embedder
 health FIRST, then brain state and MCP registration — print-and-continue, never
 a gate), and hand the SPA its first-run tour signal (`tour=1`).
@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -56,28 +55,21 @@ def probe_status(port: int, token: str, timeout: float = 1.0) -> Optional[dict]:
     return data if isinstance(data, dict) else None
 
 
-def port_serves_gui(port: int, timeout: float = 1.0) -> bool:
-    """True if a braincell GUI is listening on 127.0.0.1:<port> — token-agnostic.
-
-    Hits ``/api/status`` with NO token. A braincell GUI answers 200 (no-auth
-    mode) or 401 (its token guard is active) — both prove it owns the port. A
-    foreign server or a closed port yields a connection error or some other
-    status → False.
-
-    Unlike :func:`probe_status`, this does not need the caller's token to match
-    the running server's. The desktop icon uses it to REUSE a running map
-    regardless of which token that map launched with: open its bare URL and the
-    server's ``GET /`` redirect supplies the correct token. Without this the icon
-    would silently die on uvicorn "address already in use" (``Terminal=false``).
-    """
+def activate_existing(port: int, token: str, timeout: float = 2.0) -> bool:
+    """Ask the native application on *port* to raise its existing window."""
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/api/activate",
+        data=b"{}",
+        headers={
+            "Content-Type": "application/json",
+            "X-BrainCell-Token": token,
+        },
+        method="POST",
+    )
     try:
-        with urllib.request.urlopen(
-            f"http://127.0.0.1:{port}/api/status", timeout=timeout
-        ) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return getattr(resp, "status", None) == 200
-    except urllib.error.HTTPError as exc:
-        return exc.code == 401  # our token guard rejected the tokenless probe
-    except Exception:  # noqa: BLE001 — refused / timeout / foreign = not our GUI
+    except Exception:  # noqa: BLE001 — caller turns failure into a visible error
         return False
 
 
@@ -90,7 +82,7 @@ class Preflight:
     action: str                          # "launch" | "reuse" | "conflict"
     first_run: bool = False
     report_lines: list[str] = field(default_factory=list)
-    reuse_url: Optional[str] = None      # set when action == "reuse"
+    activation_token: Optional[str] = None  # set when action == "reuse"
     conflict_db: Optional[str] = None    # the running server's db (conflict)
     expected_db: Optional[str] = None    # our target db path; None = unbuilt
 
@@ -132,8 +124,21 @@ def preflight(
         pid = resolve_project_id_readonly(resolved)
         db = get_db_path(pid) if pid else None
 
+    from .legacy_service import status as legacy_service_status
+
+    legacy = legacy_service_status()
+    if legacy["active"]:
+        return Preflight(
+            action="legacy_service",
+            report_lines=[
+                "The retired braincell-map.service is still active.",
+                "Remove it with: braincell legacy-service remove",
+            ],
+            expected_db=str(db) if db else None,
+        )
+
     # Probe BEFORE binding: a 200 with our db_path = this brain's GUI is
-    # already up → reuse its tab instead of dying on "address already in use".
+    # already up → activate its native window instead of binding a second server.
     # A 200 with a DIFFERENT db_path = another brain owns the port → refuse
     # (never silently open the wrong brain).
     token = _resolve_gui_token()
@@ -143,7 +148,7 @@ def preflight(
         if db is not None and running_db == str(db):
             return Preflight(
                 action="reuse",
-                reuse_url=f"http://127.0.0.1:{port}/?t={token}",
+                activation_token=token,
                 expected_db=str(db),
             )
         return Preflight(
@@ -162,6 +167,11 @@ def preflight(
             lines.append(f"✗ Embedder not ready: {emb.get('detail') or 'unknown'}")
     except Exception as exc:  # noqa: BLE001 — print-and-continue
         lines.append(f"✗ Embedder check failed: {exc!r}")
+    if legacy["installed"] or legacy["enabled"]:
+        lines.append(
+            "⚠ Retired GUI service residue found; clean it with "
+            "`braincell legacy-service remove`."
+        )
 
     doc_count: Optional[int] = None
     if mode == "global":

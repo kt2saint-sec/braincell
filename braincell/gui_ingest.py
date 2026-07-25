@@ -5,8 +5,8 @@ gui_ingest.py — ingestion management for the Memory-Map GUI.
 
 Write-gated endpoints mounted by gui.create_app(allow_writes=True):
 
-  GET  /api/fs                 server-side folder browser (directories only)
-  POST /api/pick-folder        native GNOME folder-selection dialog (zenity)
+  GET  /api/fs                 embedded folder navigator (directories only)
+  POST /api/pick-folder        native Qt folder-selection dialog
   POST /api/ingest             start an ingest (build) job for a directory
   GET  /api/ingest/status      poll the current/last ingest job
   POST /api/clear              wipe a project's ingested docs/chunks (+notes opt-in)
@@ -27,12 +27,11 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import shutil
 import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Callable, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
@@ -202,7 +201,7 @@ class IngestManager:
         """Terminate any in-flight build; called from the GUI lifespan finally.
 
         Product decision: closing the GUI CANCELS a running build rather than
-        letting it finish headless — the GUI is the only place the build is
+        letting it continue detached — the GUI is the only place the build is
         observable, an invisible orphan holds the SQLite write lock (the exact
         failure that made the taskbar icon look dead), and builds are
         incremental (ledger + content-hash skip), so a cancelled build resumes
@@ -321,47 +320,9 @@ def list_dirs(raw: str) -> dict:
     return {"path": str(base), "parent": parent, "home": str(Path.home()), "dirs": dirs}
 
 
-# ── Native folder picker (zenity, with /api/fs as the always-present fallback) ─
+# ── Native folder picker serialization ────────────────────────────────────────
 
-_PICKER_TIMEOUT_S = 180.0  # bound a stuck/abandoned dialog
 _picker_lock = asyncio.Lock()  # one dialog at a time
-
-
-async def pick_folder_native() -> dict:
-    """Open a native GNOME folder-selection dialog via ``zenity``.
-
-    Returns exactly one of:
-      ``{"path": str}``                      — a directory was picked.
-      ``{"cancelled": True}``                 — the user hit Cancel (rc != 0).
-      ``{"unavailable": True, "reason": str}`` — no display, no zenity, a
-        timeout, or the picked path wasn't a directory; callers should fall
-        back to ``GET /api/fs``.
-    """
-    if not (os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY")):
-        return {"unavailable": True, "reason": "no display (headless/SSH session)"}
-    zen = shutil.which("zenity")
-    if zen is None:
-        return {"unavailable": True, "reason": "zenity not installed"}
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            zen, "--file-selection", "--directory", "--title=Select a repository to ingest",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-    except OSError as exc:
-        return {"unavailable": True, "reason": f"failed to launch zenity: {exc!r}"}
-    try:
-        stdout, _ = await asyncio.wait_for(proc.communicate(), _PICKER_TIMEOUT_S)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
-        return {"unavailable": True, "reason": "picker timed out"}
-    if proc.returncode != 0:
-        return {"cancelled": True}
-    picked = Path(stdout.decode("utf-8", "replace").strip()).expanduser()
-    if not picked.is_dir():
-        return {"unavailable": True, "reason": "not a directory"}
-    return {"path": str(picked.resolve())}
 
 
 # ── Clear (wipe a project's ingested memory) ───────────────────────────────────
@@ -435,7 +396,13 @@ def clear_project(db_path: Path, project_id: str, include_notes: bool) -> dict:
 
 # ── Route mounting (called by gui.create_app when allow_writes=True) ──────────
 
-def mount_ingest_api(app: FastAPI, *, db_path: Path, manager: IngestManager) -> None:
+def mount_ingest_api(
+    app: FastAPI,
+    *,
+    db_path: Path,
+    manager: IngestManager,
+    pick_folder: Optional[Callable[[], dict]] = None,
+) -> None:
     """Register the ingestion-management routes on *app*."""
 
     @app.get("/api/fs")
@@ -447,7 +414,13 @@ def mount_ingest_api(app: FastAPI, *, db_path: Path, manager: IngestManager) -> 
         if _picker_lock.locked():
             raise HTTPException(409, "a picker dialog is already open")
         async with _picker_lock:
-            return await pick_folder_native()
+            if pick_folder is None:
+                return {
+                    "unavailable": True,
+                    "reason": "native window is not ready",
+                }
+            import anyio
+            return await anyio.to_thread.run_sync(pick_folder)
 
     @app.post("/api/ingest")
     async def api_ingest(body: IngestBody) -> dict:  # type: ignore[type-arg]

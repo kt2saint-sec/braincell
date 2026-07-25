@@ -21,10 +21,19 @@ from fastapi.testclient import TestClient
 from tests.conftest import _insert_doc_and_chunk, make_store
 
 
-def _app(tmp_path: Path, *, allow_writes: bool = True, auth_token: Optional[str] = None):
+def _app(
+    tmp_path: Path,
+    *,
+    allow_writes: bool = True,
+    auth_token: Optional[str] = None,
+    native_bridge=None,
+):
     from braincell.gui import create_app
     return create_app(
-        db_path=tmp_path / "braincell.db", allow_writes=allow_writes, auth_token=auth_token
+        db_path=tmp_path / "braincell.db",
+        allow_writes=allow_writes,
+        auth_token=auth_token,
+        native_bridge=native_bridge,
     )
 
 
@@ -72,66 +81,41 @@ class TestFsBrowse:
             assert client.get("/api/fs").status_code == 404
 
 
-# ── /api/pick-folder (native GNOME picker, D1) ─────────────────────────────────
+# ── /api/pick-folder (Qt bridge) ───────────────────────────────────────────────
 
 class TestPickFolderNative:
-    def _fake_zenity(self, tmp_path: Path, output: str, rc: int = 0) -> Path:
-        """A tiny real executable standing in for zenity: echoes *output*, exits rc."""
-        script = tmp_path / "fake-zenity"
-        script.write_text(f"#!/bin/sh\necho '{output}'\nexit {rc}\n")
-        script.chmod(0o755)
-        return script
+    class Bridge:
+        def __init__(self, result):
+            self.result = result
 
-    def test_zenity_absent(self, tmp_path, monkeypatch):
-        import braincell.gui_ingest as gui_ingest
-        monkeypatch.setenv("DISPLAY", ":0")
-        monkeypatch.setattr(gui_ingest.shutil, "which", lambda name: None)
+        def activate(self):
+            return True
+
+        def pick_folder(self):
+            return self.result
+
+    def test_bridge_absent(self, tmp_path):
         with TestClient(_app(tmp_path)) as client:
             r = client.post("/api/pick-folder")
         assert r.status_code == 200
-        assert r.json() == {"unavailable": True, "reason": "zenity not installed"}
+        assert r.json()["unavailable"] is True
 
-    def test_headless(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("DISPLAY", raising=False)
-        monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
-        with TestClient(_app(tmp_path)) as client:
-            r = client.post("/api/pick-folder")
-        assert r.status_code == 200
-        body = r.json()
-        assert body["unavailable"] is True
-        assert "headless" in body["reason"] or "display" in body["reason"]
-
-    def test_zenity_present_returns_path(self, tmp_path, monkeypatch):
-        import braincell.gui_ingest as gui_ingest
-        monkeypatch.setenv("DISPLAY", ":0")
+    def test_qt_bridge_returns_path(self, tmp_path):
         picked = tmp_path / "picked-dir"
         picked.mkdir()
-        script = self._fake_zenity(tmp_path, str(picked), rc=0)
-        monkeypatch.setattr(gui_ingest.shutil, "which", lambda name: str(script))
-        with TestClient(_app(tmp_path)) as client:
+        bridge = self.Bridge({"path": str(picked.resolve())})
+        with TestClient(_app(tmp_path, native_bridge=bridge)) as client:
             r = client.post("/api/pick-folder")
         assert r.status_code == 200
         assert r.json() == {"path": str(picked.resolve())}
 
-    def test_cancel_returns_cancelled(self, tmp_path, monkeypatch):
-        import braincell.gui_ingest as gui_ingest
-        monkeypatch.setenv("DISPLAY", ":0")
-        script = self._fake_zenity(tmp_path, "", rc=1)
-        monkeypatch.setattr(gui_ingest.shutil, "which", lambda name: str(script))
-        with TestClient(_app(tmp_path)) as client:
+    def test_cancel_returns_cancelled(self, tmp_path):
+        with TestClient(
+            _app(tmp_path, native_bridge=self.Bridge({"cancelled": True}))
+        ) as client:
             r = client.post("/api/pick-folder")
         assert r.status_code == 200
         assert r.json() == {"cancelled": True}
-
-    def test_non_directory_output_unavailable(self, tmp_path, monkeypatch):
-        import braincell.gui_ingest as gui_ingest
-        monkeypatch.setenv("DISPLAY", ":0")
-        script = self._fake_zenity(tmp_path, str(tmp_path / "does-not-exist"), rc=0)
-        monkeypatch.setattr(gui_ingest.shutil, "which", lambda name: str(script))
-        with TestClient(_app(tmp_path)) as client:
-            r = client.post("/api/pick-folder")
-        assert r.status_code == 200
-        assert r.json() == {"unavailable": True, "reason": "not a directory"}
 
     def test_absent_in_read_only_mode(self, tmp_path):
         with TestClient(_app(tmp_path, allow_writes=False)) as client:

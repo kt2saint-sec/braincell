@@ -1,7 +1,7 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: braincell-mcp
-Upstream-Contact: https://github.com/kt2saint-sec/braincell-mcp
-Source: https://github.com/kt2saint-sec/braincell-mcp
+Upstream-Contact: https://github.com/kt2saint-sec/braincell
+Source: https://github.com/kt2saint-sec/braincell
 
 Files: *
 Copyright: 2026 Karl Toussaint (kt2saint)
@@ -10,6 +10,16 @@ Comment: braincell-mcp is dual-licensed: AGPL-3.0-or-later for the public
  release, plus a separately sold commercial license for proprietary or
  closed-source use (see COMMERCIAL-LICENSE.md in the source repository).
  This Debian package is distributed under the AGPL-3.0-or-later terms.
+
+Files: usr/share/braincell-mcp/wheels/*pyside6*
+ usr/share/braincell-mcp/wheels/*shiboken6*
+Copyright: 2018-2026 The Qt Company Ltd. and other contributors
+License: LGPL-3.0-only
+Comment: The required native GUI uses the Qt for Python community packages
+ under the LGPL-3.0-only option. The complete LGPL-3 text is available on
+ Debian systems at /usr/share/common-licenses/LGPL-3. Qt for Python and Qt
+ include additional third-party components whose notices travel with their
+ corresponding wheels.
 
 License: AGPL-3.0-or-later
  This program is free software: you can redistribute it and/or modify it

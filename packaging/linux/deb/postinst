@@ -11,7 +11,7 @@ case "$1" in
         # --clear makes upgrades idempotent (rebuild from the new wheelhouse).
         python3 -m venv --clear "$VENV"
         "$VENV/bin/pip" install --quiet --no-index --no-cache-dir \
-            --find-links "$WHEELS" "braincell-mcp[gui]"
+            --find-links "$WHEELS" "braincell-mcp"
 
         for exe in braincell braincell-mcp braincell-map; do
             ln -sf "$VENV/bin/$exe" "/usr/bin/$exe"
