@@ -178,7 +178,7 @@ class TestPass2Commands:
 
     def test_wizard_global_and_skills_checkboxes(self, tmp_path):
         html = _page(tmp_path)
-        assert 'id="ar-global"' in html, "Missing the install --global checkbox"
+        assert 'id="ar-global"' not in html, "Project MCP connection must not target global memory"
         assert 'id="ar-skills"' in html, "Missing the place-skills checkbox"
 
     def test_reflect_model_and_contradictions_threshold_inputs(self, tmp_path):

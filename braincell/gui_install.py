@@ -41,7 +41,6 @@ from .install import (
     hook_command,
     install_hook,
     install_skills,
-    resolve_server_command,
     uninstall_hook,
 )
 
@@ -56,10 +55,9 @@ class InstallBody(BaseModel):
 
     path: str
     client: Literal["claude", "codex", "vscode"] = "claude"
-    scope: Literal["local", "user", "project"] = "local"
+    scope: Literal["local", "project"] = "local"
     no_hook: bool = False
     federate: bool = False
-    global_brain: bool = False
 
 
 class SkillsBody(BaseModel):
@@ -75,7 +73,7 @@ class UninstallBody(BaseModel):
 
     path: str
     client: Literal["claude", "codex", "vscode"] = "claude"
-    scope: Literal["local", "user", "project"] = "local"
+    scope: Literal["local", "project"] = "local"
     disarm: bool = False
 
 
@@ -124,33 +122,20 @@ def mount_install_api(app: FastAPI, *, restart_argv: Optional[list[str]] = None)
                 409, f"`{body.client}` CLI not found on PATH — install it, then retry."
             )
 
-        pid: Optional[str]
-        cwd: Optional[str]
-        if body.global_brain:
-            # Mirrors cli.py cmd_install --global: register against the shared
-            # global brain — no project id/cwd, no BRAINCELL_STORE, and federate
-            # is ignored (the global brain does not federate).
-            pid = None
-            cwd = None
-            env: dict[str, str] = {
-                "BRAINCELL_DATA_NAMESPACE": config.DATA_NAMESPACE,
-                "BRAINCELL_MODE": "global",
-            }
+        root = _resolve_dir(body.path)
+        pid = get_project_id(root)
+        cwd = str(root)
+        env = {
+            "BRAINCELL_DATA_NAMESPACE": config.DATA_NAMESPACE,
+            "BRAINCELL_PROJECT_ID": pid,
+            "BRAINCELL_STORE": "sqlite",
+        }
+        if body.client in {"codex", "vscode"} or body.scope == "project":
+            from .install import resolve_portable_server_command
+            command, cmd_args = resolve_portable_server_command()
         else:
-            root = _resolve_dir(body.path)
-            pid = get_project_id(root)  # mints + registers if absent, mirrors cli.py:812
-            cwd = str(root)
-            env = {
-                "BRAINCELL_DATA_NAMESPACE": config.DATA_NAMESPACE,
-                "BRAINCELL_PROJECT_ID": pid,
-                # Project mode: without BRAINCELL_STORE=sqlite the server's lifespan
-                # open_store() exit(1)s at startup and the MCP never loads. Mirrors cli.py.
-                "BRAINCELL_STORE": "sqlite",
-            }
-            if body.federate:
-                env["BRAINCELL_FEDERATE"] = "on"
-
-        command, cmd_args = resolve_server_command()
+            from .install import resolve_server_command
+            command, cmd_args = resolve_server_command()
         import anyio
         try:
             await anyio.to_thread.run_sync(
