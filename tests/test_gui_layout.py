@@ -176,9 +176,9 @@ class TestPass2Commands:
             "Build button must route through startIngestFromModal"
         )
 
-    def test_wizard_global_and_skills_checkboxes(self, tmp_path):
+    def test_wizard_has_no_global_registration_checkbox_and_keeps_skills(self, tmp_path):
         html = _page(tmp_path)
-        assert 'id="ar-global"' in html, "Missing the install --global checkbox"
+        assert 'id="ar-global"' not in html, "MCP registration must never target the global brain"
         assert 'id="ar-skills"' in html, "Missing the place-skills checkbox"
 
     def test_reflect_model_and_contradictions_threshold_inputs(self, tmp_path):

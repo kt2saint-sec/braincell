@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .log import get as _get_log
@@ -52,6 +53,32 @@ log = _get_log("braincell.pool")
 
 class PoolError(RuntimeError):
     """Raised when a source brain cannot be safely pooled (e.g. embedder mismatch)."""
+
+
+@dataclass(frozen=True)
+class UnpoolPreview:
+    project_ids: tuple[str, ...]
+    available_project_ids: tuple[str, ...]
+    notes: int
+    documents: int
+    chunks: int
+    links: int
+    inbound_supersessions: int
+    preserved_global_native: int
+    skipped_legacy_unclassified: int
+
+
+@dataclass(frozen=True)
+class UnpoolStats:
+    project_ids: tuple[str, ...]
+    notes_removed: int
+    documents_removed: int
+    chunks_removed: int
+    links_removed: int
+    inbound_supersessions_cleared: int
+    preserved_global_native: int
+    skipped_legacy_unclassified: int
+    backup_path: str
 
 
 @dataclass
@@ -494,5 +521,103 @@ def pool_into_global(
         _rebuild_fts(con)
         con.execute("COMMIT")
         return all_stats
+    finally:
+        con.close()
+
+
+def _unpool_placeholders(project_ids: tuple[str, ...]) -> str:
+    if not project_ids:
+        raise PoolError("Unpool requires at least one project ID.")
+    return ",".join("?" for _ in project_ids)
+
+
+def preview_unpool_from_global(project_ids: list[str] | tuple[str, ...], global_db: Path) -> UnpoolPreview:
+    """Calculate exactly which provenance-stamped copies unpool may remove."""
+    selected = tuple(sorted(set(p for p in project_ids if p)))
+    marks = _unpool_placeholders(selected)
+    con = sqlite3.connect(str(global_db))
+    try:
+        available = tuple(r[0] for r in con.execute(
+            "SELECT DISTINCT pooled_from FROM memory_notes WHERE pooled_from IS NOT NULL "
+            "UNION SELECT DISTINCT pooled_from FROM bc_documents WHERE pooled_from IS NOT NULL "
+            "ORDER BY 1"
+        ))
+        note_ids = [r[0] for r in con.execute(
+            f"SELECT id FROM memory_notes WHERE pooled_from IN ({marks})", selected
+        )]
+        note_marks = ",".join("?" for _ in note_ids) or "NULL"
+        docs = con.execute(f"SELECT COUNT(*) FROM bc_documents WHERE pooled_from IN ({marks})", selected).fetchone()[0]
+        chunks = con.execute(
+            f"SELECT COUNT(*) FROM bc_chunks WHERE document_id IN "
+            f"(SELECT id FROM bc_documents WHERE pooled_from IN ({marks}))", selected
+        ).fetchone()[0]
+        links = con.execute(
+            f"SELECT COUNT(*) FROM bc_note_links WHERE src IN ({note_marks}) OR dst IN ({note_marks})", note_ids * 2
+        ).fetchone()[0] if note_ids else 0
+        inbound = con.execute(
+            f"SELECT COUNT(*) FROM memory_notes WHERE superseded_by IN ({note_marks})", note_ids
+        ).fetchone()[0] if note_ids else 0
+        # Same ownership without provenance is deliberately ambiguous: global-native
+        # and pre-provenance copies are both protected from this operation.
+        native = con.execute(
+            f"SELECT COUNT(*) FROM memory_notes WHERE project_id IN ({marks}) AND pooled_from IS NULL", selected
+        ).fetchone()[0]
+        legacy = con.execute(
+            f"SELECT COUNT(*) FROM bc_documents WHERE project_id IN ({marks}) AND pooled_from IS NULL", selected
+        ).fetchone()[0]
+        return UnpoolPreview(selected, available, len(note_ids), docs, chunks, links, inbound, native, legacy)
+    finally:
+        con.close()
+
+
+def unpool_from_global(project_ids: list[str] | tuple[str, ...], global_db: Path) -> UnpoolStats:
+    """Atomically remove only selected provenance-stamped pooled copies.
+
+    Operation records intentionally remain: ``bc_operation_notes.note_id`` has no
+    FK by design, and undo already reports missing notes instead of corrupting audit.
+    """
+    preview = preview_unpool_from_global(project_ids, global_db)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    backup = global_db.with_name(f"{global_db.stem}-unpool-backup-{stamp}{global_db.suffix}")
+    snapshot = sqlite3.connect(str(global_db))
+    try:
+        snapshot.execute("VACUUM INTO ?", (str(backup),))
+    finally:
+        snapshot.close()
+    marks = _unpool_placeholders(preview.project_ids)
+    con = sqlite3.connect(str(global_db))
+    con.isolation_level = None
+    try:
+        con.execute("PRAGMA foreign_keys=ON")
+        con.execute("BEGIN IMMEDIATE")
+        note_ids = [r[0] for r in con.execute(
+            f"SELECT id FROM memory_notes WHERE pooled_from IN ({marks})", preview.project_ids
+        )]
+        note_marks = ",".join("?" for _ in note_ids) or "NULL"
+        links = con.execute(
+            f"SELECT COUNT(*) FROM bc_note_links WHERE src IN ({note_marks}) OR dst IN ({note_marks})", note_ids * 2
+        ).fetchone()[0] if note_ids else 0
+        inbound = con.execute(
+            f"SELECT COUNT(*) FROM memory_notes WHERE superseded_by IN ({note_marks})", note_ids
+        ).fetchone()[0] if note_ids else 0
+        if note_ids:
+            con.execute(f"UPDATE memory_notes SET superseded_by = NULL WHERE superseded_by IN ({note_marks})", note_ids)
+            con.execute(f"DELETE FROM memory_notes WHERE id IN ({note_marks})", note_ids)
+        docs = con.execute(f"SELECT COUNT(*) FROM bc_documents WHERE pooled_from IN ({marks})", preview.project_ids).fetchone()[0]
+        chunks = con.execute(
+            f"SELECT COUNT(*) FROM bc_chunks WHERE document_id IN (SELECT id FROM bc_documents WHERE pooled_from IN ({marks}))", preview.project_ids
+        ).fetchone()[0]
+        con.execute(f"DELETE FROM bc_documents WHERE pooled_from IN ({marks})", preview.project_ids)
+        _rebuild_fts(con)
+        bad = con.execute("PRAGMA foreign_key_check").fetchall()
+        if bad:
+            raise PoolError(f"Unpool foreign-key check failed: {bad!r}")
+        con.execute("COMMIT")
+        return UnpoolStats(preview.project_ids, len(note_ids), docs, chunks, links, inbound,
+                           preview.preserved_global_native, preview.skipped_legacy_unclassified, str(backup))
+    except Exception:
+        if con.in_transaction:
+            con.execute("ROLLBACK")
+        raise
     finally:
         con.close()

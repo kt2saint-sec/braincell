@@ -401,6 +401,7 @@ def mount_ingest_api(
     *,
     db_path: Path,
     manager: IngestManager,
+    allow_clear: bool,
     pick_folder: Optional[Callable[[], dict]] = None,
 ) -> None:
     """Register the ingestion-management routes on *app*."""
@@ -441,6 +442,12 @@ def mount_ingest_api(
 
     @app.post("/api/clear")
     async def api_clear(request: Request, body: ClearBody) -> dict:  # type: ignore[type-arg]
+        if not allow_clear:
+            raise HTTPException(
+                409,
+                "Clear is unavailable while viewing the global brain. Use Unpool to remove "
+                "only provenance-stamped pooled copies; global-native data is protected.",
+            )
         registry = load_path_registry()
         if body.project_id not in set(registry.values()):
             raise HTTPException(404, f"Unknown project {body.project_id!r}.")

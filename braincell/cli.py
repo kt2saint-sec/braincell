@@ -1017,6 +1017,39 @@ def cmd_pool(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_unpool(args: argparse.Namespace) -> None:
+    """Preview/apply provenance-safe removal of pooled global copies."""
+    from .pool import PoolError, preview_unpool_from_global, unpool_from_global
+    from .project_registry import load_families, load_path_registry, normalize_path
+
+    global_db = get_global_db_path()
+    if not global_db.exists():
+        raise SystemExit("braincell unpool: global brain does not exist.")
+    ids = list(args.project_ids or [])
+    if args.family:
+        members = load_families().get(args.family)
+        if members is None:
+            raise SystemExit(f"braincell unpool: unknown family {args.family!r}.")
+        registry = load_path_registry()
+        ids.extend(registry[normalize_path(p)] for p in members if normalize_path(p) in registry)
+    if args.all_pooled:
+        # Any nonempty sentinel lets preview expose provenance without selecting it.
+        ids.extend(preview_unpool_from_global(["_"], global_db).available_project_ids)
+    try:
+        preview = preview_unpool_from_global(ids, global_db)
+    except PoolError as exc:
+        raise SystemExit(f"braincell unpool: {exc}") from exc
+    print(f"Unpool preview: {', '.join(preview.project_ids)}")
+    print(f"  remove {preview.notes} notes, {preview.documents} documents, {preview.chunks} chunks, {preview.links} links")
+    print(f"  preserve {preview.preserved_global_native} global-native; {preview.skipped_legacy_unclassified} legacy/unclassified")
+    if not args.apply:
+        print("Dry run only. Re-run with --apply to create a backup and remove these pooled copies.")
+        return
+    stats = unpool_from_global(ids, global_db)
+    print(f"Unpooled {', '.join(stats.project_ids)}; backup: {stats.backup_path}")
+    print(f"  removed {stats.notes_removed} notes, {stats.documents_removed} documents, {stats.chunks_removed} chunks, {stats.links_removed} links")
+
+
 def cmd_gui(args: argparse.Namespace) -> None:
     """Launch the native BrainCell GUI (or install its desktop launcher)."""
     if getattr(args, "install_launcher", False):
@@ -1168,41 +1201,32 @@ def cmd_install(args: argparse.Namespace) -> None:
     Claude Code, the proactive family-recall hook, disarmed). Turnkey — no hand-edited
     config. `--client claude|codex|vscode` picks the target (default claude).
 
-    Project mode (default) mints/confirms the cwd's ULID and registers a braincell MCP
-    scoped to it; --global registers against the shared global brain instead. The hook
-    is Claude-Code-only and installed OFF; run `braincell hook on` to arm it.
+    Project mode only: BrainCell MCP registration never targets the global brain.
+    The hook is Claude-Code-only and installed OFF; run `braincell hook on` to arm it.
     """
     from . import config
     from .install import get_client, hook_command, resolve_server_command
 
     ns = config.DATA_NAMESPACE
     env: dict[str, str] = {"BRAINCELL_DATA_NAMESPACE": ns}
-    if args.global_brain:
-        env["BRAINCELL_MODE"] = "global"
-        target = "global brain"
-        cwd = None
-        if args.federate:
-            print("• --federate ignored with --global (global brain does not federate)",
-                  file=sys.stderr)
-    else:
-        root = Path(args.path).resolve()
-        pid = get_project_id(root)  # mints + registers if absent
-        env["BRAINCELL_PROJECT_ID"] = pid
-        # Project mode: the server's lifespan open_store() resolves via the
-        # BRAINCELL_STORE=sqlite + BRAINCELL_PROJECT_ID env contract. Omitting
-        # BRAINCELL_STORE makes the MCP server exit(1) at startup (never loads).
-        env["BRAINCELL_STORE"] = "sqlite"
-        target = f"project {pid}"
-        cwd = str(root)
-        if args.federate:
-            env["BRAINCELL_FEDERATE"] = "on"
-
-    command, cmd_args = resolve_server_command()
+    root = Path(args.path).resolve()
+    pid = get_project_id(root)  # mints + registers if absent
+    env["BRAINCELL_PROJECT_ID"] = pid
+    env["BRAINCELL_STORE"] = "sqlite"
+    target = f"project {pid}"
+    cwd = str(root)
+    if args.federate:
+        env["BRAINCELL_FEDERATE"] = "on"
     try:
         client = get_client(args.client)
     except ValueError as exc:
         print(f"braincell install: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
+    if args.client == "codex":
+        from .install import resolve_portable_server_command
+        command, cmd_args = resolve_portable_server_command()
+    else:
+        command, cmd_args = resolve_server_command()
     try:
         client.mcp_add("braincell", command, cmd_args, env, scope=args.scope, cwd=cwd)
     except RuntimeError as exc:
@@ -1286,6 +1310,26 @@ def cmd_uninstall(args: argparse.Namespace) -> None:
         if args.disarm:
             _family_hook_flag().unlink(missing_ok=True)
             print("✓ disarmed the hook flag")
+
+
+def cmd_cleanup_legacy_mcp(args: argparse.Namespace) -> None:
+    """Explicit cleanup for registrations that predate project-local isolation."""
+    if args.client == "codex":
+        from .install import remove_legacy_codex_global_registration
+        changed = remove_legacy_codex_global_registration()
+        print("✓ removed legacy global Codex BrainCell MCP entry" if changed
+              else "• no legacy global Codex BrainCell MCP entry found")
+        return
+    if args.client == "claude":
+        from .install import get_client
+        client = get_client("claude")
+        if not client.available():
+            print("braincell mcp-cleanup: `claude` CLI not found", file=sys.stderr)
+            raise SystemExit(1)
+        client.mcp_remove("braincell", scope="user", cwd=None)
+        print("✓ requested removal of legacy user-scope Claude BrainCell MCP entry")
+        return
+    raise SystemExit("VS Code automatic global registration is unsupported; no legacy cleanup is available.")
 
 
 def cmd_hook(args: argparse.Namespace) -> None:
@@ -1553,13 +1597,11 @@ def main(argv: list[str] | None = None) -> None:
         help="Wire braincell into an MCP client (register MCP; for Claude Code, +hook).",
     )
     pi.add_argument("path", nargs="?", default=".",
-                    help="Project path to wire (default: cwd; ignored with --global).")
+                    help="Project path to wire (default: cwd).")
     pi.add_argument("--client", choices=["claude", "codex", "vscode"], default="claude",
                     help="Target MCP client (default: claude). codex/vscode = MCP only, no hook.")
-    pi.add_argument("--global", dest="global_brain", action="store_true",
-                    help="Register against the shared global brain instead of this project.")
-    pi.add_argument("--scope", choices=["local", "user", "project"], default="local",
-                    help="Claude Code mcp scope: local=this project (default), user=all, project=.mcp.json. Ignored for codex/vscode.")
+    pi.add_argument("--scope", choices=["local", "project"], default="local",
+                    help="Claude Code scope: local=this project (default), project=.mcp.json. Ignored for Codex.")
     pi.add_argument("--no-hook", action="store_true",
                     help="Register the MCP only; skip installing the family-recall hook (Claude Code).")
     pi.add_argument("--skills", action="store_true",
@@ -1571,7 +1613,7 @@ def main(argv: list[str] | None = None) -> None:
     pi.add_argument("--federate", action="store_true",
                     help="Stamp BRAINCELL_FEDERATE=on into the MCP env so recall/search "
                          "scope='family' fan out across the project's family (opt-in; "
-                         "default off). Ignored with --global (global brain does not federate).")
+                         "default off).")
     pi.set_defaults(func=cmd_install)
 
     pu = sub.add_parser("uninstall", help="Remove the braincell MCP registration (+ hook for Claude Code).")
@@ -1579,11 +1621,15 @@ def main(argv: list[str] | None = None) -> None:
                     help="Project path (default: cwd; for local-scope MCP removal).")
     pu.add_argument("--client", choices=["claude", "codex", "vscode"], default="claude",
                     help="Client to remove from (default: claude). VS Code removal is manual (no CLI).")
-    pu.add_argument("--scope", choices=["local", "user", "project"], default="local",
+    pu.add_argument("--scope", choices=["local", "project"], default="local",
                     help="Claude Code scope to remove from (must match how it was installed).")
     pu.add_argument("--disarm", action="store_true",
                     help="Also remove the hook arm-flag (disarm) while uninstalling (Claude Code).")
     pu.set_defaults(func=cmd_uninstall)
+
+    pcl = sub.add_parser("mcp-cleanup", help="Explicitly remove a legacy global/user BrainCell MCP entry.")
+    pcl.add_argument("--client", choices=["claude", "codex"], required=True)
+    pcl.set_defaults(func=cmd_cleanup_legacy_mcp)
 
     ph = sub.add_parser("hook", help="Arm/disarm/status the proactive family-recall hook.")
     ph.add_argument("hook_cmd", choices=["on", "off", "status"],
@@ -1669,6 +1715,13 @@ def main(argv: list[str] | None = None) -> None:
     )
     ppool.add_argument("-v", "--verbose", action="store_true")
     ppool.set_defaults(func=cmd_pool)
+
+    punpool = sub.add_parser("unpool", help="Preview/remove provenance-stamped pooled copies from the global brain.")
+    punpool.add_argument("--project-id", dest="project_ids", action="append", default=[], help="Project ULID to unpool (repeatable).")
+    punpool.add_argument("--family", help="Unpool registered members of this family.")
+    punpool.add_argument("--all-pooled", action="store_true", help="Select every pooled provenance ID in the global brain.")
+    punpool.add_argument("--apply", action="store_true", help="Apply destructive removal (default is preview only).")
+    punpool.set_defaults(func=cmd_unpool)
 
     pstart = sub.add_parser(
         "start",

@@ -22,9 +22,14 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
+from typing import Any
+
+import tomlkit
 
 from .log import get as _get_log
 
@@ -49,6 +54,23 @@ def resolve_server_command() -> tuple[str, list[str]]:
     if exe:
         return exe, []
     return sys.executable, ["-m", "braincell.server"]
+
+
+def resolve_portable_server_command() -> tuple[str, list[str]]:
+    """Return the committable command used in project-local client config.
+
+    A project ``.codex/config.toml`` may be committed or moved between machines.
+    It must therefore never receive the installing machine's venv path.  The
+    package's console script is the supported portable contract; installation
+    deliberately refuses rather than recording an absolute fallback.
+    """
+    if not shutil.which("braincell-mcp"):
+        raise RuntimeError(
+            "`braincell-mcp` is not on PATH. Install braincell-mcp into the "
+            "environment Codex will use, then retry; refusing to write a "
+            "machine-specific absolute executable path into project config."
+        )
+    return "braincell-mcp", []
 
 
 def hook_command(python: str | None = None) -> str:
@@ -252,9 +274,167 @@ class ClaudeCodeClient:
             )
 
 
+_CODEX_MANAGED_COMMENT = "Managed by braincell; remove with `braincell uninstall --client codex`."
+
+
+def _git_project_root(path: str | Path) -> Path:
+    """Return the nearest Git project root for a path, resolving symlinks first.
+
+    Codex discovers project config by walking from the Git project root. Writing
+    a nested ``.codex/config.toml`` could accidentally scope BrainCell to only a
+    subdirectory, so registration always targets that root and rejects non-Git
+    folders instead of falling back to a user/global config.
+    """
+    current = Path(path).resolve()
+    if not current.is_dir():
+        raise RuntimeError(f"Not a directory: {path}")
+    for candidate in (current, *current.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    raise RuntimeError(
+        "Codex project-local MCP registration requires a Git project folder. "
+        "Initialize Git first; BrainCell will not fall back to global Codex config."
+    )
+
+
+def codex_project_config_path(path: str | Path) -> Path:
+    """The one project-local Codex config BrainCell is allowed to manage."""
+    return _git_project_root(path) / ".codex" / "config.toml"
+
+
+def _read_toml_document(path: Path):
+    """Read a TOML document without ever rewriting malformed user configuration."""
+    if not path.exists():
+        return tomlkit.document(), None, True
+    try:
+        raw = path.read_text(encoding="utf-8")
+        return tomlkit.parse(raw), raw, raw.endswith("\n")
+    except (OSError, Exception) as exc:  # tomlkit has several parse-error types
+        raise RuntimeError(
+            f"Cannot parse {path}; refusing to change user-managed Codex configuration. "
+            f"Fix the TOML and retry. ({exc})"
+        ) from exc
+
+
+def _atomic_write_text(path: Path, text: str, mode: int | None) -> None:
+    """Back up then atomically replace, retaining existing mode and newline choice."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        shutil.copy2(path, path.with_name(path.name + ".braincell.bak"))
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    tmp = Path(tmp_name)
+    try:
+        if mode is not None:
+            os.fchmod(fd, stat.S_IMODE(mode))
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        tmp.replace(path)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def _canonical_codex_entry(command: str, args: list[str], env: dict[str, str]) -> dict[str, Any]:
+    return {"command": command, "args": list(args), "env": dict(env)}
+
+
+def _plain(item: Any) -> Any:
+    """Convert tomlkit values to comparison-safe ordinary Python containers."""
+    if isinstance(item, dict):
+        return {str(k): _plain(v) for k, v in item.items()}
+    if isinstance(item, list):
+        return [_plain(v) for v in item]
+    return item.unwrap() if hasattr(item, "unwrap") else item
+
+
+def manage_codex_project_registration(
+    path: str | Path, command: str, args: list[str], env: dict[str, str]
+) -> dict:
+    """Add BrainCell's canonical project table or refuse a conflicting one.
+
+    Only ``[mcp_servers.braincell]`` is touched.  Comments, table ordering,
+    unrelated keys, existing permissions, and final-newline behavior survive the
+    tomlkit round-trip; every replacement has a sibling backup.
+    """
+    cfg = codex_project_config_path(path)
+    doc, raw, newline = _read_toml_document(cfg)
+    mcp_servers = doc.get("mcp_servers")
+    if mcp_servers is None:
+        mcp_servers = tomlkit.table()
+        doc.add("mcp_servers", mcp_servers)
+    elif not isinstance(mcp_servers, dict):
+        raise RuntimeError(f"{cfg} has a non-table [mcp_servers]; refusing to overwrite it.")
+    canonical = _canonical_codex_entry(command, args, env)
+    existing = mcp_servers.get(_MCP_SERVER_NAME)
+    if existing is not None:
+        if _plain(existing) != canonical:
+            raise RuntimeError(
+                f"{cfg} already has [mcp_servers.braincell] with different settings. "
+                "It is user-managed; BrainCell left it untouched."
+            )
+        return {"changed": False, "config_path": str(cfg), "project_root": str(cfg.parent.parent)}
+    entry = tomlkit.table()
+    entry.add("command", command)
+    entry.add("args", list(args))
+    entry.add("env", dict(env))
+    entry.comment(_CODEX_MANAGED_COMMENT)
+    mcp_servers.add(_MCP_SERVER_NAME, entry)
+    rendered = tomlkit.dumps(doc)
+    if raw is not None and not newline:
+        rendered = rendered.rstrip("\n")
+    mode = cfg.stat().st_mode if cfg.exists() else None
+    _atomic_write_text(cfg, rendered, mode)
+    return {"changed": True, "config_path": str(cfg), "project_root": str(cfg.parent.parent)}
+
+
+def remove_codex_project_registration(
+    path: str | Path, command: str | None = None, args: list[str] | None = None,
+    env: dict[str, str] | None = None,
+) -> bool:
+    """Remove only a canonical BrainCell project table; conflicts stay untouched."""
+    cfg = codex_project_config_path(path)
+    if not cfg.exists():
+        return False
+    doc, raw, newline = _read_toml_document(cfg)
+    mcp_servers = doc.get("mcp_servers")
+    entry = mcp_servers.get(_MCP_SERVER_NAME) if isinstance(mcp_servers, dict) else None
+    if entry is None:
+        return False
+    canonical = _canonical_codex_entry(command, args or [], env or {}) if command else None
+    managed = _CODEX_MANAGED_COMMENT in str(entry.trivia.comment) if hasattr(entry, "trivia") else False
+    if not managed and (canonical is None or _plain(entry) != canonical):
+        raise RuntimeError(
+            f"{cfg} has a differing [mcp_servers.braincell] entry; it is user-managed and was not removed."
+        )
+    del mcp_servers[_MCP_SERVER_NAME]
+    rendered = tomlkit.dumps(doc)
+    if raw is not None and not newline:
+        rendered = rendered.rstrip("\n")
+    _atomic_write_text(cfg, rendered, cfg.stat().st_mode)
+    return True
+
+
+def remove_legacy_codex_global_registration() -> bool:
+    """Explicitly remove only the global BrainCell entry, preserving all else."""
+    cfg = codex_config_path()
+    if not cfg.exists():
+        return False
+    doc, raw, newline = _read_toml_document(cfg)
+    servers = doc.get("mcp_servers")
+    if not isinstance(servers, dict) or _MCP_SERVER_NAME not in servers:
+        return False
+    del servers[_MCP_SERVER_NAME]
+    rendered = tomlkit.dumps(doc)
+    if raw is not None and not newline:
+        rendered = rendered.rstrip("\n")
+    _atomic_write_text(cfg, rendered, cfg.stat().st_mode)
+    return True
+
+
 class CodexClient:
-    """Wire braincell into Codex via `codex mcp add`. MCP-only (Codex has no
-    UserPromptSubmit-style hook). Config is global (`~/.codex/config.toml`)."""
+    """Wire BrainCell into a trusted Codex Git project, never user-global config."""
 
     name = "codex"
 
@@ -264,40 +444,25 @@ class CodexClient:
     def available(self) -> bool:
         return bool(self._codex)
 
-    def _run(self, args: list[str], cwd: str | None) -> subprocess.CompletedProcess:
-        return subprocess.run([self._codex, *args], cwd=cwd, capture_output=True, text=True)
-
     def mcp_remove(self, name: str, scope: str | None = None, cwd: str | None = None) -> None:
-        """Best-effort remove (ignore 'not found') so add is idempotent."""
-        self._run(["mcp", "remove", name], cwd)
+        if name != _MCP_SERVER_NAME or not cwd:
+            raise RuntimeError("Codex project removal requires BrainCell's project path.")
+        remove_codex_project_registration(cwd)
 
     def mcp_add(self, name, command, args, env, scope=None, cwd=None) -> None:
-        """Register the stdio MCP server (remove-then-add = idempotent). Raises on failure.
-        ``scope`` is accepted for a uniform call site but ignored — Codex config is global."""
+        """Register only in the Git project's trusted ``.codex/config.toml``."""
         if not self.available():
             raise RuntimeError(
                 "`codex` CLI not found on PATH — is Codex installed? "
-                "(the MCP registration uses `codex mcp add`)."
+                "(Codex must be installed to load project-local configuration)."
             )
-        self.mcp_remove(name, cwd=cwd)
-        argv = ["mcp", "add", name]
-        for key, val in env.items():
-            argv += ["--env", f"{key}={val}"]
-        argv += ["--", command, *args]
-        res = self._run(argv, cwd)
-        if res.returncode != 0:
-            raise RuntimeError(
-                f"`codex mcp add {name}` failed (exit {res.returncode}): "
-                f"{res.stderr.strip() or res.stdout.strip()}"
-            )
+        if name != _MCP_SERVER_NAME or not cwd:
+            raise RuntimeError("Codex registration requires a project folder.")
+        manage_codex_project_registration(cwd, command, args, env)
 
 
 class VSCodeClient:
-    """Wire braincell into VS Code via `code --add-mcp`. MCP-only. Writes the user
-    MCP config (`User/mcp.json`, keyed by name → re-adding updates in place).
-
-    NOTE: VS Code exposes no remove-MCP CLI (only `--add-mcp`), so uninstall is a
-    documented MANUAL step — mcp_remove raises with instructions rather than pretending."""
+    """Deliberately refuses automatic registration until a safe workspace API exists."""
 
     name = "vscode"
 
@@ -308,23 +473,11 @@ class VSCodeClient:
         return bool(self._code)
 
     def mcp_add(self, name, command, args, env, scope=None, cwd=None) -> None:
-        if not self.available():
-            raise RuntimeError(
-                "`code` CLI not found on PATH — install VS Code's shell command "
-                "(Command Palette → 'Shell Command: Install code command in PATH')."
-            )
-        payload: dict = {"name": name, "command": command, "args": list(args)}
-        if env:
-            payload["env"] = dict(env)
-        res = subprocess.run(
-            [self._code, "--add-mcp", json.dumps(payload)],
-            cwd=cwd, capture_output=True, text=True,
+        raise RuntimeError(
+            "Automatic VS Code registration is disabled because `code --add-mcp` "
+            "writes user-global configuration. Configure a workspace-local MCP entry "
+            "manually, or use Claude Code/Codex project registration."
         )
-        if res.returncode != 0:
-            raise RuntimeError(
-                f"`code --add-mcp` failed (exit {res.returncode}): "
-                f"{res.stderr.strip() or res.stdout.strip()}"
-            )
 
     def mcp_remove(self, name: str, scope: str | None = None, cwd: str | None = None) -> None:
         raise NotImplementedError(

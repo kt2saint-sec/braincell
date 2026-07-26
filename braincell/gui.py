@@ -26,7 +26,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
 
-from . import embed_spec
+from . import config, embed_spec
 from .embed import embed_query_async, embedder_status
 from .gui_template import INDEX_HTML
 from .install import claude_registered_map, registration_status
@@ -63,6 +63,17 @@ class _PoolBody(BaseModel):
     family: Optional[str] = None
     all_projects: bool = False
     prune: bool = False
+
+
+class _UnpoolPreviewBody(BaseModel):
+    project_ids: list[str] = []
+    family: Optional[str] = None
+    all_pooled: bool = False
+
+
+class _UnpoolApplyBody(_UnpoolPreviewBody):
+    generation: str
+    confirm: bool = False
 
 
 # ── App factory ───────────────────────────────────────────────────────────────
@@ -754,6 +765,58 @@ def create_app(
                 raise HTTPException(409, str(e))
             return {"pooled": [s.__dict__ for s in stats], "skipped": skipped}
 
+        def _unpool_ids(body: _UnpoolPreviewBody, global_db: Path) -> list[str]:
+            from .pool import preview_unpool_from_global
+            ids = list(body.project_ids)
+            if body.family:
+                members = load_families().get(body.family)
+                if members is None:
+                    raise HTTPException(404, f"Family {body.family!r} not found.")
+                registry = load_path_registry()
+                ids.extend(registry[normalize_path(p)] for p in members if normalize_path(p) in registry)
+            if body.all_pooled:
+                ids.extend(preview_unpool_from_global(["_"], global_db).available_project_ids)
+            if not ids:
+                raise HTTPException(400, "Select project IDs, a family, or all pooled provenance.")
+            return ids
+
+        def _unpool_generation(db: Path) -> str:
+            state = db.stat()
+            return f"{state.st_ino}:{state.st_size}:{state.st_mtime_ns}"
+
+        @app.post("/api/unpool/preview")
+        async def api_unpool_preview(body: _UnpoolPreviewBody) -> dict:  # type: ignore[type-arg]
+            from .config import get_global_db_path
+            from .pool import PoolError, preview_unpool_from_global
+            global_db = get_global_db_path()
+            if not global_db.exists():
+                raise HTTPException(409, "No global brain yet.")
+            try:
+                preview = preview_unpool_from_global(_unpool_ids(body, global_db), global_db)
+            except PoolError as exc:
+                raise HTTPException(400, str(exc))
+            return {"preview": preview.__dict__, "generation": _unpool_generation(global_db)}
+
+        @app.post("/api/unpool/apply")
+        async def api_unpool_apply(body: _UnpoolApplyBody) -> dict:  # type: ignore[type-arg]
+            from .config import get_global_db_path
+            from .pool import PoolError, unpool_from_global
+            if not body.confirm:
+                raise HTTPException(400, "Explicit confirmation is required to unpool.")
+            global_db = get_global_db_path()
+            if not global_db.exists():
+                raise HTTPException(409, "No global brain yet.")
+            if body.generation != _unpool_generation(global_db):
+                raise HTTPException(409, "Global brain changed since preview; preview again before applying.")
+            try:
+                import anyio
+                stats = await anyio.to_thread.run_sync(
+                    lambda: unpool_from_global(_unpool_ids(body, global_db), global_db)
+                )
+            except PoolError as exc:
+                raise HTTPException(409, str(exc))
+            return {"ok": True, "stats": stats.__dict__}
+
         # Ingestion management (folder navigation / build jobs / clear / schedules).
         from .gui_ingest import IngestManager, mount_ingest_api
         app.state.ingest_manager = IngestManager()
@@ -761,6 +824,7 @@ def create_app(
             app,
             db_path=db_path,
             manager=app.state.ingest_manager,
+            allow_clear=db_path != config.get_global_db_path(),
             pick_folder=(native_bridge.pick_folder if native_bridge is not None else None),
         )
 

@@ -11,6 +11,7 @@ iron-law-like hook is preserved), and the arm/disarm flag lifecycle.
 from __future__ import annotations
 
 import json
+import stat
 import subprocess
 
 import pytest
@@ -143,57 +144,48 @@ def test_mcp_add_no_claude_binary_raises(monkeypatch):
 
 # ── Codex adapter ───────────────────────────────────────────────────────────────
 
-def test_codex_mcp_add_builds_argv(monkeypatch):
-    calls = []
-
-    def fake_run(argv, cwd=None, capture_output=True, text=True):
-        calls.append(argv)
-        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
-
-    monkeypatch.setattr(inst.subprocess, "run", fake_run)
+def test_codex_mcp_add_writes_project_config_preserving_unrelated_toml(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    (repo / ".codex").mkdir()
+    cfg = repo / ".codex" / "config.toml"
+    cfg.write_text("# keep me\nmodel = 'x'\n[features]\nfast_mode = true\n", encoding="utf-8")
+    cfg.chmod(0o640)
     client = inst.CodexClient(codex_bin="/fake/codex")
-    client.mcp_add("braincell", "/bin/braincell-mcp", [],
-                   {"BRAINCELL_PROJECT_ID": "PID1"}, cwd="/repo")
-
-    # remove-then-add; codex uses `--env K=V` (not `-e`) and has no `-s` scope.
-    assert calls[0][:4] == ["/fake/codex", "mcp", "remove", "braincell"]
-    add = calls[1]
-    assert add[:4] == ["/fake/codex", "mcp", "add", "braincell"]
-    assert "--env" in add and "BRAINCELL_PROJECT_ID=PID1" in add
-    assert "-s" not in add  # codex is global-scope, no scope flag
-    assert add[-2:] == ["--", "/bin/braincell-mcp"]
+    client.mcp_add("braincell", "braincell-mcp", [], {"BRAINCELL_PROJECT_ID": "PID1"}, cwd=str(repo))
+    text = cfg.read_text()
+    assert "# keep me" in text and "fast_mode = true" in text
+    assert "[mcp_servers.braincell]" in text and "PID1" in text
+    assert stat.S_IMODE(cfg.stat().st_mode) == 0o640
+    before = text
+    client.mcp_add("braincell", "braincell-mcp", [], {"BRAINCELL_PROJECT_ID": "PID1"}, cwd=str(repo))
+    assert cfg.read_text() == before
 
 
-def test_codex_mcp_add_raises_on_failure(monkeypatch):
-    def fake_run(argv, cwd=None, capture_output=True, text=True):
-        rc = 0 if argv[2] == "remove" else 1
-        return subprocess.CompletedProcess(argv, rc, stdout="", stderr="nope")
-
-    monkeypatch.setattr(inst.subprocess, "run", fake_run)
-    with pytest.raises(RuntimeError, match="nope"):
-        inst.CodexClient(codex_bin="/fake/codex").mcp_add("braincell", "cmd", [], {})
+def test_codex_conflict_and_malformed_config_are_refused_without_changes(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    (repo / ".codex").mkdir()
+    cfg = repo / ".codex" / "config.toml"
+    cfg.write_text("[mcp_servers.braincell]\ncommand='other'\n")
+    before = cfg.read_bytes()
+    with pytest.raises(RuntimeError, match="user-managed"):
+        inst.CodexClient(codex_bin="/fake/codex").mcp_add("braincell", "braincell-mcp", [], {}, cwd=str(repo))
+    assert cfg.read_bytes() == before
+    cfg.write_text("[broken\n")
+    before = cfg.read_bytes()
+    with pytest.raises(RuntimeError, match="Cannot parse"):
+        inst.manage_codex_project_registration(repo, "braincell-mcp", [], {})
+    assert cfg.read_bytes() == before
 
 
 # ── VS Code adapter ─────────────────────────────────────────────────────────────
 
-def test_vscode_mcp_add_builds_json(monkeypatch):
-    calls = []
-
-    def fake_run(argv, cwd=None, capture_output=True, text=True):
-        calls.append(argv)
-        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
-
-    monkeypatch.setattr(inst.subprocess, "run", fake_run)
-    client = inst.VSCodeClient(code_bin="/fake/code")
-    client.mcp_add("braincell", "/bin/bc-mcp", ["-m", "x"],
-                   {"BRAINCELL_PROJECT_ID": "PID1"})
-
-    assert calls[0][:2] == ["/fake/code", "--add-mcp"]
-    payload = json.loads(calls[0][2])
-    assert payload["name"] == "braincell"
-    assert payload["command"] == "/bin/bc-mcp"
-    assert payload["args"] == ["-m", "x"]
-    assert payload["env"] == {"BRAINCELL_PROJECT_ID": "PID1"}
+def test_vscode_mcp_add_refuses_user_global_registration():
+    with pytest.raises(RuntimeError, match="disabled"):
+        inst.VSCodeClient(code_bin="/fake/code").mcp_add("braincell", "x", [], {})
 
 
 def test_vscode_mcp_remove_is_manual(monkeypatch):
@@ -222,6 +214,7 @@ def test_cmd_install_codex_mcp_only_no_hook(tmp_path, monkeypatch, capsys):
                         lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout="", stderr=""))
     repo = tmp_path / "repoC"
     repo.mkdir()
+    (repo / ".git").mkdir()
     main(["install", str(repo), "--client", "codex"])
     out = capsys.readouterr().out
     assert "registered braincell MCP with codex" in out
@@ -299,7 +292,7 @@ def test_cmd_install_federate_stamps_env(tmp_path, monkeypatch, capsys):
     assert "federation: on" in out.lower()
 
 
-def test_cmd_install_federate_with_global_warns_and_skips(tmp_path, monkeypatch, capsys):
+def test_cmd_install_global_is_not_an_option(tmp_path, monkeypatch, capsys):
     _settings(tmp_path, monkeypatch)
     monkeypatch.setattr(inst.shutil, "which",
                         lambda n: "/fake/claude" if n == "claude" else None)
@@ -310,12 +303,9 @@ def test_cmd_install_federate_with_global_warns_and_skips(tmp_path, monkeypatch,
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
     monkeypatch.setattr(inst.subprocess, "run", fake_run)
-    main(["install", "--global", "--federate"])
-    add_argv = calls[1]
-    assert "BRAINCELL_MODE=global" in add_argv
-    assert not any(a.startswith("BRAINCELL_FEDERATE=") for a in add_argv)
-    err = capsys.readouterr().err
-    assert "--federate ignored with --global" in err
+    with pytest.raises(SystemExit) as exc:
+        main(["install", "--global", "--federate"])
+    assert exc.value.code == 2
 
 
 def test_cmd_install_no_hook_flag(tmp_path, monkeypatch, capsys):

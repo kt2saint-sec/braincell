@@ -40,6 +40,7 @@ dependencies = [
     "httpx>=0.28.0,<1",        # embed.py HTTP client
     "anyio>=4.14.0,<5",        # gui.py async plumbing
     "pydantic>=2.13.0,<3",     # request/response models
+    "tomlkit>=0.13,<1",        # comment-preserving Codex project-config edits
     "PySide6>=6.8,<7",         # interactive desktop GUI + QtWebEngine renderer
 ]
 

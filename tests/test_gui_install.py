@@ -197,10 +197,8 @@ def test_install_hook_flag_behavior(tmp_path, monkeypatch):
     assert any("braincell.family_hook" in c for c in cmds)
 
 
-def test_install_global_brain(tmp_path, monkeypatch):
-    """(t8b) global_brain=true mirrors `braincell install --global`: env carries
-    MODE=global only (no PROJECT_ID/STORE, federate ignored), cwd None,
-    project_id None — and the path is never resolved (a bogus one still 200s)."""
+def test_install_global_brain_is_rejected(tmp_path, monkeypatch):
+    """MCP registration must never have a global-brain escape hatch."""
     _settings(tmp_path, monkeypatch)
     fake_cls, calls = _fake_client()
     monkeypatch.setitem(inst.CLIENTS, "claude", fake_cls)
@@ -212,17 +210,8 @@ def test_install_global_brain(tmp_path, monkeypatch):
             "federate": True,
         })
 
-    assert r.status_code == 200
-    body = r.json()
-    assert body["ok"] is True
-    assert body["project_id"] is None
-    env = calls[0]["env"]
-    assert env["BRAINCELL_MODE"] == "global"
-    assert "BRAINCELL_DATA_NAMESPACE" in env
-    assert "BRAINCELL_PROJECT_ID" not in env
-    assert "BRAINCELL_STORE" not in env
-    assert "BRAINCELL_FEDERATE" not in env
-    assert calls[0]["cwd"] is None
+    assert r.status_code == 422
+    assert calls == []
 
 
 # ── /api/uninstall ───────────────────────────────────────────────────────────────

@@ -1337,12 +1337,10 @@ function arStepInstall(){
      <select class="mo-input" id="ar-client">
        <option value="claude">claude</option>
        <option value="codex">codex</option>
-       <option value="vscode">vscode</option>
      </select>
      <div class="mo-label">Scope</div>
      <select class="mo-input" id="ar-scope">
        <option value="local" selected>local</option>
-       <option value="user">user</option>
        <option value="project">project</option>
      </select>
      <label style="display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--mut);margin-top:12px">
@@ -1350,9 +1348,6 @@ function arStepInstall(){
      </label>
      <label style="display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--mut);margin-top:8px" id="ar-hook-row">
        <input type="checkbox" id="ar-no-hook"> Skip family-recall hook
-     </label>
-     <label style="display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--mut);margin-top:8px" id="ar-global-row">
-       <input type="checkbox" id="ar-global"> Also register for the global brain (install --global)
      </label>
      <label style="display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--mut);margin-top:8px" id="ar-skills-row">
        <input type="checkbox" id="ar-skills"> Also place the /braincell skills
@@ -1365,11 +1360,11 @@ function arStepInstall(){
   arSyncHookRow();
 }
 function arSyncHookRow(){
-  /* hook / --global / skills rows are Claude-Code-only — hide for other clients */
+  /* hook and skills are Claude-Code-only — hide for other clients */
   const cSel=document.getElementById("ar-client");
   if(!cSel)return;
   const show=cSel.value==="claude"?"":"none";
-  ["ar-hook-row","ar-global-row","ar-skills-row"].forEach(id=>{
+  ["ar-hook-row","ar-skills-row"].forEach(id=>{
     const row=document.getElementById(id);
     if(row)row.style.display=show;
   });
@@ -1380,11 +1375,10 @@ async function arDoInstall(){
   const federate=document.getElementById("ar-federate").checked;
   const noHook=!!(document.getElementById("ar-no-hook")||{}).checked;
   /* claude-only options — a checkbox ticked then hidden by a client switch must not fire */
-  const globalBrain=client==="claude"&&!!(document.getElementById("ar-global")||{}).checked;
   const wantSkills=client==="claude"&&!!(document.getElementById("ar-skills")||{}).checked;
   const errBox=document.getElementById("ar-install-err");
   try{
-    const res=await apiPost("/api/install",{path:arPath,client,scope,no_hook:noHook,federate,global_brain:globalBrain});
+    const res=await apiPost("/api/install",{path:arPath,client,scope,no_hook:noHook,federate});
     arProjectId=res.project_id;arClient=client;
     if(wantSkills){
       try{
@@ -1687,7 +1681,7 @@ function mcpDeregisterSelected(){
      </select>
      <div class="mo-label">Scope</div>
      <select class="mo-input" id="dm-scope">
-       <option value="local">local</option><option value="user">user</option><option value="project">project</option>
+       <option value="local">local</option><option value="project">project</option>
      </select>
      <label style="display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--mut);margin-top:12px">
        <input type="checkbox" id="dm-disarm"> also disarm the family-recall hook
@@ -1922,6 +1916,15 @@ function openCommandsModal(){
          <button class="btn"${wdis()} onclick="cmdPool()">Run</button>
        </div></div>
 
+     <div class="note"><div class="k">unpool</div>
+       <div class="c">Remove only pooled copies from the global brain. This does not alter a project's own brain, family membership, or MCP registration.</div>
+       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:11.5px;color:var(--mut)">
+         <input class="mo-input" id="cmd-unpool-id" placeholder="project ULID (optional)" style="width:210px;padding:4px 8px">
+         <select class="mo-input" id="cmd-unpool-fam" style="width:auto;padding:4px 8px">${cmdFamOptions()}</select>
+         <label><input type="checkbox" id="cmd-unpool-all"> all pooled provenance</label>
+         <button class="btn danger"${wdis()} onclick="cmdUnpoolPreview()">Preview unpool</button>
+       </div></div>
+
      <div class="note"><div class="k">skills</div>
        <div class="c">Places the /braincell-init and /braincell-sync skills into ~/.claude/skills so
        Claude Code can run them. Your own edited copies are never overwritten.</div>
@@ -1949,7 +1952,7 @@ function openCommandsModal(){
            <option value="claude">claude</option><option value="codex">codex</option><option value="vscode">vscode</option>
          </select>
          <select class="mo-input" id="cmd-un-scope" style="width:auto;padding:4px 8px">
-           <option value="local">local</option><option value="user">user</option><option value="project">project</option>
+           <option value="local">local</option><option value="project">project</option>
          </select>
          <label><input type="checkbox" id="cmd-un-disarm"> also disarm hook</label>
          <button class="btn danger"${wdis()} onclick="cmdUninstall()">Deregister MCP</button>
@@ -2097,6 +2100,32 @@ async function cmdPool(){
     return;
   }
   go();
+}
+
+async function cmdUnpoolPreview(){
+  if(!requireWrites())return;
+  const id=((document.getElementById("cmd-unpool-id")||{}).value||"").trim();
+  const family=((document.getElementById("cmd-unpool-fam")||{}).value||"");
+  const all=!!(document.getElementById("cmd-unpool-all")||{}).checked;
+  if(!id&&!family&&!all){toast("Choose a project, family, or all pooled provenance","err");return;}
+  try{
+    const r=await apiPost("/api/unpool/preview",{project_ids:id?[id]:[],family:family||null,all_pooled:all});
+    const p=r.preview;
+    openModal("Preview unpool",
+      `This removes pooled copies from the global brain. It does not alter the project's own brain, family membership, or MCP registration.<br><br>`+
+      `Remove <b>${p.notes}</b> notes, <b>${p.documents}</b> documents, <b>${p.chunks}</b> chunks, and <b>${p.links}</b> links.<br>`+
+      `Protected: ${p.preserved_global_native} global-native and ${p.skipped_legacy_unclassified} legacy-unclassified rows. A SQLite backup is created before removal.`,
+      (()=>{window._bcUnpoolPending={generation:r.generation,projectIds:id?[id]:[],family:family||null,all};return `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn danger" onclick="cmdUnpoolApply()">Remove pooled copies</button>`;})());
+  }catch(err){toast(`Unpool preview failed: ${err.message}`,"err");}
+}
+async function cmdUnpoolApply(){
+  const pending=window._bcUnpoolPending;if(!pending){toast("Unpool preview expired","err");return;}
+  closeModal();
+  try{
+    const r=await apiPost("/api/unpool/apply",{project_ids:pending.projectIds,family:pending.family,all_pooled:pending.all,generation:pending.generation,confirm:true});
+    const s=r.stats;toast(`Unpooled ${s.notes_removed} notes and ${s.documents_removed} documents; backup: ${s.backup_path}`);
+    await loadAll();
+  }catch(err){toast(`Unpool failed: ${err.message}`,"err");}
 }
 async function cmdSkills(){
   if(!requireWrites())return;
