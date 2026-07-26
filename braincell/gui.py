@@ -827,7 +827,7 @@ def run_gui(
     QtWebEngine renderer and the application API.
 
     Args:
-        mode:         "project" | "global" | None (resolved from env / default).
+        mode:         ``project`` or None. Global memory views are retired.
         port:         TCP port to listen on (e.g. 8765).
         allow_writes: Mount write endpoints (POST /api/forget, /api/family, /api/pool).
         path:         Project root for project-mode db resolution (default cwd).
@@ -841,7 +841,7 @@ def run_gui(
     import sys
 
     from . import native_shell
-    from .config import get_db_path, get_global_db_path, get_project_id
+    from .config import get_db_path, get_project_id
 
     if not native_shell.native_available():
         raise RuntimeError(
@@ -849,13 +849,9 @@ def run_gui(
             "Run BrainCell from a graphical desktop session."
         )
 
-    m = resolve_mode(mode)
-    if m == "global":
-        db_path = get_global_db_path()
-        project_id = None  # global brain has no single seed → GUI federation off
-    else:
-        project_id = get_project_id(Path(path).resolve())
-        db_path = get_db_path(project_id)
+    resolve_mode(mode)
+    project_id = get_project_id(Path(path).resolve())
+    db_path = get_db_path(project_id)
 
     # Gate the namespace-wide API even though it is localhost-only. The first
     # QtWebEngine navigation carries the token; GET / stores it as an HttpOnly
@@ -875,12 +871,10 @@ def run_gui(
             sys.executable, "-m", "braincell.cli", "start",
             str(Path(path).resolve()), "--port", str(port),
         ]
-        if m == "global":
-            restart_argv.append("--global")
     else:
         restart_argv = [
             sys.executable, "-m", "braincell.cli", "gui", str(Path(path).resolve()),
-            "--mode", m, "--port", str(port),
+            "--port", str(port),
         ]
         if allow_writes:
             restart_argv.append("--allow-writes")

@@ -1159,7 +1159,7 @@ def cmd_start(args: argparse.Namespace) -> None:
     """
     from . import launch, native_shell
 
-    mode = "global" if args.global_brain else "project"
+    mode = "project"
     if not native_shell.native_available():
         msg = (
             "BrainCell requires a graphical desktop session with "
@@ -1222,10 +1222,10 @@ def cmd_start(args: argparse.Namespace) -> None:
 
 
 def main_map(argv: list[str] | None = None) -> None:
-    """Compatibility entry point for the native global Memory Map."""
+    """Compatibility entry point for the native project Memory Map."""
     p = argparse.ArgumentParser(
         prog="braincell-map",
-        description="Open the BrainCell Memory-Map (global brain, writable).",
+        description="Open the BrainCell Memory Map for the current project.",
     )
     p.add_argument("--port", type=int, default=8765, help="TCP port (default: 8765).")
     ns = p.parse_args(argv)
@@ -1234,7 +1234,6 @@ def main_map(argv: list[str] | None = None) -> None:
         argparse.Namespace(
             path=".",
             port=ns.port,
-            global_brain=True,
         )
     )
 
@@ -1736,10 +1735,6 @@ def main(argv: list[str] | None = None) -> None:
         help="TCP port to listen on (default: 8765).",
     )
     pstart.add_argument(
-        "--global", dest="global_brain", action="store_true", default=False,
-        help="Open the shared global brain instead (mirrors braincell-map).",
-    )
-    pstart.add_argument(
         "--native", action="store_true", default=False,
         help=argparse.SUPPRESS,
     )
@@ -1749,10 +1744,6 @@ def main(argv: list[str] | None = None) -> None:
     pgui.add_argument(
         "path", nargs="?", default=".",
         help="Project path (default: cwd, project mode only).",
-    )
-    pgui.add_argument(
-        "--mode", choices=["project", "global"], default=None,
-        help="Brain to view (default: resolves BRAINCELL_MODE env or 'project').",
     )
     pgui.add_argument(
         "--port", type=int, default=8765,

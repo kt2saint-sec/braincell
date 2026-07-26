@@ -157,7 +157,7 @@ class TestInstallLauncherA3:
 
         main_map([])
         assert captured == {
-            "mode": "global",
+            "mode": "project",
             "port": 8765,
             "allow_writes": True,
             "path": ".",
