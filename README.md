@@ -206,6 +206,42 @@ The PySide6/QtWebEngine Memory Map ships in the base install and is the required
 there is no external-viewer or headless-GUI mode. The default embedder is a local Ollama
 model, so no API key is required out of the box.
 
+### WSL2
+
+BrainCell works on WSL2, including the native Memory Map, when
+[WSLg support for Linux GUI applications](https://learn.microsoft.com/en-us/windows/wsl/tutorials/gui-apps)
+is available. Windows 11 normally includes WSLg; existing installations can update it from an
+elevated PowerShell window with `wsl --update`, followed by `wsl --shutdown`. WSL1 and WSL2
+installations without WSLg cannot run BrainCell's required native GUI.
+
+Run the GitHub install commands inside the WSL Linux distribution. Installing and running Ollama
+inside that same distribution is the simplest arrangement. Ollama for Windows can also be used if
+its `http://localhost:11434` API is reachable from WSL; Windows 11 mirrored networking supports
+host-to-WSL `localhost`, while default NAT networking may require the Windows host IP. See
+[Microsoft's WSL networking guide](https://learn.microsoft.com/en-us/windows/wsl/networking) and
+[Ollama for Windows](https://docs.ollama.com/windows).
+
+```bash
+python3 -m pip install "braincell-mcp @ git+https://github.com/kt2saint-sec/braincell.git"
+ollama pull qwen3-embedding:4b
+braincell start
+```
+
+### Installation verification snapshot — 2026-07-25
+
+- The public GitHub `main` branch was installed into a clean Python 3.12 virtual environment using
+  the direct `git+https` pip command above.
+- pip built the `braincell-mcp` wheel and resolved the complete base dependency set, including
+  PySide6/QtWebEngine, FastAPI, uvicorn, MCP, SQLite, NumPy, and Ollama support.
+- All three installed entry points (`braincell`, `braincell-mcp`, and `braincell-map`) were present,
+  and the CLI imported successfully from `site-packages`.
+- Packaged GUI assets and the bundled `braincell-init` / `braincell-sync` skills were verified from
+  the installed wheel rather than the source checkout.
+- `scripts/install.sh` was verified from a fresh public clone. It creates an isolated environment
+  and pulls `qwen3-embedding:4b` when a working Ollama CLI is available.
+- The embedding model is intentionally not embedded in the Python wheel; Ollama downloads and
+  manages the approximately 2.5 GB model separately.
+
 ## Start
 
 ```bash
