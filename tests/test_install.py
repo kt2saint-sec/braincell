@@ -306,6 +306,20 @@ def test_connect_non_git_project_requires_acknowledgement(tmp_path, monkeypatch)
         main(["connect", str(project), "--client", "vscode"])
 
 
+def test_cli_skills_add_and_remove_are_project_local(tmp_path, capsys):
+    project = _codex_repo(tmp_path)
+
+    main(["skills", "add", str(project), "--client", "codex"])
+    added = capsys.readouterr().out
+    assert "installed: braincell-init" in added
+    assert (project / ".agents" / "skills" / "braincell-init" / "SKILL.md").is_file()
+
+    main(["skills", "remove", str(project), "--client", "codex"])
+    removed = capsys.readouterr().out
+    assert "removed: braincell-init" in removed
+    assert not (project / ".agents" / "skills" / "braincell-init" / "SKILL.md").exists()
+
+
 # ── CLI: hook arm/disarm/status ─────────────────────────────────────────────────
 
 def test_cmd_hook_lifecycle(tmp_path, monkeypatch, capsys):

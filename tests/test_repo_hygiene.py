@@ -33,6 +33,10 @@ _PATH_TOKEN = re.compile(r"(?<![\w~/.-])((?:\.claude|docs|evals|tests|braincell)
 
 _BINARY_SUFFIXES = {".png", ".ico", ".svg", ".db", ".jsonl"}
 
+# These are documented output locations inside a user's selected Project, not
+# dependencies expected to exist in this source checkout.
+_ALLOWED_GENERATED_PATHS = {".claude/skills"}
+
 
 def _tracked_text_files() -> list[str]:
     out = subprocess.run(
@@ -72,7 +76,7 @@ def test_no_tracked_file_references_a_gitignored_path():
 
     violations = [
         f"{rel}:{lineno} references gitignored {token!r}\n      {line[:110]}"
-        for token in _ignored(set(candidates))
+        for token in _ignored(set(candidates)) - _ALLOWED_GENERATED_PATHS
         for rel, lineno, line in candidates[token]
     ]
     assert not violations, (

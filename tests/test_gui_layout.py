@@ -176,10 +176,12 @@ class TestPass2Commands:
             "Build button must route through startIngestFromModal"
         )
 
-    def test_wizard_global_and_skills_checkboxes(self, tmp_path):
+    def test_skills_are_a_separate_project_action(self, tmp_path):
         html = _page(tmp_path)
         assert 'id="ar-global"' not in html, "Project MCP connection must not target global memory"
-        assert 'id="ar-skills"' in html, "Missing the place-skills checkbox"
+        assert 'id="ar-skills"' not in html
+        assert "Add skills" in html
+        assert "Remove skills" in html
 
     def test_reflect_model_and_contradictions_threshold_inputs(self, tmp_path):
         html = _page(tmp_path)

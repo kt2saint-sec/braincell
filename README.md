@@ -10,11 +10,12 @@ from Pool**. Earlier terms are compatibility or migration language only.
 
 ## Current status
 
-This release establishes the project-local connection and CLI Pool foundation.
-The remaining conversion work—project-local automatic Pool recall and skills,
-native Memory Map Pool controls/database-open isolation, and preview-first
-legacy configuration/data migration—is not complete yet. Do not rely on legacy
-automation or shared-data behavior as part of the project-only workflow.
+This release establishes project-local connections, project-local skills, and
+the CLI Pool foundation. The remaining conversion work—project-local automatic
+Pool recall, native Memory Map Pool controls/database-open isolation, and
+preview-first legacy configuration/data migration—is not complete yet. Do not
+rely on legacy automation or shared-data behavior as part of the project-only
+workflow.
 
 ## What is isolated
 
@@ -73,6 +74,17 @@ Project memory.
 
 For Codex, open the selected trusted Project after connecting. A Codex session
 outside that Project has no BrainCell project configuration to load.
+
+Skills are a separate, explicit choice:
+
+```bash
+braincell skills add . --client claude # writes .claude/skills
+braincell skills add . --client codex  # writes .agents/skills
+braincell skills remove . --client claude
+```
+
+BrainCell never installs these skills machine-wide. Add and Remove preserve an
+edited same-name skill and report it as a conflict.
 
 ## Use Project memory
 

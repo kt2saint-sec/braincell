@@ -5,8 +5,9 @@ need Git, but BrainCell makes that boundary explicit and avoids machine-wide MCP
 activation. See [NAMINGS.md](../NAMINGS.md) for the public vocabulary.
 
 > **Current scope:** this runbook covers the shipped project-local connection
-> and CLI Pool foundation. Legacy migration, project-local automatic Pool recall
-> and skills, and complete Memory Map Pool controls remain separate work.
+> and skills plus the CLI Pool foundation. Legacy migration, project-local
+> automatic Pool recall, and complete Memory Map Pool controls remain separate
+> work.
 
 ## Prerequisites
 
@@ -37,6 +38,20 @@ Codex loads project configuration only after the Project is trusted. Therefore
 the correct activation check is a new Codex session in this trusted Project; an
 unrelated Project or non-Project directory must not gain BrainCell from this
 connection.
+
+## Optional Project skills
+
+Adding skills is separate from connecting BrainCell:
+
+```bash
+braincell skills add /path/to/project --client claude
+braincell skills add /path/to/project --client codex
+```
+
+Claude skills go only to `<project>/.claude/skills`; Codex skills go only to
+`<project>/.agents/skills`. Remove them with `braincell skills remove` and the
+same Project/client selection. BrainCell leaves edited same-name skills
+untouched and reports the conflict.
 
 ## Target safety
 

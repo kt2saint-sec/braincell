@@ -1349,9 +1349,6 @@ function arStepInstall(){
      <label style="display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--mut);margin-top:8px" id="ar-hook-row">
        <input type="checkbox" id="ar-no-hook"> Skip family-recall hook
      </label>
-     <label style="display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--mut);margin-top:8px" id="ar-skills-row">
-       <input type="checkbox" id="ar-skills"> Also place the /braincell skills
-     </label>
      <div id="ar-install-err" class="warn-note" style="display:none;margin-top:10px"></div>`,
     `<button class="btn" onclick="closeModal()">Cancel</button>
      <button class="btn primary" onclick="arDoInstall()">Register MCP →</button>`);
@@ -1360,11 +1357,11 @@ function arStepInstall(){
   arSyncHookRow();
 }
 function arSyncHookRow(){
-  /* hook and skills rows are Claude-Code-only — hide for other clients */
+  /* hook row is Claude-Code-only — hide for other clients */
   const cSel=document.getElementById("ar-client");
   if(!cSel)return;
   const show=cSel.value==="claude"?"":"none";
-  ["ar-hook-row","ar-skills-row"].forEach(id=>{
+  ["ar-hook-row"].forEach(id=>{
     const row=document.getElementById(id);
     if(row)row.style.display=show;
   });
@@ -1374,20 +1371,10 @@ async function arDoInstall(){
   const scope=document.getElementById("ar-scope").value;
   const federate=document.getElementById("ar-federate").checked;
   const noHook=!!(document.getElementById("ar-no-hook")||{}).checked;
-  /* claude-only options — a checkbox ticked then hidden by a client switch must not fire */
-  const wantSkills=client==="claude"&&!!(document.getElementById("ar-skills")||{}).checked;
   const errBox=document.getElementById("ar-install-err");
   try{
     const res=await apiPost("/api/install",{path:arPath,client,scope,no_hook:noHook,federate});
     arProjectId=res.project_id;arClient=client;
-    if(wantSkills){
-      try{
-        const sk=await apiPost("/api/skills",{});
-        const rows=Array.isArray(sk)?sk:((sk&&(sk.skills||sk.results))||[]);
-        const conflicts=rows.filter(s=>s.status==="conflict").map(s=>s.name);
-        if(conflicts.length)toast(`Skill conflict: ${conflicts.join(", ")} — your copy left untouched; move it, then retry`,"err");
-      }catch(skErr){toast(`Skills placement failed: ${skErr.message}`,"err");}
-    }
     arStepFamily();
   }catch(err){
     if(errBox){errBox.style.display="";errBox.textContent=err.message;}
@@ -1916,10 +1903,16 @@ function openCommandsModal(){
          <button class="btn"${wdis()} onclick="cmdPool()">Run</button>
        </div></div>
 
-     <div class="note"><div class="k">skills</div>
-       <div class="c">Places the /braincell-init and /braincell-sync skills into ~/.claude/skills so
-       Claude Code can run them. Your own edited copies are never overwritten.</div>
-       <div style="margin-top:6px"><button class="btn"${wdis()} onclick="cmdSkills()">Place skills</button></div>
+     <div class="note"><div class="k">Project skills</div>
+       <div class="c">Adds BrainCell skills inside the Viewed project. Existing edited copies are
+       never overwritten or removed.</div>
+       <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
+         <select class="mo-input" id="cmd-skills-client" style="width:auto;padding:4px 8px">
+           <option value="claude">Claude</option><option value="codex">Codex</option>
+         </select>
+         <button class="btn"${wdis()} onclick="cmdSkills('add')">Add skills</button>
+         <button class="btn"${wdis()} onclick="cmdSkills('remove')">Remove skills</button>
+       </div>
        <div class="fs-list" id="cmd-skills-list" style="max-height:120px;margin-top:6px;display:none"></div></div>
 
      <div class="note"><div class="k">memory log / undo</div>
@@ -2092,11 +2085,14 @@ async function cmdPool(){
   }
   go();
 }
-async function cmdSkills(){
+async function cmdSkills(action){
   if(!requireWrites())return;
   const el=document.getElementById("cmd-skills-list");
+  const nd=nodes.find(n=>n.id===selected);
+  if(!nd||!nd.path){toast("Select a Viewed project first","err");return;}
+  const client=((document.getElementById("cmd-skills-client")||{}).value||"claude");
   try{
-    const r=await apiPost("/api/skills",{});
+    const r=await apiPost("/api/skills",{path:nd.path,client,action});
     const rows=Array.isArray(r)?r:((r&&(r.skills||r.results))||[]);
     if(el){
       el.style.display="";
@@ -2105,7 +2101,8 @@ async function cmdSkills(){
         :`<div class="fs-empty">No skills returned.</div>`;
     }
     const conflicts=rows.filter(s=>s.status==="conflict").length;
-    toast(conflicts?`Skills placed with ${conflicts} conflict(s) — see the list`:`Skills placed (${rows.length})`);
+    const verb=action==="remove"?"removed":"added";
+    toast(conflicts?`Skills ${verb} with ${conflicts} conflict(s) — see the list`:`Skills ${verb} (${rows.length})`);
   }catch(err){toast(`Skills failed: ${err.message}`,"err");}
 }
 function cmdRestart(){

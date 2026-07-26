@@ -168,14 +168,12 @@ def uninstall_hook() -> int:
     return removed
 
 
-# ── Claude Code skills (packaged SKILL.md → ~/.claude/skills/) ────────────────
+# ── Project skills ────────────────────────────────────────────────────────────
 
-def claude_skills_dir() -> Path:
-    """Path to Claude Code's user skills dir (override via env for tests)."""
-    override = os.environ.get("BRAINCELL_CLAUDE_SKILLS_DIR")
-    if override:
-        return Path(override)
-    return Path.home() / ".claude" / "skills"
+_PROJECT_SKILL_DIRS = {
+    "claude": Path(".claude") / "skills",
+    "codex": Path(".agents") / "skills",
+}
 
 
 def packaged_skills() -> list[str]:
@@ -187,8 +185,37 @@ def packaged_skills() -> list[str]:
     return sorted(e.name for e in root.iterdir() if e.is_dir())
 
 
-def install_skills(target_dir: Path | None = None) -> list[tuple[str, str, Path]]:
-    """Copy packaged skills into Claude Code's skills dir.
+def project_skills_dir(project_root: str | Path, client: str) -> Path:
+    """Return the supported project-local skills directory for one client."""
+    try:
+        relative = _PROJECT_SKILL_DIRS[client]
+    except KeyError:
+        raise ValueError("Project skills are supported only for Claude or Codex.") from None
+    root = Path(project_root).expanduser().resolve()
+    target = (root / relative).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError:
+        raise RuntimeError(
+            f"{root / relative} resolves outside the selected project; BrainCell refused it."
+        ) from None
+    return target
+
+
+def _packaged_skill_payloads() -> dict[str, str]:
+    from importlib.resources import files
+
+    root = files("braincell").joinpath("skills")
+    return {
+        name: root.joinpath(name, "SKILL.md").read_text(encoding="utf-8")
+        for name in packaged_skills()
+    }
+
+
+def install_project_skills(
+    project_root: str | Path, client: str
+) -> list[tuple[str, str, Path]]:
+    """Copy packaged skills into one selected project's client directory.
 
     Returns one ``(name, status, path)`` per skill, where status is:
       ``installed``  — written (destination did not exist)
@@ -200,14 +227,10 @@ def install_skills(target_dir: Path | None = None) -> list[tuple[str, str, Path]
     the caller can print a manual step — the same posture as the VS Code adapter,
     which refuses to guess when it cannot act safely.
     """
-    from importlib.resources import files
-
-    dest_root = target_dir or claude_skills_dir()
-    src_root = files("braincell").joinpath("skills")
+    dest_root = project_skills_dir(project_root, client)
     results: list[tuple[str, str, Path]] = []
 
-    for name in packaged_skills():
-        payload = src_root.joinpath(name, "SKILL.md").read_text(encoding="utf-8")
+    for name, payload in _packaged_skill_payloads().items():
         dest = dest_root / name / "SKILL.md"
         if dest.exists():
             try:
@@ -222,6 +245,37 @@ def install_skills(target_dir: Path | None = None) -> list[tuple[str, str, Path]
         tmp.replace(dest)                      # atomic, mirrors _atomic_write_json
         results.append((name, "installed", dest))
 
+    return results
+
+
+def remove_project_skills(
+    project_root: str | Path, client: str
+) -> list[tuple[str, str, Path]]:
+    """Remove only unchanged packaged skills from one selected project.
+
+    An edited same-name skill is user-managed and remains untouched. Missing
+    files are idempotent no-ops.
+    """
+    dest_root = project_skills_dir(project_root, client)
+    results: list[tuple[str, str, Path]] = []
+    for name, payload in _packaged_skill_payloads().items():
+        dest = dest_root / name / "SKILL.md"
+        if not dest.exists():
+            results.append((name, "absent", dest))
+            continue
+        try:
+            current = dest.read_text(encoding="utf-8")
+        except OSError:
+            current = None
+        if current != payload:
+            results.append((name, "conflict", dest))
+            continue
+        dest.unlink()
+        try:
+            dest.parent.rmdir()
+        except OSError:
+            pass
+        results.append((name, "removed", dest))
     return results
 
 

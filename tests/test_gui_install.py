@@ -288,19 +288,21 @@ def test_hook_on_off_status_roundtrip(tmp_path, monkeypatch):
 
 # ── /api/skills ───────────────────────────────────────────────────────────────
 
-def _skills_dir(tmp_path, monkeypatch) -> Path:
-    d = tmp_path / "claude-skills"
-    monkeypatch.setenv("BRAINCELL_CLAUDE_SKILLS_DIR", str(d))
-    return d
+def _skills_project(tmp_path) -> Path:
+    project = tmp_path / "skills-project"
+    project.mkdir()
+    (project / ".git").mkdir()
+    return project
 
 
 class TestSkillsEndpoint:
     def test_places_packaged_skills_then_current(self, tmp_path, monkeypatch):
         """(t11) First call installs both packaged skills; a rerun is 'current'."""
-        _skills_dir(tmp_path, monkeypatch)
+        project = _skills_project(tmp_path)
 
         with TestClient(_app(tmp_path)) as client:
-            r = client.post("/api/skills", json={})
+            body = {"path": str(project), "client": "claude", "action": "add"}
+            r = client.post("/api/skills", json=body)
             assert r.status_code == 200
             skills = r.json()["skills"]
             names = {s["name"] for s in skills}
@@ -309,20 +311,21 @@ class TestSkillsEndpoint:
             for s in skills:
                 assert Path(s["path"]).is_file()
 
-            r2 = client.post("/api/skills", json={})
+            r2 = client.post("/api/skills", json=body)
             assert all(s["status"] == "current" for s in r2.json()["skills"])
 
     def test_conflict_never_clobbers(self, tmp_path, monkeypatch):
         """(t12) A user-authored same-name skill is reported as conflict and its
         content left byte-identical; the other skill still resolves normally."""
-        _skills_dir(tmp_path, monkeypatch)
+        project = _skills_project(tmp_path)
+        body = {"path": str(project), "client": "claude", "action": "add"}
 
         with TestClient(_app(tmp_path)) as client:
-            first = client.post("/api/skills", json={}).json()["skills"]
+            first = client.post("/api/skills", json=body).json()["skills"]
             init = next(s for s in first if s["name"] == "braincell-init")
             Path(init["path"]).write_text("MY OWN SKILL\n", encoding="utf-8")
 
-            second = client.post("/api/skills", json={}).json()["skills"]
+            second = client.post("/api/skills", json=body).json()["skills"]
 
         by_name = {s["name"]: s["status"] for s in second}
         assert by_name["braincell-init"] == "conflict"
@@ -330,18 +333,49 @@ class TestSkillsEndpoint:
         assert Path(init["path"]).read_text(encoding="utf-8") == "MY OWN SKILL\n"
 
     def test_extra_field_422(self, tmp_path, monkeypatch):
-        _skills_dir(tmp_path, monkeypatch)
+        project = _skills_project(tmp_path)
         with TestClient(_app(tmp_path)) as client:
-            r = client.post("/api/skills", json={"target": "/etc"})
+            r = client.post(
+                "/api/skills",
+                json={
+                    "path": str(project),
+                    "client": "claude",
+                    "action": "add",
+                    "target": "/etc",
+                },
+            )
         assert r.status_code == 422
+
+    def test_remove_preserves_edited_skill(self, tmp_path):
+        project = _skills_project(tmp_path)
+        with TestClient(_app(tmp_path)) as client:
+            body = {"path": str(project), "client": "codex", "action": "add"}
+            first = client.post("/api/skills", json=body).json()["skills"]
+            edited = Path(next(s["path"] for s in first if s["name"] == "braincell-init"))
+            edited.write_text("mine\n", encoding="utf-8")
+            removed = client.post(
+                "/api/skills",
+                json={"path": str(project), "client": "codex", "action": "remove"},
+            )
+        assert removed.status_code == 200
+        by_name = {s["name"]: s["status"] for s in removed.json()["skills"]}
+        assert by_name["braincell-init"] == "conflict"
+        assert by_name["braincell-sync"] == "removed"
+        assert edited.read_text(encoding="utf-8") == "mine\n"
 
     def test_absent_in_read_only_mode(self, tmp_path):
         with TestClient(_app(tmp_path, allow_writes=False)) as client:
-            assert client.post("/api/skills", json={}).status_code in (404, 405)
+            assert client.post(
+                "/api/skills",
+                json={"path": str(tmp_path), "client": "claude", "action": "add"},
+            ).status_code in (404, 405)
 
     def test_401_without_token(self, tmp_path):
         with TestClient(_app(tmp_path, auth_token="secret")) as client:
-            assert client.post("/api/skills", json={}).status_code == 401
+            assert client.post(
+                "/api/skills",
+                json={"path": str(tmp_path), "client": "claude", "action": "add"},
+            ).status_code == 401
 
 
 # ── /api/status mcp+embedder, /api/config suggest_tour, /api/projects badge ───

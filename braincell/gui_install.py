@@ -11,8 +11,7 @@ Write-gated endpoints mounted by gui.create_app(allow_writes=True):
   POST /api/uninstall    reverse the above (VS Code has no remove-MCP CLI → 409 with
                          manual instructions, mirroring `braincell uninstall`)
   POST /api/hook         arm / disarm / report the proactive family-recall hook flag
-  POST /api/skills       place the packaged Claude Code skills (`braincell install
-                         --skills` counterpart; conflicts reported, never clobbered)
+  POST /api/skills       add/remove packaged skills inside one selected project
   POST /api/restart      re-exec the GUI server process (server-recorded argv only)
 
 This is the GUI counterpart of `braincell install`/`uninstall`/`hook` (cli.py
@@ -40,7 +39,8 @@ from .install import (
     get_client,
     hook_command,
     install_hook,
-    install_skills,
+    install_project_skills,
+    remove_project_skills,
     uninstall_hook,
 )
 
@@ -62,6 +62,13 @@ class InstallBody(BaseModel):
 
 class SkillsBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+    path: str
+    client: Literal["claude", "codex"]
+    action: Literal["add", "remove"]
+    acknowledge_home: bool = False
+    acknowledge_non_git: bool = False
+    allow_privileged: bool = False
 
 
 class RestartBody(BaseModel):
@@ -202,14 +209,32 @@ def mount_install_api(app: FastAPI, *, restart_argv: Optional[list[str]] = None)
 
     @app.post("/api/skills")
     async def api_skills(body: SkillsBody) -> dict:  # type: ignore[type-arg]
-        """Place the packaged Claude Code skills (GUI counterpart of --skills).
+        """Add or remove packaged skills inside one selected project.
 
-        install_skills never clobbers: an existing same-name skill with different
-        content is reported as ``conflict`` and left untouched.
+        Existing same-name skills with different content are reported as
+        ``conflict`` and left untouched.
         """
+        from .project_target import ProjectTargetError, validate_project_target
+
+        try:
+            target = validate_project_target(
+                body.path,
+                acknowledge_home=body.acknowledge_home,
+                acknowledge_non_git=body.acknowledge_non_git,
+                allow_privileged=body.allow_privileged,
+            )
+        except ProjectTargetError as exc:
+            raise HTTPException(409, str(exc)) from exc
         import anyio
-        results = await anyio.to_thread.run_sync(install_skills)
+        operation = install_project_skills if body.action == "add" else remove_project_skills
+        try:
+            results = await anyio.to_thread.run_sync(operation, target.path, body.client)
+        except (RuntimeError, ValueError) as exc:
+            raise HTTPException(409, str(exc)) from exc
         return {
+            "project": str(target.path),
+            "client": body.client,
+            "action": body.action,
             "skills": [
                 {"name": name, "status": status, "path": str(path)}
                 for name, status, path in results

@@ -49,6 +49,17 @@ alone and reported instead of overwritten.
 Restart or reconnect the selected client after connecting. An unrelated folder
 has no Project-local BrainCell registration to load.
 
+Optionally add BrainCell skills to this Project:
+
+```bash
+braincell skills add . --client claude # .claude/skills
+braincell skills add . --client codex  # .agents/skills
+```
+
+Skills are not added by `connect`, never install machine-wide, and can be
+removed with `braincell skills remove . --client <client>`. Edited same-name
+skills are reported as conflicts and left untouched.
+
 ## Recall and Search
 
 ```bash

@@ -1339,6 +1339,30 @@ def cmd_uninstall(args: argparse.Namespace) -> None:
     print(f"✓ Disconnected BrainCell from {client.name} for {target.path}")
 
 
+def cmd_skills(args: argparse.Namespace) -> None:
+    """Add or remove BrainCell skills inside one explicitly selected project."""
+    from .install import install_project_skills, remove_project_skills
+    from .project_target import ProjectTargetError, validate_project_target
+
+    try:
+        target = validate_project_target(
+            args.path,
+            acknowledge_home=args.acknowledge_home,
+            acknowledge_non_git=args.acknowledge_non_git,
+            allow_privileged=args.allow_privileged,
+        )
+    except ProjectTargetError as exc:
+        raise SystemExit(f"braincell skills: {exc}") from exc
+
+    operation = install_project_skills if args.skills_action == "add" else remove_project_skills
+    try:
+        results = operation(target.path, args.client)
+    except (RuntimeError, ValueError) as exc:
+        raise SystemExit(f"braincell skills: {exc}") from exc
+    for name, status, path in results:
+        print(f"{status}: {name} ({path})")
+
+
 def cmd_hook(args: argparse.Namespace) -> None:
     """Arm / disarm / report the proactive family-recall hook (flag file)."""
     flag = _family_hook_flag()
@@ -1628,6 +1652,20 @@ def main(argv: list[str] | None = None) -> None:
     pu.add_argument("--acknowledge-non-git", action="store_true")
     pu.add_argument("--allow-privileged", action="store_true")
     pu.set_defaults(func=cmd_uninstall)
+
+    pskills = sub.add_parser(
+        "skills",
+        help="Add or remove BrainCell skills inside one selected project.",
+    )
+    pskills.add_argument("skills_action", choices=["add", "remove"])
+    pskills.add_argument("path", nargs="?", default=".",
+                         help="Project path (default: cwd).")
+    pskills.add_argument("--client", choices=["claude", "codex"], default="claude",
+                         help="Project-local skill format (default: Claude).")
+    pskills.add_argument("--acknowledge-home", action="store_true")
+    pskills.add_argument("--acknowledge-non-git", action="store_true")
+    pskills.add_argument("--allow-privileged", action="store_true")
+    pskills.set_defaults(func=cmd_skills)
 
     ph = sub.add_parser("hook", help="Arm/disarm/status the proactive family-recall hook.")
     ph.add_argument("hook_cmd", choices=["on", "off", "status"],
