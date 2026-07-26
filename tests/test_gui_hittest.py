@@ -37,7 +37,7 @@ pytest.importorskip(
 
 # The controls a narrow viewport used to kill, plus their toolbar/header peers.
 _CONTROL_IDS = [
-    "scope-all", "add-repo-btn", "new-family-btn", "hook-btn",
+    "scope-all", "add-repo-btn", "new-family-btn",
     "build-btn", "cmd-btn", "tut-btn",
 ]
 _WIDTHS = [1280, 1366, 1440]

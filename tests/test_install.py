@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """
-test_install.py — turnkey self-wiring (`braincell install` / `uninstall` / `hook`).
+test_install.py — project-local client connection and legacy cleanup helpers.
 
 Offline: `claude` is never invoked (subprocess.run is monkeypatched to capture argv),
-and settings.json is redirected to a temp file via BRAINCELL_CLAUDE_SETTINGS. Asserts
-the MCP registration argv, the append-only + idempotent hook merge (a co-resident
-iron-law-like hook is preserved), and the arm/disarm flag lifecycle.
+and settings.json is redirected to a temp file via BRAINCELL_CLAUDE_SETTINGS.
+Legacy hook helpers remain covered only so migration cleanup can preserve
+co-resident user hooks.
 """
 
 from __future__ import annotations
@@ -320,22 +320,9 @@ def test_cli_skills_add_and_remove_are_project_local(tmp_path, capsys):
     assert not (project / ".agents" / "skills" / "braincell-init" / "SKILL.md").exists()
 
 
-# ── CLI: hook arm/disarm/status ─────────────────────────────────────────────────
+# ── retired global hook command ───────────────────────────────────────────────
 
-def test_cmd_hook_lifecycle(tmp_path, monkeypatch, capsys):
-    flag = tmp_path / "state" / "flag.txt"
-    monkeypatch.setenv("BRAINCELL_FAMILY_HOOK_FLAG", str(flag))
-
-    main(["hook", "status"])
-    assert "disarmed" in capsys.readouterr().out
-
-    main(["hook", "on"])
-    assert flag.is_file()
-    assert "ARMED" in capsys.readouterr().out
-
-    main(["hook", "status"])
-    assert "ARMED" in capsys.readouterr().out
-
-    main(["hook", "off"])
-    assert not flag.exists()
-    assert "DISARMED" in capsys.readouterr().out
+def test_global_hook_command_is_retired():
+    with pytest.raises(SystemExit) as exc:
+        main(["hook", "status"])
+    assert exc.value.code == 2

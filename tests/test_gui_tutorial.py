@@ -34,7 +34,7 @@ def _page(tmp_path: Path) -> str:
 # ── Numbered happy-path toolbar ───────────────────────────────────────────────
 
 class TestNumberedToolbar:
-    """The happy path is NUMBERED (1 add → 2 family → 3 hook); build-only is
+    """The setup path is numbered (1 add → 2 grouping); build-only is
     deliberately un-numbered — the Add-project wizard already builds, so a
     '2 · Build memory' would teach a redundant rebuild."""
 
@@ -42,7 +42,7 @@ class TestNumberedToolbar:
         html = _page(tmp_path)
         assert "1 · ✚ Add project" in html, "Missing numbered '1 · ✚ Add project'"
         assert "2 · ＋ New family" in html, "Missing numbered '2 · ＋ New family'"
-        assert "3 · ◌ Family recall" in html, "Missing numbered '3 · ◌ Family recall'"
+        assert "Family recall" not in html
 
     def test_add_project_still_first_and_primary(self, tmp_path):
         """Numbering must not displace the existing primary-button contract."""
@@ -63,15 +63,6 @@ class TestNumberedToolbar:
         assert toolbar.index("tb-sep") < toolbar.index('id="build-btn"'), (
             "build-btn must sit in the secondary group (after the separator)"
         )
-        assert toolbar.index('id="hook-btn"') < toolbar.index("tb-sep"), (
-            "hook-btn (step 3) must sit in the numbered group"
-        )
-
-    def test_hook_paint_keeps_number_prefix(self, tmp_path):
-        """paintHookBtn's dynamic labels all carry the '3 · ' prefix."""
-        html = _page(tmp_path)
-        assert '"3 · ◉ Family recall: ON"' in html
-        assert '"3 · ◌ Family recall: OFF"' in html
 
     def test_help_button_replays_tour(self, tmp_path):
         html = _page(tmp_path)
@@ -137,16 +128,16 @@ class TestTourSteps:
         html = _page(tmp_path)
         return html.split("const TOUR_STEPS", 1)[1].split("];", 1)[0]
 
-    def test_eight_cards(self, tmp_path):
+    def test_seven_cards(self, tmp_path):
         steps = self._steps(tmp_path)
-        assert steps.count("title:") == 8, "The tour ships exactly 8 cards"
+        assert steps.count("title:") == 7, "The tour ships exactly 7 cards"
 
     def test_anchors_are_stable_dom_only(self, tmp_path):
         """Anchors must be stable DOM (toolbar/header/containers) — never
         selectors into #stage, whose children are rebuilt every frame."""
         steps = self._steps(tmp_path)
         for sel in ('"#add-repo-btn"', '"#build-btn"', '"#active-chip"',
-                    '"#new-family-btn"', '"#hook-btn"', '".stage-wrap"',
+                    '"#new-family-btn"', '".stage-wrap"',
                     '"#feed-rail"'):
             assert sel in steps, f"Missing stable anchor {sel}"
         assert '"#stage"' not in steps, "Never anchor to #stage internals"
@@ -162,7 +153,7 @@ class TestTourSteps:
         assert "wires nothing into an MCP client" in steps
         # Pool is the only fuse; chunks-vs-notes gotcha
         assert "the one action that merges data" in steps
-        assert "silent until notes exist" in steps
+        assert "curated notes accrue as you work" in steps
 
     def test_namings_canon_in_tour_copy(self, tmp_path):
         """Tour copy draws from the canonical terminology: 'project folder',

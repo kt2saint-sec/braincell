@@ -116,33 +116,17 @@ class TestIndex:
         assert 'id="scope-all"' in r.text, "Missing 'All' scope button"
         assert "This project" in r.text and "Family" in r.text
 
-    def test_html_contains_hook_toggle_wired_to_the_api(self, tmp_path):
-        """The arm/disarm control must exist AND call /api/hook.
-
-        Regression guard for an orphaned endpoint: POST /api/hook was implemented and
-        tested (tests/test_gui_install.py) while gui_template.py never referenced it, so
-        the GUI could install the hook but not arm it — the one step that forced a drop to
-        the CLI. Asserting the marker alone would not catch a button wired to nothing.
-        """
+    def test_global_hook_toggle_is_absent(self, tmp_path):
         with TestClient(_app(tmp_path)) as client:
             r = client.get("/")
-        assert 'id="hook-btn"' in r.text, "Missing the family-recall arm/disarm button"
-        assert "/api/hook" in r.text, "Hook button is not wired to POST /api/hook"
-        assert "toggleHook" in r.text, "Missing the toggleHook handler"
+        assert 'id="hook-btn"' not in r.text
+        assert "/api/hook" not in r.text
+        assert "toggleHook" not in r.text
 
-    def test_hook_toggle_is_disabled_when_read_only(self, tmp_path):
-        """Read-only launches must show the control DISABLED, not hide it.
-
-        /api/hook only mounts under allow_writes (gui.py), so an enabled button would 404.
-        Hiding it entirely is worse than disabling: the user cannot tell the feature exists
-        or why it is unavailable. Mirrors the pool button's read-only treatment.
-        """
+    def test_global_hook_toggle_is_absent_when_read_only(self, tmp_path):
         with TestClient(_app(tmp_path)) as client:   # _app() defaults to read-only
             r = client.get("/")
-        assert 'id="hook-btn"' in r.text, "Control vanished in read-only mode"
-        assert "read-only: launch with --allow-writes" in r.text, (
-            "Read-only guard must explain WHY the toggle is unavailable"
-        )
+        assert 'id="hook-btn"' not in r.text
 
     def test_html_contains_native_picker_button(self, tmp_path):
         """Native GNOME folder-picker button sits beside the /api/fs browser."""
@@ -158,10 +142,8 @@ class TestIndex:
         assert 'id="add-repo-btn"' in r.text, 'Missing id="add-repo-btn"'
         assert "openAddRepoModal" in r.text, "Missing Add-repo wizard trigger"
         assert "/api/install" in r.text, "Page JS must reference /api/install"
-        assert 'id="ar-federate" checked' in r.text, (
-            "Federate checkbox must default checked (D5)"
-        )
-        assert "Skip family-recall hook" in r.text
+        assert 'id="ar-federate"' not in r.text
+        assert "Skip family-recall hook" not in r.text
         assert "Restart your MCP client" in r.text
 
 

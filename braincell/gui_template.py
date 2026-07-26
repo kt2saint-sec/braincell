@@ -372,7 +372,7 @@ svg.stage:active{cursor:grabbing}
   </header>
 
   <div class="stage-wrap">
-    <!-- Numbered HAPPY PATH first (1 add → 2 family → 3 hook; 2–3 optional),
+    <!-- Numbered setup path first (Project connection, then optional grouping),
          then a separator, then the un-numbered secondary actions. "Build
          memory (no MCP)" is deliberately NOT numbered: the Add-project wizard
          already builds, so labeling build-only "2" would teach a redundant
@@ -380,7 +380,6 @@ svg.stage:active{cursor:grabbing}
     <div class="toolbar">
       <button class="btn primary" id="add-repo-btn" onclick="openAddRepoModal()" title="Build memory, register the MCP, and optionally join a family">1 · ✚ Add project</button>
       <button class="btn" id="new-family-btn" onclick="newPool()" title="Create a family — an opt-in cross-project recall grouping">2 · ＋ New family</button>
-      <button class="btn" id="hook-btn" onclick="toggleHook()">3 · ◌ Family recall: …</button>
       <span class="tb-sep"></span>
       <button class="btn" id="build-btn" onclick="openIngestModal()" title="Build memory only — no MCP registration">⬇ Build memory (no MCP)</button>
       <button class="btn" id="cmd-btn" onclick="openCommandsModal()" title="Every braincell command — what it does and where to run it">★ Commands</button>
@@ -396,8 +395,6 @@ svg.stage:active{cursor:grabbing}
       <b>drag it out</b> to remove ·
       <b>click a family's ◉ Pool now</b> to fuse it into the global brain.
       <br><b>New families save when you drop the first cell in.</b>
-      <br><b>3 · Family recall</b> arms the proactive hook — braincell surfaces related notes at the
-      start of every Claude Code turn. Installed disarmed; this is the switch.
       <br><b>★ Commands</b> lists every braincell command with instructions, plus the
       maintenance tools (consolidate, reflect, contradictions, backup, undo…).
       <br><b>? Help</b> replays the guided tour.
@@ -834,7 +831,6 @@ async function loadAll(){
      built (the predicate needs nodes + allow_writes + /api/config.suggest_tour) */
   maybeAutoStartTour(!!(cfg&&cfg.suggest_tour),!!(cfg&&cfg.tour_seen));
   loadSchedules();
-  loadHookState();
   startFeedPoll();   /* live memory feed rail (idempotent — one interval) */
   /* resume the job chip if an ingest is already running (e.g. page reload) */
   if(status.allow_writes){
@@ -1343,37 +1339,16 @@ function arStepInstall(){
        <option value="local" selected>local</option>
        <option value="project">project</option>
      </select>
-     <label style="display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--mut);margin-top:12px">
-       <input type="checkbox" id="ar-federate" checked> Enable cross-project federation
-     </label>
-     <label style="display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--mut);margin-top:8px" id="ar-hook-row">
-       <input type="checkbox" id="ar-no-hook"> Skip family-recall hook
-     </label>
      <div id="ar-install-err" class="warn-note" style="display:none;margin-top:10px"></div>`,
     `<button class="btn" onclick="closeModal()">Cancel</button>
      <button class="btn primary" onclick="arDoInstall()">Register MCP →</button>`);
-  const cSel=document.getElementById("ar-client");
-  if(cSel)cSel.addEventListener("change",arSyncHookRow);
-  arSyncHookRow();
-}
-function arSyncHookRow(){
-  /* hook row is Claude-Code-only — hide for other clients */
-  const cSel=document.getElementById("ar-client");
-  if(!cSel)return;
-  const show=cSel.value==="claude"?"":"none";
-  ["ar-hook-row"].forEach(id=>{
-    const row=document.getElementById(id);
-    if(row)row.style.display=show;
-  });
 }
 async function arDoInstall(){
   const client=document.getElementById("ar-client").value;
   const scope=document.getElementById("ar-scope").value;
-  const federate=document.getElementById("ar-federate").checked;
-  const noHook=!!(document.getElementById("ar-no-hook")||{}).checked;
   const errBox=document.getElementById("ar-install-err");
   try{
-    const res=await apiPost("/api/install",{path:arPath,client,scope,no_hook:noHook,federate});
+    const res=await apiPost("/api/install",{path:arPath,client,scope});
     arProjectId=res.project_id;arClient=client;
     arStepFamily();
   }catch(err){
@@ -1461,64 +1436,6 @@ async function loadSchedules(){
   if(!status.allow_writes)return;
   const data=await apiFetch("/api/schedule");
   _schedules=(data&&data.schedules)||[];
-}
-
-/* ── Proactive family-recall hook (arm / disarm) ───────────────────────────────
-   The hook is INSTALLED by `braincell install` (or the Add-repo wizard) but ships
-   DISARMED; this toggle is the only in-GUI way to arm it. The arm state is a flag
-   FILE on disk, so the server's `armed` is ground truth — never assume the button
-   label is in sync, always repaint from the response.
-   /api/hook is POST-only for every action INCLUDING "status" (gui_install.py), and
-   it mounts only under --allow-writes, hence the read-only guard below. */
-let _hookArmed=null;   /* null = unknown/unavailable, else boolean */
-
-function paintHookBtn(){
-  const b=document.getElementById("hook-btn");
-  if(!b)return;
-  if(!status.allow_writes){
-    b.textContent="3 · ◌ Family recall";
-    b.disabled=true;
-    b.title="read-only: launch with --allow-writes";
-    return;
-  }
-  b.disabled=false;
-  if(_hookArmed===null){
-    b.textContent="3 · ◌ Family recall: ?";
-    b.title="Could not read the hook state.";
-  }else if(_hookArmed){
-    b.textContent="3 · ◉ Family recall: ON";
-    b.title="Armed — related notes are injected at the start of every Claude Code turn. Click to disarm.";
-  }else{
-    b.textContent="3 · ◌ Family recall: OFF";
-    b.title="Disarmed — the hook is a transparent no-op. Click to arm.";
-  }
-}
-
-async function loadHookState(){
-  if(!status.allow_writes){paintHookBtn();return;}
-  try{
-    const r=await apiPost("/api/hook",{action:"status"});
-    _hookArmed=!!(r&&r.armed);
-  }catch(e){
-    _hookArmed=null;   /* endpoint absent or errored — show unknown, never crash init */
-  }
-  paintHookBtn();
-}
-
-async function toggleHook(){
-  if(!status.allow_writes)return;
-  const want=_hookArmed?"off":"on";
-  try{
-    const r=await apiPost("/api/hook",{action:want});
-    _hookArmed=!!(r&&r.armed);
-    paintHookBtn();
-    toast(_hookArmed
-      ?"Family recall ARMED — restart Claude Code sessions to pick it up."
-      :"Family recall disarmed.");
-  }catch(e){
-    await loadHookState();   /* resync from disk rather than trusting the failed action */
-    toast("Hook toggle failed: "+e.message);
-  }
 }
 
 function syncSchedUi(nd){
@@ -1652,9 +1569,9 @@ function mcpRegisterSelected(){
   arStepInstall();
 }
 /* shared POST — the dock's Deregister modal and the Commands row both land here */
-async function mcpDeregister(path,client,scope,disarm){
-  const r=await apiPost("/api/uninstall",{path,client,scope,disarm});
-  toast(`Deregistered from ${client}: MCP ${r.mcp_removed?"removed":"not removed"}, hook entries removed: ${r.hook_removed}`);
+async function mcpDeregister(path,client,scope){
+  const r=await apiPost("/api/uninstall",{path,client,scope});
+  toast(`Disconnected from ${client}: BrainCell ${r.mcp_removed?"removed":"not removed"}`);
 }
 function mcpDeregisterSelected(){
   const nd=nodes.find(n=>n.id===selected);if(!nd)return;
@@ -1669,10 +1586,7 @@ function mcpDeregisterSelected(){
      <div class="mo-label">Scope</div>
      <select class="mo-input" id="dm-scope">
        <option value="local">local</option><option value="project">project</option>
-     </select>
-     <label style="display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--mut);margin-top:12px">
-       <input type="checkbox" id="dm-disarm"> also disarm the family-recall hook
-     </label>`,
+     </select>`,
     `<button class="btn" onclick="closeModal()">Cancel</button>
      <button class="btn danger" onclick="doDeregisterSelected()">Deregister MCP</button>`);
 }
@@ -1680,12 +1594,11 @@ async function doDeregisterSelected(){
   const nd=nodes.find(n=>n.id===selected);if(!nd)return;
   const client=(document.getElementById("dm-client")||{}).value||"claude";
   const scope=(document.getElementById("dm-scope")||{}).value||"local";
-  const disarm=!!(document.getElementById("dm-disarm")||{}).checked;
   closeModal();
   try{
     /* VS Code removal is manual — the server's 409 instructions surface
        verbatim in the error toast below. */
-    await mcpDeregister(nd.path,client,scope,disarm);
+    await mcpDeregister(nd.path,client,scope);
     await loadAll();   /* repaint registration state from the server's answer */
     const nd2=nodes.find(n=>n.id===nd.id);
     if(nd2)openDock(nd2);
@@ -1927,8 +1840,7 @@ function openCommandsModal(){
      <div class="mo-label">MCP status &amp; controls</div>
 
      <div class="note"><div class="k">Deregister MCP</div>
-       <div class="c">Removes the project's braincell MCP registration from a client (and, for Claude
-       Code, the family-recall hook). The brain data itself is untouched. VS Code removal is manual —
+       <div class="c">Removes the Project's BrainCell connection from a client. Project memory is untouched. VS Code removal is manual —
        the server returns instructions. To restart the MCP server, reconnect in your client —
        run /mcp in Claude Code.</div>
        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:11.5px;color:var(--mut)">
@@ -1938,7 +1850,6 @@ function openCommandsModal(){
          <select class="mo-input" id="cmd-un-scope" style="width:auto;padding:4px 8px">
            <option value="local">local</option><option value="project">project</option>
          </select>
-         <label><input type="checkbox" id="cmd-un-disarm"> also disarm hook</label>
          <button class="btn danger"${wdis()} onclick="cmdUninstall()">Deregister MCP</button>
        </div></div>
 
@@ -1953,7 +1864,6 @@ function openCommandsModal(){
      <div class="note"><div class="k">forget</div><div class="c">Soft-delete one note → the ✕ on any note in the drawer's Recent notes (writes on).</div></div>
      <div class="note"><div class="k">family / pool</div><div class="c">Group projects and fuse them into the global brain → <b>＋ New family</b>, drag cells in/out, click a family's <b>◉ Pool now</b>.</div></div>
      <div class="note"><div class="k">install</div><div class="c">Wire a project into an MCP client (build → register MCP → family) → toolbar <b>1 · ✚ Add project</b> wizard.</div></div>
-     <div class="note"><div class="k">hook</div><div class="c">Arm/disarm proactive family recall at the start of each Claude Code turn → toolbar <b>3 · Family recall</b> toggle.</div></div>
      <div class="note"><div class="k">stats / clear / schedule</div><div class="c">Store counts live in each cell's drawer header; <b>✕ Clear memory</b> and <b>Auto-build</b> sit right beside them.</div></div>
 
      <div class="mo-label">Run from the CLI</div>
@@ -2151,11 +2061,10 @@ function cmdUninstall(){
   if(!requireWrites())return;
   const client=(document.getElementById("cmd-un-client")||{}).value||"claude";
   const scope=(document.getElementById("cmd-un-scope")||{}).value||"local";
-  const disarm=!!(document.getElementById("cmd-un-disarm")||{}).checked;
   cmdConfirm(`Remove this project's braincell MCP registration from ${client}? The brain data itself is untouched.`,
     async()=>{
       try{
-        await mcpDeregister(path,client,scope,disarm);
+        await mcpDeregister(path,client,scope);
         await loadAll();   /* refresh mcp_registered so the dock repaints honestly */
       }catch(err){toast(`Deregister failed: ${err.message}`,"err");}
     });
@@ -2424,12 +2333,10 @@ const TOUR_STEPS=[
    body:`You launched BrainCell from one project folder — the <b>active project</b>, shown in this chip and marked ACTIVE on the map. &ldquo;This project&rdquo; scopes search and notes to its brain; other cells are separate brains, viewed read-only here. Adding folders never merges memories — cross-project recall is always opt-in.`},
   {t:"#new-family-btn",title:"2 · New family — optional grouping",
    body:`A <b>Family</b> groups related project folders for cross-project recall. Brains stay physically separate — family recall fans out read-only and merges the ranking. Create one here, or drag a cell into a family's membrane on the map. Most projects are fine isolated — skipping this is the default.`},
-  {t:"#hook-btn",title:"3 · Family recall — the proactive switch",
-   body:`When armed, BrainCell surfaces related family notes at the start of every Claude Code turn. It installs <b>disarmed</b> — nothing is injected until you flip this switch. Optional, and reversible right here.`},
   {t:".stage-wrap",rect:"right",title:"Pool — the only fuse",
    body:`<b>Pool</b> physically copies a family's brains into the separate global brain — the one action that merges data, and it's always an explicit click (<b>◉ Pool now</b> on a family). Until a global brain is built, that big cell stays dimmed.`},
   {t:"#feed-rail",alt:"#rail-tab",title:"Watch memory happen",
-   body:`The live feed streams notes and documents as they land. One thing to know: brains start as documents — curated notes accrue as you work, so an armed hook is silent until notes exist. Not a bug.<br><br>You're set — start with <b>1 · Add project</b>. Replay this tour anytime from <b>? Help</b>.`},
+   body:`The live feed streams notes and documents as they land. Project memory starts with built documents; curated notes accrue as you work.<br><br>You're set — start with <b>1 · Add project</b>. Replay this tour anytime from <b>? Help</b>.`},
 ];
 let tourStep=-1,_tourPoll=null,_tourChecked=false;
 function tourActive(){return tourStep>=0;}

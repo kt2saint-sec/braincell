@@ -764,7 +764,7 @@ def create_app(
             pick_folder=(native_bridge.pick_folder if native_bridge is not None else None),
         )
 
-        # MCP client install/uninstall + family-recall hook management.
+        # Project-local client connection and Project-skill management.
         from .gui_install import mount_install_api
         mount_install_api(app, restart_argv=restart_argv)
 

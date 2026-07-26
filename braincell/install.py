@@ -1,20 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (c) 2026 Karl Toussaint (kt2saint)
-"""
-install.py — turnkey self-wiring of braincell into an MCP client.
+"""Project-local BrainCell client connections and Project skills.
 
-`braincell install` registers the per-project MCP server AND installs the proactive
-family-recall hook so nobody hand-edits client config. This module holds the
-client-specific mechanics behind a small adapter seam; Claude Code is implemented
-here (a local-model Claude Code session is covered by the
-same mechanism). Codex / Antigravity / VS Code / Cursor adapters slot in later.
-
-Two things wire two different ways:
-  - MCP server  → the client's MCP config, via the official `claude mcp add` CLI
-    (never hand-edit ~/.claude.json — the CLI is secrets-aware and format-stable).
-  - Hook        → merged into ~/.claude/settings.json hooks.UserPromptSubmit
-    (there is no `claude hooks` CLI). APPEND-ONLY + backup so a co-resident hook
-    (e.g. iron-law) is never clobbered. Atomic tmp+rename (project_registry idiom).
+Legacy user-level Claude hook helpers remain isolated here only for explicit
+migration cleanup. Ordinary connection, disconnection, CLI, and GUI paths do
+not call them.
 """
 
 from __future__ import annotations

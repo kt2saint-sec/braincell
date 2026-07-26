@@ -683,8 +683,7 @@ def _note_to_dict(n) -> dict:
 def cmd_recall(args: argparse.Namespace) -> None:
     """Recall curated memory notes from the CLI — the SAME engine path as the
     ``mcp__braincell__recall`` tool (server.recall_notes), so ranking/federation
-    match exactly. Read-only. Emits a human table or, with --json, machine JSON
-    (the shape the proactive family-recall hook consumes).
+    match exactly. Read-only. Emits a human table or, with --json, machine JSON.
 
     Brain + seed resolution mirrors `stats`/`reflect`: global mode uses the global
     brain (no seed); project mode resolves the path → ULID read-only (never mints)
@@ -1255,12 +1254,6 @@ def cmd_family_ls(_args: argparse.Namespace) -> None:
             print(f"  {m}  -> {suffix}")
 
 
-def _family_hook_flag() -> Path:
-    """Arm-flag path shared with braincell.family_hook (env-overridable for tests)."""
-    from .family_hook import default_flag_path
-    return Path(os.environ.get("BRAINCELL_FAMILY_HOOK_FLAG", str(default_flag_path())))
-
-
 def cmd_install(args: argparse.Namespace) -> None:
     """Connect BrainCell to one explicitly selected project and client."""
     from . import config
@@ -1361,20 +1354,6 @@ def cmd_skills(args: argparse.Namespace) -> None:
         raise SystemExit(f"braincell skills: {exc}") from exc
     for name, status, path in results:
         print(f"{status}: {name} ({path})")
-
-
-def cmd_hook(args: argparse.Namespace) -> None:
-    """Arm / disarm / report the proactive family-recall hook (flag file)."""
-    flag = _family_hook_flag()
-    if args.hook_cmd == "on":
-        flag.parent.mkdir(parents=True, exist_ok=True)
-        flag.touch()
-        print(f"✓ family-recall hook ARMED (flag: {flag})")
-    elif args.hook_cmd == "off":
-        flag.unlink(missing_ok=True)
-        print(f"✓ family-recall hook DISARMED (flag removed: {flag})")
-    else:  # status
-        print(f"family-recall hook: {'ARMED' if flag.is_file() else 'disarmed'} ({flag})")
 
 
 def cmd_legacy_service(args: argparse.Namespace) -> None:
@@ -1559,7 +1538,7 @@ def main(argv: list[str] | None = None) -> None:
         ),
     )
     prc.add_argument("--json", action="store_true",
-                     help="Emit JSON (for the family-recall hook / machine consumption).")
+                     help="Emit JSON for machine consumption.")
     prc.add_argument(
         "--mode", choices=["project", "global"], default=None,
         help="Brain to recall from (default: resolves BRAINCELL_MODE env or 'project').",
@@ -1666,11 +1645,6 @@ def main(argv: list[str] | None = None) -> None:
     pskills.add_argument("--acknowledge-non-git", action="store_true")
     pskills.add_argument("--allow-privileged", action="store_true")
     pskills.set_defaults(func=cmd_skills)
-
-    ph = sub.add_parser("hook", help="Arm/disarm/status the proactive family-recall hook.")
-    ph.add_argument("hook_cmd", choices=["on", "off", "status"],
-                    help="on=arm, off=disarm, status=report.")
-    ph.set_defaults(func=cmd_hook)
 
     pls = sub.add_parser(
         "legacy-service",

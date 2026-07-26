@@ -59,10 +59,11 @@ class TestDockMcpBlock:
         """One shared POST — the dock modal and the Commands row both land on
         /api/uninstall via mcpDeregister."""
         html = _page(tmp_path)
-        assert 'apiPost("/api/uninstall",{path,client,scope,disarm})' in html
+        assert 'apiPost("/api/uninstall",{path,client,scope})' in html
         # dock modal controls
-        for needle in ('id="dm-client"', 'id="dm-scope"', 'id="dm-disarm"'):
+        for needle in ('id="dm-client"', 'id="dm-scope"'):
             assert needle in html, f"Missing deregister modal control {needle}"
+        assert 'id="dm-disarm"' not in html
 
     def test_restart_instruction_sits_in_the_dock(self, tmp_path):
         """The honest answer where a user looks for a restart button: reconnect
@@ -132,12 +133,10 @@ class TestCommandsModalRegroup:
             "Deregister MCP must be disabled (never hidden) in read-only mode"
         )
 
-    def test_hook_toggle_stays_separate_from_mcp_group(self, tmp_path):
-        """Family-recall hook is deliberately NOT MCP state — the toolbar
-        toggle stays where it is."""
+    def test_retired_global_hook_toggle_is_absent(self, tmp_path):
         html = _page(tmp_path)
-        assert 'id="hook-btn"' in html
-        assert 'onclick="toggleHook()"' in html
+        assert 'id="hook-btn"' not in html
+        assert 'onclick="toggleHook()"' not in html
 
 
 # ── Embedder status chip ──────────────────────────────────────────────────────

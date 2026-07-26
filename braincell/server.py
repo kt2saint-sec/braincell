@@ -465,7 +465,7 @@ def _chunk_fallback_enabled() -> bool:
 
     The fallback is the cold-start fix: a freshly built brain has thousands of
     searchable chunks and ~zero curated notes, so recall (and the proactive
-    family-recall hook, which is `recall --scope family`) delivered nothing on
+    a machine consumer) delivered nothing on
     day one. Backfilling recall with provenance-marked transcript excerpts makes
     a fresh brain useful immediately; excerpts fade out as curated notes accrue.
     """

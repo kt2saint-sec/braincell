@@ -5,12 +5,8 @@ gui_install.py — MCP client install/uninstall + hook management for the Memory
 
 Write-gated endpoints mounted by gui.create_app(allow_writes=True):
 
-  POST /api/install     register the braincell MCP server for a client (+ optional
-                         --federate-equivalent env stamp + family-recall hook);
-                         global_brain=true mirrors `braincell install --global`
-  POST /api/uninstall    reverse the above (VS Code has no remove-MCP CLI → 409 with
-                         manual instructions, mirroring `braincell uninstall`)
-  POST /api/hook         arm / disarm / report the proactive family-recall hook flag
+  POST /api/install      connect the BrainCell MCP server to one selected Project
+  POST /api/uninstall    disconnect it without changing Project memory
   POST /api/skills       add/remove packaged skills inside one selected project
   POST /api/restart      re-exec the GUI server process (server-recorded argv only)
 
@@ -37,11 +33,8 @@ from . import config
 from .config import get_project_id
 from .install import (
     get_client,
-    hook_command,
-    install_hook,
     install_project_skills,
     remove_project_skills,
-    uninstall_hook,
 )
 
 # Delay before the restart re-exec fires — lets the 200 response flush first.
@@ -56,8 +49,6 @@ class InstallBody(BaseModel):
     path: str
     client: Literal["claude", "codex", "vscode"] = "claude"
     scope: Literal["local", "project"] = "local"
-    no_hook: bool = False
-    federate: bool = False
 
 
 class SkillsBody(BaseModel):
@@ -81,13 +72,6 @@ class UninstallBody(BaseModel):
     path: str
     client: Literal["claude", "codex", "vscode"] = "claude"
     scope: Literal["local", "project"] = "local"
-    disarm: bool = False
-
-
-class HookBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    action: Literal["on", "off", "status"]
 
 
 # ── Path validation (SI-4: mirror gui_ingest.py:299-303) ───────────────────────
@@ -97,18 +81,6 @@ def _resolve_dir(raw: str) -> Path:
     if not p.is_dir():
         raise HTTPException(400, f"Not a directory: {raw}")
     return p.resolve()
-
-
-# ── Hook flag path (mirrors cli.py:783-786 _family_hook_flag) ──────────────────
-
-def _hook_flag_path() -> Path:
-    from .family_hook import default_flag_path
-    return Path(os.environ.get("BRAINCELL_FAMILY_HOOK_FLAG", str(default_flag_path())))
-
-
-def _arm_flag(flag: Path) -> None:
-    flag.parent.mkdir(parents=True, exist_ok=True)
-    flag.touch()
 
 
 # ── Route mounting (called by gui.create_app when allow_writes=True) ──────────
@@ -153,18 +125,11 @@ def mount_install_api(app: FastAPI, *, restart_argv: Optional[list[str]] = None)
         except RuntimeError as exc:
             raise HTTPException(409, str(exc))
 
-        hook_installed = False
-        if body.client == "claude" and not body.no_hook:
-            hook_installed = await anyio.to_thread.run_sync(
-                lambda: install_hook(hook_command())
-            )
-
         return {
             "ok": True,
             "project_id": pid,
             "client": body.client,
             "command": command,
-            "hook_installed": bool(hook_installed),
             "restart_required": True,
         }
 
@@ -184,28 +149,7 @@ def mount_install_api(app: FastAPI, *, restart_argv: Optional[list[str]] = None)
             except NotImplementedError as exc:
                 raise HTTPException(409, str(exc))
 
-        hook_removed = 0
-        if body.client == "claude":
-            hook_removed = await anyio.to_thread.run_sync(uninstall_hook)
-            if body.disarm:
-                flag = _hook_flag_path()
-                await anyio.to_thread.run_sync(lambda: flag.unlink(missing_ok=True))
-
-        return {"ok": True, "mcp_removed": mcp_removed, "hook_removed": hook_removed}
-
-    @app.post("/api/hook")
-    async def api_hook(body: HookBody) -> dict:  # type: ignore[type-arg]
-        flag = _hook_flag_path()
-        import anyio
-        if body.action == "on":
-            await anyio.to_thread.run_sync(_arm_flag, flag)
-            armed = True
-        elif body.action == "off":
-            await anyio.to_thread.run_sync(lambda: flag.unlink(missing_ok=True))
-            armed = False
-        else:
-            armed = flag.is_file()
-        return {"armed": armed, "flag": str(flag)}
+        return {"ok": True, "mcp_removed": mcp_removed}
 
     @app.post("/api/skills")
     async def api_skills(body: SkillsBody) -> dict:  # type: ignore[type-arg]

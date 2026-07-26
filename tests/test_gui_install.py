@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """
 test_gui_install.py — regression tests for braincell/gui_install.py
-(POST /api/install, /api/uninstall, /api/hook).
+(POST /api/install and /api/uninstall).
 
 Hermetic: the real `claude`/`codex`/`vscode` CLIs are NEVER invoked and
 ~/.claude/settings.json is never touched. braincell.install.CLIENTS is
@@ -68,9 +68,8 @@ def _fake_client(*, available: bool = True, add_error=None, remove_error=None):
 # ── /api/install ────────────────────────────────────────────────────────────────
 
 def test_install_happy_path(tmp_path, monkeypatch):
-    """(t1) Default install: real command from resolve_server_command(), env has
-    namespace + project id, NO federate key, hook installed by default."""
-    _settings(tmp_path, monkeypatch)
+    """Default connect never touches user-level hook configuration."""
+    settings_path = _settings(tmp_path, monkeypatch)
     fake_cls, calls = _fake_client()
     monkeypatch.setitem(inst.CLIENTS, "claude", fake_cls)
     repo = tmp_path / "repo"
@@ -82,7 +81,8 @@ def test_install_happy_path(tmp_path, monkeypatch):
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is True
-    assert body["hook_installed"] is True
+    assert "hook_installed" not in body
+    assert not settings_path.exists()
     expected_command, _ = inst.resolve_server_command()
     assert len(calls) == 1 and calls[0]["op"] == "add"
     assert calls[0]["command"] == expected_command == body["command"]
@@ -95,7 +95,7 @@ def test_install_happy_path(tmp_path, monkeypatch):
     assert "BRAINCELL_FEDERATE" not in env
 
 
-def test_install_never_stamps_legacy_federation_environment(tmp_path, monkeypatch):
+def test_install_rejects_legacy_federation_option(tmp_path, monkeypatch):
     _settings(tmp_path, monkeypatch)
     fake_cls, calls = _fake_client()
     monkeypatch.setitem(inst.CLIENTS, "claude", fake_cls)
@@ -105,8 +105,8 @@ def test_install_never_stamps_legacy_federation_environment(tmp_path, monkeypatc
     with TestClient(_app(tmp_path)) as client:
         r = client.post("/api/install", json={"path": str(repo), "federate": True})
 
-    assert r.status_code == 200
-    assert "BRAINCELL_FEDERATE" not in calls[0]["env"]
+    assert r.status_code == 422
+    assert calls == []
 
 
 def test_install_missing_client_409_no_mcp_add(tmp_path, monkeypatch):
@@ -172,28 +172,16 @@ def test_install_401_without_token(tmp_path, monkeypatch):
     assert r.status_code == 401
 
 
-def test_install_hook_flag_behavior(tmp_path, monkeypatch):
-    """(t8) no_hook=true skips install_hook; the claude default installs it."""
+def test_install_rejects_legacy_hook_option(tmp_path, monkeypatch):
     settings_path = _settings(tmp_path, monkeypatch)
     fake_cls, _calls = _fake_client()
     monkeypatch.setitem(inst.CLIENTS, "claude", fake_cls)
     repo_a = tmp_path / "repoA"
     repo_a.mkdir()
-    repo_b = tmp_path / "repoB"
-    repo_b.mkdir()
-
     with TestClient(_app(tmp_path)) as client:
         r = client.post("/api/install", json={"path": str(repo_a), "no_hook": True})
-        assert r.json()["hook_installed"] is False
-        assert not settings_path.exists() or \
-            "UserPromptSubmit" not in settings_path.read_text()
-
-        r = client.post("/api/install", json={"path": str(repo_b)})
-        assert r.json()["hook_installed"] is True
-
-    data = json.loads(settings_path.read_text())
-    cmds = [h["command"] for e in data["hooks"]["UserPromptSubmit"] for h in e["hooks"]]
-    assert any("braincell.family_hook" in c for c in cmds)
+    assert r.status_code == 422
+    assert not settings_path.exists()
 
 
 def test_install_global_brain_is_rejected(tmp_path, monkeypatch):
@@ -233,57 +221,31 @@ def test_uninstall_vscode_409_manual_instructions(tmp_path, monkeypatch):
     assert "manually" in r.json()["detail"]
 
 
-def test_uninstall_happy_path_claude(tmp_path, monkeypatch):
-    """(t9b) Claude uninstall: MCP removed via the client adapter, hook entry
-    stripped from settings, disarm=true clears the flag file. Added before the
-    frontend wiring — the endpoint existed with only the vscode-409 test."""
+def test_uninstall_happy_path_claude_leaves_legacy_hook_state_untouched(tmp_path, monkeypatch):
     settings_path = _settings(tmp_path, monkeypatch)
-    flag = tmp_path / "state" / "flag.txt"
-    flag.parent.mkdir(parents=True)
-    flag.touch()
-    monkeypatch.setenv("BRAINCELL_FAMILY_HOOK_FLAG", str(flag))
+    settings_path.write_text('{"hooks":{"UserPromptSubmit":[{"hooks":[{"command":"legacy"}]}]}}')
     fake_cls, calls = _fake_client()
     monkeypatch.setitem(inst.CLIENTS, "claude", fake_cls)
     repo = tmp_path / "repo"
     repo.mkdir()
 
     with TestClient(_app(tmp_path)) as client:
-        # install first so a hook entry exists to remove
-        assert client.post("/api/install", json={"path": str(repo)}).status_code == 200
-        r = client.post("/api/uninstall",
-                        json={"path": str(repo), "disarm": True})
+        r = client.post("/api/uninstall", json={"path": str(repo)})
 
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is True
     assert body["mcp_removed"] is True
-    assert body["hook_removed"] == 1
+    assert "hook_removed" not in body
     assert calls[-1]["op"] == "remove" and calls[-1]["name"] == "braincell"
-    assert "braincell.family_hook" not in settings_path.read_text()
-    assert not flag.exists(), "disarm=true must clear the hook flag file"
+    assert '"legacy"' in settings_path.read_text()
 
 
 # ── /api/hook ─────────────────────────────────────────────────────────────────
 
-def test_hook_on_off_status_roundtrip(tmp_path, monkeypatch):
-    """(t10) /api/hook arm/disarm/status round-trip against a tmp flag path."""
-    flag = tmp_path / "state" / "flag.txt"
-    monkeypatch.setenv("BRAINCELL_FAMILY_HOOK_FLAG", str(flag))
-
+def test_global_hook_endpoint_is_absent(tmp_path):
     with TestClient(_app(tmp_path)) as client:
-        r = client.post("/api/hook", json={"action": "status"})
-        assert r.json()["armed"] is False
-
-        r = client.post("/api/hook", json={"action": "on"})
-        assert r.json()["armed"] is True
-        assert flag.is_file()
-
-        r = client.post("/api/hook", json={"action": "status"})
-        assert r.json()["armed"] is True
-
-        r = client.post("/api/hook", json={"action": "off"})
-        assert r.json()["armed"] is False
-        assert not flag.exists()
+        assert client.post("/api/hook", json={"action": "status"}).status_code in (404, 405)
 
 
 # ── /api/skills ───────────────────────────────────────────────────────────────
