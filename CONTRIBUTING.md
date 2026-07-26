@@ -118,7 +118,8 @@ headless-GUI fallback, an always-on GUI service, or optionalize PySide6.
 
 ## Scope
 
-`braincell-mcp` is the **serving + ingest** layer (search/recall/remember + build/sync). It
+`braincell-mcp` is the **Project-memory serving and Build** layer
+(Search/Recall/Remember + Build/sync). It
 indexes and ranks content you feed it — it does not generate content itself (no parsing,
 clustering, or summarization pipeline). Keep the package self-contained — no new hard
 dependency on an external content-generation tool.

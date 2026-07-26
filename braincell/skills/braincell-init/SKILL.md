@@ -1,17 +1,14 @@
 ---
 name: braincell-init
 description: |
-  One-time bootstrap of braincell-mcp persistent memory for the CURRENT repo:
-  build the per-project brain with the local qwen3-embedding:4b embedder (embed
-  notes + ingest prior Claude/Codex transcripts), then `braincell install` to
-  register the braincell MCP server (and the optional family-recall hook,
-  disarmed) so mcp__braincell__* tools light up after a Claude Code restart. Run
-  once per repo. Use when: "braincell-init", "init braincell memory", "set up
-  braincell for this repo", "bootstrap braincell".
+  Build memory for the CURRENT Project with the local qwen3-embedding:4b
+  embedder, then connect BrainCell to Claude for that Project only. Run once per
+  Project. Use when: "braincell-init", "init braincell memory", "set up
+  braincell for this project", "bootstrap braincell".
 triggers:
   - braincell-init
   - init braincell memory
-  - set up braincell for this repo
+  - set up braincell for this project
   - bootstrap braincell
 allowed-tools:
   - Bash
@@ -21,21 +18,21 @@ allowed-tools:
   - AskUserQuestion
 ---
 
-# /braincell-init — stand up braincell-mcp memory + MCP for THIS repo
+# /braincell-init — build and connect BrainCell for this Project
 
-Activates **braincell-mcp**, the standalone local-first persistent-memory engine
-(SQLite, hybrid vector + FTS5). After it runs and you restart Claude Code, the
-`mcp__braincell__*` tools (search / recall / remember / forget / supersede /
-get_document / ingest_status / list_documents / list_projects / list_families)
-become available for THIS repo.
+Activates **BrainCell**, the local-first project-memory engine (SQLite, hybrid
+vector + FTS5). After it runs and you restart Claude Code, BrainCell's MCP
+tools become available for this Project only. Normal Recall and Search do not
+read another Project unless you deliberately invoke a named Pool operation.
 
-**Engine:** braincell-mcp — its OWN CLI (`braincell`), venv, store namespace, and MCP
-registration. braincell-mcp is **project-scoped**: it builds a brain for the CURRENT
-working directory (`$PWD`), not a fixed engine path.
+**Engine:** braincell-mcp — its own CLI (`braincell`), environment, Project
+memory store, and MCP connection. braincell-mcp is **Project-scoped**: it
+builds memory for the current working directory (`$PWD`), not a fixed engine
+path.
 
 **Embedder:** the shipped default is the **local Ollama `qwen3-embedding:4b` (1024-d)** — no API
-key, nothing hosted. The embed fingerprint (`ollama:qwen3-embedding:4b:1024`) is gated: a brain
-must be built and served with the SAME embedder, or the store refuses to open. Do not
+key, nothing hosted. The embed fingerprint (`ollama:qwen3-embedding:4b:1024`) is gated: Project
+memory must be built and served with the SAME embedder, or the store refuses to open. Do not
 mix embedders (switch only with `braincell build --reembed`).
 
 ## Steps
@@ -54,48 +51,42 @@ BC="$(command -v braincell || true)"
    (Ollama must be running. To use a different embedder set `BRAINCELL_EMBED_MODEL`/
    `BRAINCELL_EMBED_DIM` — but then build AND serve with the same one.)
 
-2. **Build the brain (the heavy, one-time pass) — local qwen3-embedding:4b, targets `$PWD`.**
+2. **Build Project memory (the heavy, one-time pass) — targets `$PWD`.**
    ```bash
    "$BC" build .
    ```
-   Mints/confirms this repo's ULID (path-registry), embeds curated notes with qwen3-embedding:4b,
-   and ingests prior `~/.claude/projects/**` + `~/.codex/sessions/**` transcripts for
-   this repo. Writes ONLY to the XDG store (`~/.local/share/braincell/…`) — never into
-   the repo tree. On an EXISTING brain the build is incremental (mtime→SHA / cluster
+   Mints/confirms this Project's ULID, embeds curated notes with
+   qwen3-embedding:4b, and reads supported prior transcripts. Writes only to
+   BrainCell's per-Project data store — never into
+   the Project tree. On existing Project memory the build is incremental (mtime→SHA / cluster
    skip); add `--reembed` only for a clean rebuild after an embedder change.
 
-3. **Register the MCP (+ install the hook, disarmed).** `braincell install` shells out
-   to `claude mcp add` (no hand-edited config) and appends the family-recall hook to
-   Claude Code settings, append-only (co-resident hooks are preserved):
+3. **Connect BrainCell to Claude.** The default is Claude's private
+   local-Project connection. It does not create a user-wide registration or
+   install a machine-wide hook:
    ```bash
    command -v claude >/dev/null || { echo "ERROR: claude CLI not found (needed to register the MCP)."; exit 1; }
-   "$BC" install .            # add --no-hook to register the MCP only
-   "$BC" hook status          # confirm the hook state (installed DISARMED by default)
+   "$BC" connect . --client claude --scope local
    ```
 
-4. **(Optional) arm proactive family memory.** The family-recall hook is OFF by
-   default. Arm it only if this repo belongs to a family (`braincell family add`) and
-   you want sibling-project notes auto-surfaced each turn:
-   ```bash
-   "$BC" hook on             # turn off any time with: braincell hook off
-   ```
-
-5. **Verdict + restart note.** Report brain built (note + transcript counts from the
-   build output) and MCP registered. Then tell the user plainly:
+4. **Verdict + restart note.** Report Project memory built (note + transcript counts from the
+   build output) and BrainCell connected. Then tell the user plainly:
    > **Restart Claude Code** — `mcp__braincell__*` tools load at session start. After
-   > restart, `/braincell-sync` keeps this repo's brain current.
+  > restart, `/braincell-sync` keeps this Project's memory current.
 
 ## Guardrails
-- **Local qwen3-embedding:4b by default — one embedder per brain.** The store is fingerprint-gated
+- **Local qwen3-embedding:4b by default — one embedder per Project memory store.** The store is fingerprint-gated
   (`ollama:qwen3-embedding:4b:1024`); mixing embed models/dims gives incomparable vectors. Change
   the embedder only via `braincell build --reembed`.
-- **Project-scoped: builds `$PWD`**, not a fixed engine. Each repo is its own brain
-  (path → ULID in the registry). This is the whole point — do not target another dir.
-- **Read-only over the repo** — braincell writes only the XDG DBs + the path-registry;
-  it never clones, deletes, or `rm -rf`s anything in the repo tree.
-- **`braincell install` is idempotent + append-only** — safe to re-run; it never
-  clobbers other Claude Code hooks or MCP servers.
-- If `braincell install` errors (e.g. `claude` CLI missing), surface it — do NOT
-  silently proceed as if the MCP were registered.
+- **Project-scoped: builds `$PWD`**, not a fixed engine. Each Project has its
+  own memory and stable ULID. Do not target another directory unintentionally.
+- **Read-only over the Project tree** — braincell writes only its data store and
+  Project registry; it never clones, deletes, or `rm -rf`s anything in the
+  Project tree.
+- **`braincell connect` is idempotent and non-clobbering** — safe to re-run;
+  it preserves unrelated configuration and refuses a conflicting BrainCell
+  entry.
+- If `braincell connect` errors (e.g. `claude` CLI missing), surface it — do NOT
+  silently proceed as if BrainCell were connected.
 - Don't run while another process is mid-build on the same project (single-writer
   SQLite; a read-only MCP query is fine — WAL allows concurrent readers).
