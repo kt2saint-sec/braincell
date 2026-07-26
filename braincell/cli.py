@@ -1164,104 +1164,68 @@ def _family_hook_flag() -> Path:
 
 
 def cmd_install(args: argparse.Namespace) -> None:
-    """Wire braincell into an MCP client: register the per-project MCP server (and, for
-    Claude Code, the proactive family-recall hook, disarmed). Turnkey — no hand-edited
-    config. `--client claude|codex|vscode` picks the target (default claude).
-
-    Project mode (default) mints/confirms the cwd's ULID and registers a braincell MCP
-    scoped to it; --global registers against the shared global brain instead. The hook
-    is Claude-Code-only and installed OFF; run `braincell hook on` to arm it.
-    """
+    """Connect BrainCell to one explicitly selected project and client."""
     from . import config
-    from .install import get_client, hook_command, resolve_server_command
+    from .install import get_client, resolve_portable_server_command
+    from .project_target import ProjectTargetError, validate_project_target
 
-    ns = config.DATA_NAMESPACE
-    env: dict[str, str] = {"BRAINCELL_DATA_NAMESPACE": ns}
-    if args.global_brain:
-        env["BRAINCELL_MODE"] = "global"
-        target = "global brain"
-        cwd = None
-        if args.federate:
-            print("• --federate ignored with --global (global brain does not federate)",
-                  file=sys.stderr)
-    else:
-        root = Path(args.path).resolve()
-        pid = get_project_id(root)  # mints + registers if absent
-        env["BRAINCELL_PROJECT_ID"] = pid
-        # Project mode: the server's lifespan open_store() resolves via the
-        # BRAINCELL_STORE=sqlite + BRAINCELL_PROJECT_ID env contract. Omitting
-        # BRAINCELL_STORE makes the MCP server exit(1) at startup (never loads).
-        env["BRAINCELL_STORE"] = "sqlite"
-        target = f"project {pid}"
-        cwd = str(root)
-        if args.federate:
-            env["BRAINCELL_FEDERATE"] = "on"
-
-    command, cmd_args = resolve_server_command()
+    try:
+        target = validate_project_target(
+            args.path,
+            acknowledge_home=args.acknowledge_home,
+            acknowledge_non_git=args.acknowledge_non_git,
+            allow_privileged=args.allow_privileged,
+            require_git=args.client == "codex",
+        )
+    except ProjectTargetError as exc:
+        raise SystemExit(f"braincell connect: {exc}") from exc
+    for warning in target.warnings:
+        print(f"WARNING: {warning}", file=sys.stderr)
+    root = target.path
+    pid = get_project_id(root)
+    env: dict[str, str] = {
+        "BRAINCELL_DATA_NAMESPACE": config.DATA_NAMESPACE,
+        "BRAINCELL_PROJECT_ID": pid,
+        "BRAINCELL_STORE": "sqlite",
+    }
+    command, cmd_args = resolve_portable_server_command()
     try:
         client = get_client(args.client)
     except ValueError as exc:
         print(f"braincell install: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
     try:
-        client.mcp_add("braincell", command, cmd_args, env, scope=args.scope, cwd=cwd)
+        client.mcp_add("braincell", command, cmd_args, env, scope=args.scope, cwd=str(root))
     except RuntimeError as exc:
         print(f"braincell install: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
-    line = f"✓ registered braincell MCP with {client.name} ({target}) → {command} " \
-           f"{' '.join(cmd_args)}".rstrip()
-    if env.get("BRAINCELL_FEDERATE") == "on":
-        line += "  [federation: ON]"
-    print(line)
-
-    # The family-recall hook is a Claude Code feature (UserPromptSubmit) — other
-    # clients get the MCP tools only.
-    hook_installed = args.client == "claude" and not args.no_hook
-    if hook_installed:
-        from .install import install_hook
-        wrote = install_hook(hook_command(args.python))
-        print("✓ installed family-recall hook (DISARMED)" if wrote
-              else "• family-recall hook already installed")
-    elif args.client != "claude" and not args.no_hook:
-        print("• family-recall hook skipped — it is a Claude Code-only feature.")
-
-    # Skills are Claude-Code-only, same as the hook. Opt-in: they change the user's
-    # ~/.claude/skills tree, which `install` otherwise never touches.
-    skills_conflicts: list = []
-    if getattr(args, "skills", False):
-        if args.client != "claude":
-            print("• skills skipped — /braincell-init and /braincell-sync are "
-                  "Claude Code skills.")
-        else:
-            from .install import install_skills
-            for name, status, path in install_skills():
-                if status == "installed":
-                    print(f"✓ installed skill /{name} → {path}")
-                elif status == "current":
-                    print(f"• skill /{name} already installed (identical)")
-                else:
-                    skills_conflicts.append((name, path))
-                    print(f"⚠ skill /{name} EXISTS with different content — left "
-                          f"untouched: {path}", file=sys.stderr)
+    print(
+        f"✓ Connected BrainCell to {client.name} for project {pid}\n"
+        f"  path: {root}\n  configuration: project-local\n  command: {command}"
+    )
+    if args.client == "codex":
+        print("  Codex loads this connection only after this project is trusted.")
 
     restart = {"claude": "Claude Code", "codex": "Codex", "vscode": "VS Code"}[args.client]
     print("\nNext steps:")
     print(f"  1. Restart {restart} so it loads the new MCP server.")
-    if hook_installed:
-        print("  2. `braincell hook on`  — arm proactive family memory (needs a family;")
-        print("     see `braincell family add`). Turn off any time with `braincell hook off`.")
-    if skills_conflicts:
-        print("\nSkill conflicts — braincell did NOT overwrite your versions:")
-        for name, path in skills_conflicts:
-            print(f"  • {path}")
-        print("  Move or delete the file(s) above, then re-run with --skills to install "
-              "braincell's copy.")
 
 
 def cmd_uninstall(args: argparse.Namespace) -> None:
-    """Reverse `braincell install` for a client: remove the MCP registration (and, for
-    Claude Code, the hook). VS Code has no remove-MCP CLI → manual step is printed."""
-    from .install import get_client, uninstall_hook
+    """Disconnect BrainCell from one project's selected client."""
+    from .install import get_client
+    from .project_target import ProjectTargetError, validate_project_target
+
+    try:
+        target = validate_project_target(
+            args.path,
+            acknowledge_home=args.acknowledge_home,
+            acknowledge_non_git=args.acknowledge_non_git,
+            allow_privileged=args.allow_privileged,
+            require_git=args.client == "codex",
+        )
+    except ProjectTargetError as exc:
+        raise SystemExit(f"braincell disconnect: {exc}") from exc
 
     try:
         client = get_client(args.client)
@@ -1269,23 +1233,12 @@ def cmd_uninstall(args: argparse.Namespace) -> None:
         print(f"braincell uninstall: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
 
-    if client.available():
-        try:
-            client.mcp_remove("braincell", scope=args.scope,
-                              cwd=str(Path(args.path).resolve()))
-            print(f"✓ removed braincell MCP from {client.name}")
-        except NotImplementedError as exc:
-            print(f"• {exc}", file=sys.stderr)
-    else:
-        print(f"• {client.name} CLI not found — skipped MCP removal.", file=sys.stderr)
-
-    if args.client == "claude":
-        n = uninstall_hook()
-        print(f"✓ removed family-recall hook ({n} entr{'y' if n == 1 else 'ies'})"
-              if n else "• no family-recall hook entry found")
-        if args.disarm:
-            _family_hook_flag().unlink(missing_ok=True)
-            print("✓ disarmed the hook flag")
+    try:
+        client.mcp_remove("braincell", scope=args.scope, cwd=str(target.path))
+    except (RuntimeError, NotImplementedError) as exc:
+        print(f"braincell disconnect: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+    print(f"✓ Disconnected BrainCell from {client.name} for {target.path}")
 
 
 def cmd_hook(args: argparse.Namespace) -> None:
@@ -1549,40 +1502,33 @@ def main(argv: list[str] | None = None) -> None:
     pmundo.set_defaults(func=cmd_memory_undo)
 
     pi = sub.add_parser(
-        "install",
-        help="Wire braincell into an MCP client (register MCP; for Claude Code, +hook).",
+        "connect", aliases=["install"],
+        help="Connect BrainCell to one project in Codex, Claude, or VS Code.",
     )
     pi.add_argument("path", nargs="?", default=".",
-                    help="Project path to wire (default: cwd; ignored with --global).")
+                    help="Project path to connect (default: cwd).")
     pi.add_argument("--client", choices=["claude", "codex", "vscode"], default="claude",
-                    help="Target MCP client (default: claude). codex/vscode = MCP only, no hook.")
-    pi.add_argument("--global", dest="global_brain", action="store_true",
-                    help="Register against the shared global brain instead of this project.")
-    pi.add_argument("--scope", choices=["local", "user", "project"], default="local",
-                    help="Claude Code mcp scope: local=this project (default), user=all, project=.mcp.json. Ignored for codex/vscode.")
-    pi.add_argument("--no-hook", action="store_true",
-                    help="Register the MCP only; skip installing the family-recall hook (Claude Code).")
-    pi.add_argument("--skills", action="store_true",
-                    help="Also install the packaged /braincell-init and /braincell-sync "
-                         "Claude Code skills into ~/.claude/skills (never overwrites an "
-                         "existing skill of the same name).")
-    pi.add_argument("--python", default=None,
-                    help="Interpreter for the hook command (default: this interpreter).")
-    pi.add_argument("--federate", action="store_true",
-                    help="Stamp BRAINCELL_FEDERATE=on into the MCP env so recall/search "
-                         "scope='family' fan out across the project's family (opt-in; "
-                         "default off). Ignored with --global (global brain does not federate).")
+                    help="Target client (default: Claude).")
+    pi.add_argument("--scope", choices=["local", "project"], default="local",
+                    help="Claude scope: local private-project (default) or shareable project .mcp.json.")
+    pi.add_argument("--acknowledge-home", action="store_true",
+                    help="Confirm intentionally selecting the home directory as a project.")
+    pi.add_argument("--acknowledge-non-git", action="store_true",
+                    help="Confirm intentionally selecting a non-Git project.")
+    pi.add_argument("--allow-privileged", action="store_true",
+                    help="Confirm root/sudo ownership of selected project configuration and state.")
     pi.set_defaults(func=cmd_install)
 
-    pu = sub.add_parser("uninstall", help="Remove the braincell MCP registration (+ hook for Claude Code).")
+    pu = sub.add_parser("disconnect", aliases=["uninstall"], help="Disconnect BrainCell from one project client.")
     pu.add_argument("path", nargs="?", default=".",
-                    help="Project path (default: cwd; for local-scope MCP removal).")
+                    help="Project path (default: cwd).")
     pu.add_argument("--client", choices=["claude", "codex", "vscode"], default="claude",
-                    help="Client to remove from (default: claude). VS Code removal is manual (no CLI).")
-    pu.add_argument("--scope", choices=["local", "user", "project"], default="local",
-                    help="Claude Code scope to remove from (must match how it was installed).")
-    pu.add_argument("--disarm", action="store_true",
-                    help="Also remove the hook arm-flag (disarm) while uninstalling (Claude Code).")
+                    help="Client to disconnect (default: Claude).")
+    pu.add_argument("--scope", choices=["local", "project"], default="local",
+                    help="Claude scope to remove (must match the connection scope).")
+    pu.add_argument("--acknowledge-home", action="store_true")
+    pu.add_argument("--acknowledge-non-git", action="store_true")
+    pu.add_argument("--allow-privileged", action="store_true")
     pu.set_defaults(func=cmd_uninstall)
 
     ph = sub.add_parser("hook", help="Arm/disarm/status the proactive family-recall hook.")
