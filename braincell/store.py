@@ -3099,13 +3099,10 @@ def open_store(
     Resolution order:
     1. Explicit db_path (testing / pipeline use).
     2. project_id → XDG path via config.get_db_path.
-    3. Mode-aware env-fallback:
-       a. BRAINCELL_MODE=global → global brain at config.get_global_db_path().
-       b. BRAINCELL_MODE=project (or unset) → BRAINCELL_STORE=sqlite +
-          BRAINCELL_PROJECT_ID env (original behaviour, unchanged).
+    3. Project-only env fallback: BRAINCELL_STORE=sqlite +
+       BRAINCELL_PROJECT_ID.
 
     Fails closed (sys.exit(1)) if:
-    - Global mode and the global brain file does not exist.
     - BRAINCELL_STORE is unset AND no explicit db_path AND no project_id (project mode).
     - BRAINCELL_STORE is not 'sqlite'.
     """
@@ -3116,25 +3113,9 @@ def open_store(
         from .config import get_db_path
         return SqliteStore(get_db_path(project_id))
 
-    # Mode-aware env-fallback (no explicit path/id given).
+    # Project-only env fallback: reject retired global mode before opening anything.
     from .mode import resolve_mode
-    mode = resolve_mode()
-
-    if mode == "global":
-        from .config import get_global_db_path
-        global_path = get_global_db_path()
-        if not global_path.exists():
-            print(
-                f"ERROR: no global brain found at {global_path}.\n"
-                f"  The global brain does not exist yet. Create it with:\n"
-                f"    braincell build --mode global\n"
-                f"  Refusing to fabricate an empty brain.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        return SqliteStore(global_path)
-
-    # Project mode (default): BRAINCELL_STORE + BRAINCELL_PROJECT_ID (unchanged).
+    resolve_mode()
     store_type = os.environ.get("BRAINCELL_STORE", "").strip().lower()
     if not store_type:
         print(

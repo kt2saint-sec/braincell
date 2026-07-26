@@ -34,7 +34,6 @@ from .project_registry import (
     load_families,
     load_path_registry,
     normalize_path,
-    resolve_family_ulids,
 )
 from .store import open_store, Hit, Note, SqliteStore
 
@@ -109,23 +108,10 @@ def _resolve_scope(project: Optional[str], scope: str):
             )
         return pid
     if scope in ("family", "all"):
-        mode = resolve_mode()
-        if mode != "global":
-            raise ValueError(
-                f"scope={scope!r} requires global mode. "
-                f"Set BRAINCELL_MODE=global and open a global brain, or use "
-                f"scope='self' (the default) for this project's brain."
-            )
-        if scope == "all":
-            return None  # no project filter → search the entire global DB
-        # scope == "family" in global mode
-        seed = os.environ.get("BRAINCELL_PROJECT_ID", "").strip()
-        if not seed:
-            raise ValueError(
-                "scope='family' requires BRAINCELL_PROJECT_ID to be set — "
-                "the server needs a reference project to resolve its family."
-            )
-        return sorted(resolve_family_ulids(seed))
+        raise ValueError(
+            f"scope={scope!r} is retired. Normal Recall and Search use only the "
+            "connected project; use an explicit named Pool action for cross-project reads."
+        )
     raise ValueError(
         f"scope={scope!r} is not valid. Use 'self' (default), 'family', or 'all'."
     )

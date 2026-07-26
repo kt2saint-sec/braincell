@@ -1,12 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""
-test_mode.py — Phase-4 per-project hardening: mode seam + scope guard.
-
-Covers:
-  - resolve_mode precedence + global-not-implemented fail-loud.
-  - _resolve_scope rejects cross-project scopes in v1, pins 'self' to the
-    configured project.
-"""
+"""Project-only runtime mode and legacy-scope guard coverage."""
 
 from __future__ import annotations
 
@@ -30,13 +23,15 @@ class TestResolveMode:
         monkeypatch.setenv("BRAINCELL_MODE", "project")
         assert resolve_mode() == "project"
 
-    def test_global_cli_arg_resolves(self, monkeypatch):
+    def test_global_cli_arg_is_retired(self, monkeypatch):
         monkeypatch.delenv("BRAINCELL_MODE", raising=False)
-        assert resolve_mode("global") == "global"
+        with pytest.raises(ValueError, match="retired"):
+            resolve_mode("global")
 
-    def test_global_env_resolves(self, monkeypatch):
+    def test_global_env_is_retired(self, monkeypatch):
         monkeypatch.setenv("BRAINCELL_MODE", "global")
-        assert resolve_mode() == "global"
+        with pytest.raises(ValueError, match="retired"):
+            resolve_mode()
 
     def test_unknown_mode_raises(self, monkeypatch):
         monkeypatch.delenv("BRAINCELL_MODE", raising=False)
@@ -57,10 +52,10 @@ class TestResolveScope:
         monkeypatch.delenv("BRAINCELL_PROJECT_ID", raising=False)
         assert _resolve_scope(None, "self") is None
 
-    def test_family_scope_rejected_in_v1(self):
-        with pytest.raises(ValueError, match="requires global mode"):
+    def test_legacy_family_scope_is_rejected(self):
+        with pytest.raises(ValueError, match="retired"):
             _resolve_scope(None, "family")
 
-    def test_all_scope_rejected_in_v1(self):
-        with pytest.raises(ValueError, match="requires global mode"):
+    def test_legacy_all_scope_is_rejected(self):
+        with pytest.raises(ValueError, match="retired"):
             _resolve_scope(None, "all")
