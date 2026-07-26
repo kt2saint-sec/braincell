@@ -168,29 +168,33 @@ byte-identical rankings.
 
 ## Install
 
-### Prerequisites — a local embedder
+### Install from GitHub (recommended)
 
-braincell embeds locally with [Ollama](https://ollama.com) by default, so **no API key is
-required**. Ollama is the only external dependency; before installing braincell, get it running
-and pull the default embedding model:
+There is not a PyPI release yet. Install from the public repository instead. The bootstrap script
+creates an isolated virtual environment, installs every Python dependency (including the native
+Memory Map), and pulls the default local embedding model when Ollama is available:
 
 ```bash
-# 1. Install Ollama — see https://ollama.com/download (Linux one-liner shown):
-curl -fsSL https://ollama.com/install.sh | sh
+git clone https://github.com/kt2saint-sec/braincell.git
+cd braincell
+./scripts/install.sh
+```
 
-# 2. Pull the default embedder (~2.5 GB). Ollama serves it on localhost:11434:
+The default local embedder is Ollama's `qwen3-embedding:4b` (about 2.5 GB), so no API key is
+required. Install Ollama first from [ollama.com/download](https://ollama.com/download) if it is not
+already present; the script prints the exact `ollama pull` command if it cannot find it. To use a
+custom virtualenv or defer the model download, pass `--venv /path/to/venv` or `--skip-model`.
+
+For a plain pip installation, use the GitHub repository explicitly, then provision the model:
+
+```bash
+python3 -m pip install "braincell-mcp @ git+https://github.com/kt2saint-sec/braincell.git"
 ollama pull qwen3-embedding:4b
 ```
 
-Prefer hosted embeddings? Set `BRAINCELL_EMBED_PROVIDER=openai` and `OPENAI_API_KEY` instead — no
-Ollama needed. Either way, the model/provider is stamped into each brain on first build, so switching
-later requires `braincell build --reembed`.
-
-### braincell itself
-
-```bash
-pip install braincell-mcp      # or `pipx install braincell-mcp`; `pip install .` from a checkout
-```
+Prefer hosted embeddings? Set `BRAINCELL_EMBED_PROVIDER=openai`, install with the optional
+`[openai]` extra, and provide `OPENAI_API_KEY` instead — no Ollama needed. The model/provider is
+stamped into each brain on first build, so switching later requires `braincell build --reembed`.
 
 This puts three commands on your PATH:
 

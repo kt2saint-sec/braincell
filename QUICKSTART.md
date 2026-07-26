@@ -6,35 +6,37 @@ Get `braincell-mcp` running in about five minutes. This is the short path; the
 The package is named `braincell-mcp`; the public source repository is
 `kt2saint-sec/braincell`.
 
-## 1. Prerequisites — a local embedder
+## 1. Install from GitHub
 
-braincell embeds locally with [Ollama](https://ollama.com) by default, so **no API key is
-required**. Install Ollama and pull the default embedding model before installing braincell:
+There is not a PyPI release yet. Clone the public repository and run its bootstrap script:
 
 ```bash
-# Install Ollama — see https://ollama.com/download (Linux one-liner shown):
-curl -fsSL https://ollama.com/install.sh | sh
+git clone https://github.com/kt2saint-sec/braincell.git
+cd braincell
+./scripts/install.sh
+```
 
-# Pull the default embedder (~2.5 GB). Ollama serves it on localhost:11434:
+The script creates `./.braincell-venv`, installs BrainCell and its native GUI dependencies, and
+pulls the default local embedding model (`qwen3-embedding:4b`, about 2.5 GB) when Ollama is
+available. Install Ollama first from [ollama.com/download](https://ollama.com/download) if needed;
+the script prints the exact follow-up command if it is missing.
+
+Prefer plain pip? Run:
+
+```bash
+python3 -m pip install "braincell-mcp @ git+https://github.com/kt2saint-sec/braincell.git"
 ollama pull qwen3-embedding:4b
 ```
 
-> Prefer hosted embeddings? Set `BRAINCELL_EMBED_PROVIDER=openai` and `OPENAI_API_KEY`
-> instead — no Ollama needed.
+For hosted embeddings, set `BRAINCELL_EMBED_PROVIDER=openai`, install the `[openai]` extra, and
+provide `OPENAI_API_KEY` instead.
 
-## 2. Install braincell
-
-```bash
-pip install braincell-mcp
-```
-
-(Or isolated per-user: `pipx install braincell-mcp`. From a source checkout,
-`pip install .` is equivalent.) You get three commands on your PATH: `braincell` (the CLI,
+You get three commands on your PATH (or under `.braincell-venv/bin` when using the script): `braincell` (the CLI,
 including the `start` launcher), `braincell-mcp` (the MCP stdio server your client runs),
 and `braincell-map` (the global Memory Map). The Memory Map GUI is part of the base
 install — no extra needed.
 
-## 3. Start
+## 2. Start
 
 ```bash
 cd /path/to/your/project      # any folder you work in — no git required
