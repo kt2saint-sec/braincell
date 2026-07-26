@@ -1017,6 +1017,105 @@ def cmd_pool(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_pool_create(args: argparse.Namespace) -> None:
+    from .project_registry import create_pool
+
+    create_pool(args.name)
+    print(f"Created Pool '{args.name}'.")
+
+
+def cmd_pool_add(args: argparse.Namespace) -> None:
+    from .project_registry import add_to_pool
+
+    members = add_to_pool(args.name, args.project_ids)
+    print(f"Pool '{args.name}' now contains {len(members)} project(s).")
+
+
+def cmd_pool_decouple(args: argparse.Namespace) -> None:
+    from .project_registry import decouple_from_pool
+
+    changed = decouple_from_pool(args.name, args.project_id)
+    if changed:
+        print(
+            f"Decoupled project {args.project_id} from Pool '{args.name}'. "
+            "Its memory and client connections are unchanged."
+        )
+    else:
+        print(f"Project {args.project_id} is not a member of Pool '{args.name}'.")
+
+
+def cmd_pool_delete(args: argparse.Namespace) -> None:
+    from .project_registry import delete_pool
+
+    if delete_pool(args.name):
+        print(f"Deleted Pool '{args.name}'. Project memory and connections are unchanged.")
+    else:
+        print(f"Pool '{args.name}' does not exist.")
+
+
+def cmd_pool_list(_args: argparse.Namespace) -> None:
+    from .project_registry import load_pools
+
+    pools = load_pools()
+    if not pools:
+        print("No Pools defined.")
+        return
+    for name, members in pools.items():
+        print(f"[{name}] ({len(members)} project(s))")
+        for project_id in members:
+            print(f"  {project_id}")
+
+
+def _pool_connected_project_id(path: str) -> str:
+    project_id = resolve_project_id_readonly(Path(path).resolve())
+    if project_id is None:
+        raise SystemExit("This project has no BrainCell memory yet. Run `braincell build` first.")
+    return project_id
+
+
+def cmd_pool_search(args: argparse.Namespace) -> None:
+    """Search one explicitly named Pool without copying or writing any member data."""
+    from .embed import embed_query_async
+    from .federate import federated_search, plan_for_pool
+
+    connected_project_id = _pool_connected_project_id(args.path)
+    plan = plan_for_pool(args.name, connected_project_id)
+    qvec = asyncio.run(embed_query_async(args.query))
+    hits = asyncio.run(federated_search(None, plan, qvec, args.query, args.k, args.rank))
+    if args.json:
+        import json
+        print(json.dumps([_hit_to_dict(hit) for hit in hits], indent=2))
+        return
+    if not hits:
+        print("(no matching Pool content)")
+        return
+    for hit in hits:
+        print(f"[{hit.doc_key}] {hit.title}\n    {hit.snippet}")
+
+
+def cmd_pool_recall(args: argparse.Namespace) -> None:
+    """Recall from one explicitly named Pool without copying or writing member data."""
+    from .embed import embed_query_async
+    from .federate import federated_recall, plan_for_pool
+
+    connected_project_id = _pool_connected_project_id(args.path)
+    plan = plan_for_pool(args.name, connected_project_id)
+    try:
+        qvec = asyncio.run(embed_query_async(args.query)) if args.query.strip() else None
+    except Exception:
+        qvec = None
+    notes = asyncio.run(federated_recall(None, plan, qvec, args.k, qtext=args.query))
+    if args.json:
+        import json
+        print(json.dumps([_note_to_dict(note) for note in notes], indent=2))
+        return
+    if not notes:
+        print("(no matching Pool memory)")
+        return
+    for note in notes:
+        print(f"[{note.kind}] {note.content}")
+
+
 def cmd_gui(args: argparse.Namespace) -> None:
     """Launch the native BrainCell GUI (or install its desktop launcher)."""
     if getattr(args, "install_launcher", False):
@@ -1587,34 +1686,39 @@ def main(argv: list[str] | None = None) -> None:
     pbk.add_argument("-v", "--verbose", action="store_true")
     pbk.set_defaults(func=cmd_backup)
 
-    ppool = sub.add_parser(
-        "pool",
-        help="Merge existing per-project brains into the global brain (no re-embed).",
-    )
-    ppool.add_argument(
-        "paths", nargs="*",
-        help="Registered project paths to pool into the global brain.",
-    )
-    ppool.add_argument(
-        "--family",
-        help="Pool every registered member of this family.",
-    )
-    ppool.add_argument(
-        "--all", action="store_true",
-        help="Pool every registered project.",
-    )
-    ppool.add_argument(
-        "--prune", action="store_true",
-        help=(
-            "Also DELETE global rows owned by a pooled project that no longer exist "
-            "in that project's own brain (mirror its hard deletes). Off by default: "
-            "pooling adds and updates but never removes. Only rows that arrived via "
-            "pool are candidates — notes written directly into the global brain, and "
-            "rows pooled before provenance tracking existed, are never deleted."
-        ),
-    )
-    ppool.add_argument("-v", "--verbose", action="store_true")
-    ppool.set_defaults(func=cmd_pool)
+    ppool = sub.add_parser("pool", help="Manage explicit live-query Pools.")
+    poolsub = ppool.add_subparsers(dest="pool_cmd", required=True)
+    ppool_create = poolsub.add_parser("create", help="Create a named Pool with no copied memory.")
+    ppool_create.add_argument("name")
+    ppool_create.set_defaults(func=cmd_pool_create)
+    ppool_add = poolsub.add_parser("add", help="Add project ULIDs to a Pool.")
+    ppool_add.add_argument("name")
+    ppool_add.add_argument("project_ids", nargs="+", help="Stable project ULIDs to add.")
+    ppool_add.set_defaults(func=cmd_pool_add)
+    ppool_decouple = poolsub.add_parser("decouple", help="Decouple one project from one Pool.")
+    ppool_decouple.add_argument("name")
+    ppool_decouple.add_argument("project_id")
+    ppool_decouple.set_defaults(func=cmd_pool_decouple)
+    ppool_delete = poolsub.add_parser("delete", help="Delete a Pool membership definition only.")
+    ppool_delete.add_argument("name")
+    ppool_delete.set_defaults(func=cmd_pool_delete)
+    ppool_list = poolsub.add_parser("list", help="List named Pools and project ULIDs.")
+    ppool_list.set_defaults(func=cmd_pool_list)
+    ppool_search = poolsub.add_parser("search", help="Search one named Pool live and read-only.")
+    ppool_search.add_argument("name")
+    ppool_search.add_argument("query")
+    ppool_search.add_argument("--path", default=".", help="Connected project path (default: cwd).")
+    ppool_search.add_argument("-k", type=int, default=10)
+    ppool_search.add_argument("--rank", choices=["hybrid", "semantic", "keyword"], default="hybrid")
+    ppool_search.add_argument("--json", action="store_true")
+    ppool_search.set_defaults(func=cmd_pool_search)
+    ppool_recall = poolsub.add_parser("recall", help="Recall from one named Pool live and read-only.")
+    ppool_recall.add_argument("name")
+    ppool_recall.add_argument("query")
+    ppool_recall.add_argument("--path", default=".", help="Connected project path (default: cwd).")
+    ppool_recall.add_argument("-k", type=int, default=5)
+    ppool_recall.add_argument("--json", action="store_true")
+    ppool_recall.set_defaults(func=cmd_pool_recall)
 
     pstart = sub.add_parser(
         "start",

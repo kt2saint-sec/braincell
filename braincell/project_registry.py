@@ -143,6 +143,21 @@ def load_pools() -> dict[str, tuple[str, ...]]:
     return out
 
 
+def resolve_pool(name: str) -> tuple[str, tuple[str, ...]]:
+    """Resolve a display/name-normalized Pool selector to its display name and members."""
+    document = _load_pools_document()
+    record = _find_pool(_pool_records(document), name)
+    if record is None:
+        raise KeyError(f"Pool {name!r} does not exist.")
+    display = record.get("name")
+    members = record.get("members")
+    if not isinstance(display, str) or not isinstance(members, list) or not all(
+        isinstance(member, str) for member in members
+    ):
+        raise RuntimeError("Pool membership metadata has invalid members.")
+    return display, tuple(sorted(set(members)))
+
+
 def _find_pool(records: list[dict[str, object]], name: str) -> dict[str, object] | None:
     key = normalize_pool_name(name)
     for record in records:

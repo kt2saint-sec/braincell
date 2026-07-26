@@ -50,8 +50,8 @@ from typing import Optional
 from . import embed_spec
 from .config import get_db_path
 from .log import get as _get_log
-from .mode import resolve_mode
-from .project_registry import resolve_family_ulids
+from .mode import resolve_mode  # legacy compatibility path; ordinary Pool queries use plan_for_pool
+from .project_registry import resolve_family_ulids, resolve_pool, resolve_ulid_to_path
 from .schema import MEMORY_SCHEMA_VERSION
 from .store import Hit, Note, SqliteStore
 
@@ -107,6 +107,55 @@ class FederationPlan:
     """A resolved federated-recall plan: the seed project + the members to query."""
     seed_pid: str
     targets: list[FederationTarget]
+
+
+def resolve_pool_targets(pool_name: str, connected_project_id: str) -> tuple[str, list[FederationTarget]]:
+    """Resolve one explicit Pool to readable member brains.
+
+    Pool membership stores ULIDs, never paths or copied memory.  A current path
+    is resolved through the registry for every query; missing, inaccessible,
+    corrupt, and incompatible members are logged and skipped independently.
+    """
+    display_name, ulids = resolve_pool(pool_name)
+    ordered = sorted(ulids, key=lambda project_id: (project_id != connected_project_id, project_id))
+    targets: list[FederationTarget] = []
+    for project_id in ordered:
+        try:
+            current_path = resolve_ulid_to_path(project_id)
+            if current_path is None:
+                log.warning("pool %s: skip %s (no current registered project path)", display_name, project_id)
+                continue
+            if not current_path.is_dir():
+                log.warning("pool %s: skip %s (project path unavailable: %s)", display_name, project_id, current_path)
+                continue
+            db = get_db_path(project_id)
+            if not db.exists():
+                log.info("pool %s: skip %s (no built project memory at %s)", display_name, project_id, db)
+                continue
+            probe = _read_fingerprint_and_version_ro(db)
+            if probe is None:
+                continue
+            fingerprint, version = probe
+            if version is not None and version != MEMORY_SCHEMA_VERSION:
+                log.warning(
+                    "pool %s: skip %s (schema v%s != engine v%s)",
+                    display_name, project_id, version, MEMORY_SCHEMA_VERSION,
+                )
+                continue
+            fingerprint_ok = fingerprint == embed_spec.FINGERPRINT
+            if not fingerprint_ok and _strict():
+                log.warning("pool %s: skip %s (embedding fingerprint mismatch)", display_name, project_id)
+                continue
+            targets.append(FederationTarget(project_id, db, fingerprint_ok))
+        except Exception as exc:  # one malformed registry member must not fail the Pool
+            log.warning("pool %s: skip %s (%r)", display_name, project_id, exc)
+    return display_name, targets
+
+
+def plan_for_pool(pool_name: str, connected_project_id: str) -> FederationPlan:
+    """Build an explicit live read-only query plan for exactly one named Pool."""
+    _display_name, targets = resolve_pool_targets(pool_name, connected_project_id)
+    return FederationPlan(seed_pid=connected_project_id, targets=targets)
 
 
 def _read_fingerprint_and_version_ro(
@@ -312,7 +361,7 @@ def _dedup_by_content(notes: list[Note]) -> list[Note]:
 # ── Orchestrator ───────────────────────────────────────────────────────────────
 
 async def federated_recall(
-    self_store: SqliteStore,
+    self_store: SqliteStore | None,
     plan: FederationPlan,
     qvec,
     k: int,
@@ -344,7 +393,7 @@ async def federated_recall(
 
     async def _recall_one(target: FederationTarget) -> tuple[str, list[Note]]:
         async with sem:
-            is_self = target.project_id == plan.seed_pid
+            is_self = target.project_id == plan.seed_pid and self_store is not None
             store = self_store if is_self else SqliteStore(target.db_path, read_only=True)
             try:
                 use_vec = qvec if target.fingerprint_ok else None
@@ -454,7 +503,7 @@ def _dedup_hits(hits: list[Hit]) -> list[Hit]:
 
 
 async def federated_search(
-    self_store: SqliteStore,
+    self_store: SqliteStore | None,
     plan: FederationPlan,
     qvec,
     qtext: str,
@@ -473,7 +522,7 @@ async def federated_search(
 
     async def _search_one(target: FederationTarget) -> tuple[str, list[Hit]]:
         async with sem:
-            is_self = target.project_id == plan.seed_pid
+            is_self = target.project_id == plan.seed_pid and self_store is not None
             store = self_store if is_self else SqliteStore(target.db_path, read_only=True)
             try:
                 use_mode = mode if target.fingerprint_ok else "keyword"

@@ -14,6 +14,7 @@ from braincell.project_registry import (
     pools_for_project,
     reassociate_project_path,
     register_path,
+    resolve_pool,
     resolve_ulid_to_path,
 )
 
@@ -27,6 +28,7 @@ def test_pool_name_normalization_and_duplicate_membership():
 
     assert members == ("01A", "01B")
     assert load_pools() == {"Release Notes": ("01A", "01B")}
+    assert resolve_pool("release notes") == ("Release Notes", ("01A", "01B"))
 
 
 def test_decouple_changes_only_one_membership_definition():
@@ -65,3 +67,48 @@ def test_reassociate_keeps_pool_membership_for_moved_project(tmp_path):
 
     assert resolve_ulid_to_path("01MOVED") == new
     assert load_pools()["Shared"] == ("01MOVED",)
+
+
+def test_pool_query_resolves_current_paths_and_skips_missing_or_corrupt_members(tmp_path):
+    from braincell.config import get_db_path
+    from braincell.federate import plan_for_pool
+    from braincell.store import SqliteStore
+
+    connected = tmp_path / "connected"
+    valid = tmp_path / "valid"
+    connected.mkdir()
+    valid.mkdir()
+    register_path(connected, "01CONNECTED")
+    register_path(valid, "01VALID")
+    create_pool("Read only")
+    add_to_pool("Read only", ["01CONNECTED", "01VALID", "01MISSING", "01CORRUPT"])
+
+    for project_id in ("01CONNECTED", "01VALID"):
+        store = SqliteStore(get_db_path(project_id))
+        store.assert_schema_version()
+        store.close()
+    corrupt = tmp_path / "corrupt"
+    corrupt.mkdir()
+    register_path(corrupt, "01CORRUPT")
+    get_db_path("01CORRUPT").parent.mkdir(parents=True, exist_ok=True)
+    get_db_path("01CORRUPT").write_text("not sqlite", encoding="utf-8")
+
+    plan = plan_for_pool("read only", "01CONNECTED")
+
+    assert [target.project_id for target in plan.targets] == ["01CONNECTED", "01VALID"]
+
+
+def test_pool_cli_never_exposes_materialized_all_projects_selector(capsys):
+    from braincell.cli import main
+
+    main(["pool", "create", "Focused"])
+    main(["pool", "add", "Focused", "01A", "01B"])
+    main(["pool", "decouple", "Focused", "01A"])
+    main(["pool", "list"])
+
+    output = capsys.readouterr().out
+    assert "01B" in output
+    assert "01A" not in output.split("[Focused]")[-1]
+    with pytest.raises(SystemExit) as exc:
+        main(["pool", "--all"])
+    assert exc.value.code == 2
