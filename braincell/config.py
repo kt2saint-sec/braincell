@@ -125,6 +125,15 @@ def get_families_path() -> Path:
     return _xdg_data_home() / DATA_NAMESPACE / "families.json"
 
 
+def get_pools_path() -> Path:
+    """``~/.local/share/<namespace>/pools.json`` — ULID-only Pool membership.
+
+    This is non-memory bookkeeping.  It never contains copied notes, documents,
+    chunks, or absolute paths.
+    """
+    return _xdg_data_home() / DATA_NAMESPACE / "pools.json"
+
+
 def get_gui_token_path() -> Path:
     """``~/.local/share/<namespace>/gui-token`` — the persisted GUI auth token (0600)."""
     return _xdg_data_home() / DATA_NAMESPACE / "gui-token"
