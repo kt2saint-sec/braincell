@@ -64,6 +64,16 @@ def _shm_path(path: Path) -> Path:
     return path.with_name(f"{path.name}-shm")
 
 
+def _source_state_digest(path: Path) -> str:
+    """Digest the database and committed WAL frames without encoding its path."""
+    digest = hashlib.sha256()
+    for artifact in (path, _wal_path(path)):
+        if artifact.exists():
+            digest.update(artifact.name.encode())
+            digest.update(artifact.read_bytes())
+    return digest.hexdigest()
+
+
 def _read_only(path: Path, *, purpose: str) -> sqlite3.Connection:
     """Open a stable read-only snapshot without hiding committed WAL frames.
 
@@ -191,7 +201,7 @@ def preview(source_path: Path | None = None) -> dict[str, Any]:
         for project_id, selected in sorted(manifest.items()):
             destination = get_db_path(project_id)
             projects[project_id] = {"destination": str(destination), "documents": len(selected["documents"]), "notes": len(selected["notes"]), "conflicts": _destination_conflicts(connection, destination, project_id, selected["documents"], selected["notes"])}
-    report: dict[str, Any] = {"source": str(source), "source_schema_version": version, "discovery": asdict(discovery), "classifications": categories, "projects": projects}
+    report: dict[str, Any] = {"source": str(source), "source_state_digest": _source_state_digest(source), "source_schema_version": version, "discovery": asdict(discovery), "classifications": categories, "projects": projects}
     report["approval_digest"] = hashlib.sha256(json.dumps(report, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return report
 

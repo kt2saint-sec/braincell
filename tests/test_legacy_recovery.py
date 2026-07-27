@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 import shutil
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -372,3 +373,68 @@ def test_apply_refuses_destination_with_active_wal_writer(tmp_path):
         legacy_recovery.apply(source_path=source, project_ids=["01ATTRIBUTABLE"], approval_digest=report["approval_digest"])
     writer.rollback()
     writer.close()
+
+
+def test_approval_digest_tracks_source_registry_and_destination_conflicts(tmp_path):
+    from braincell.config import get_db_path
+    from braincell.legacy_recovery import preview
+    from braincell.project_registry import register_path
+    from braincell.store import SqliteStore
+
+    source = _legacy_fixture(tmp_path)
+    initial = preview(source)
+    with sqlite3.connect(source) as connection:
+        connection.execute("UPDATE bc_documents SET title='changed source manifest' WHERE doc_key='a-doc'")
+    source_changed = preview(source)
+    assert source_changed["approval_digest"] != initial["approval_digest"]
+
+    register_path(tmp_path / "reassigned", "01UNKNOWN")
+    registry_changed = preview(source)
+    assert registry_changed["approval_digest"] != source_changed["approval_digest"]
+
+    destination = get_db_path("01ATTRIBUTABLE")
+    destination.parent.mkdir(parents=True)
+    SqliteStore(destination).assert_schema_version()
+    with sqlite3.connect(destination) as connection:
+        connection.execute(
+            "INSERT INTO bc_documents(project_id,doc_key,title,content_hash) VALUES (?,?,?,?)",
+            ("01ATTRIBUTABLE", "a-doc", "conflict", b"conflict"),
+        )
+    conflict_changed = preview(source)
+    assert conflict_changed["approval_digest"] != registry_changed["approval_digest"]
+
+
+def test_apply_retains_source_and_each_existing_destination_backup(tmp_path):
+    from braincell import legacy_recovery
+    from braincell.config import get_db_path
+    from braincell.store import SqliteStore
+
+    source = _legacy_fixture(tmp_path)
+    destination = get_db_path("01ATTRIBUTABLE")
+    destination.parent.mkdir(parents=True)
+    SqliteStore(destination).assert_schema_version()
+    before_destination = _database_rows(destination)
+    report = legacy_recovery.preview(source)
+    result = legacy_recovery.apply(
+        source_path=source,
+        project_ids=["01ATTRIBUTABLE", "01POOLED"],
+        approval_digest=report["approval_digest"],
+        backup_dir=tmp_path / "backups",
+    )
+
+    assert _database_rows(Path(result["backup"]))["documents"]
+    destination_backup = Path(result["projects"]["01ATTRIBUTABLE"]["destination_backup"])
+    assert _database_rows(destination_backup) == before_destination
+    assert result["projects"]["01POOLED"]["destination_backup"] is None
+
+
+def test_ambiguous_rows_are_never_copied(tmp_path):
+    from braincell.config import get_db_path
+    from braincell.legacy_recovery import apply, preview
+
+    source = _legacy_fixture(tmp_path)
+    report = preview(source)
+    apply(source_path=source, project_ids=["01ATTRIBUTABLE"], approval_digest=report["approval_digest"])
+    with sqlite3.connect(get_db_path("01ATTRIBUTABLE")) as destination:
+        assert destination.execute("SELECT COUNT(*) FROM bc_documents WHERE project_id='01UNKNOWN'").fetchone()[0] == 0
+        assert destination.execute("SELECT COUNT(*) FROM memory_notes WHERE project_id='01UNKNOWN'").fetchone()[0] == 0
