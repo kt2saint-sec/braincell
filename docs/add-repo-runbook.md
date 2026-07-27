@@ -4,10 +4,10 @@ This runbook connects BrainCell to one selected **Project**. A Project does not
 need Git, but BrainCell makes that boundary explicit and avoids machine-wide MCP
 activation. See [NAMINGS.md](../NAMINGS.md) for the public vocabulary.
 
-> **Current scope:** this runbook covers the shipped project-local connection
-> and skills plus the CLI Pool foundation. Legacy migration, project-local
-> automatic Pool recall, and complete Memory Map Pool controls remain separate
-> work.
+> **Current scope:** this runbook covers shipped project-local connections and
+> skills, live CLI Pools, project-local Automatic Pool recall, and the native
+> Memory Map Pool controls. Preview-first legacy migration and final
+> database-open isolation verification remain separate work.
 
 ## Prerequisites
 
@@ -70,6 +70,7 @@ ULIDs, not paths and not copied memory:
 braincell pool create "release work"
 braincell pool add "release work" <project-a-ulid> <project-b-ulid>
 braincell pool recall "release work" "rollback guardrails"
+braincell pool search "release work" "rollback guardrails"
 ```
 
 Normal Recall and Search stay in the connected Project. Pool operations are

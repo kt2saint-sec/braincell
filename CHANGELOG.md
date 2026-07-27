@@ -39,8 +39,7 @@ details are intentionally excluded.
 
 ### Still in progress
 
-- Complete native Memory Map replacement of legacy Family/materialized-Pool
-  controls.
+- Final database-open isolation coverage for native Memory Map Pool queries.
 - Preview-first recovery and migration of legacy global configuration and
   memory data.
 - Retirement of legacy runtime readers after migration verification.
