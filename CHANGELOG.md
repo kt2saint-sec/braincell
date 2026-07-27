@@ -39,10 +39,14 @@ details are intentionally excluded.
 - Pool membership changes never copy or delete Project memory.
 - Ordinary Memory Map scope remains the connected Project. Cross-project reads
   require an explicitly named Pool action.
+- Ordinary Memory Map Recall, Search, Feed, Build, Clear, and maintenance
+  actions reject sibling Project targets. The Project catalog no longer opens
+  sibling databases for counts; selecting another catalog entry explains that
+  its memory is not open in this session.
 
 ### Still in progress
 
-- Final database-open isolation coverage for native Memory Map Pool queries.
+- Native Memory Map acceptance coverage for Pool queries and failure rendering.
 - Preview-first recovery and migration of legacy global configuration and
   memory data.
 - Retirement of legacy runtime readers after migration verification.

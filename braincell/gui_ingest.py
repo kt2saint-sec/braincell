@@ -51,7 +51,7 @@ _SCHED_TICK_S = 60.0     # scheduler wake-up interval
 
 class IngestBody(BaseModel):
     path: str
-    mode: Literal["project", "global"] = "project"
+    mode: Literal["project", "global"] = "project"  # global is legacy-rejected below
     reembed: bool = False
 
 
@@ -402,8 +402,30 @@ def mount_ingest_api(
     db_path: Path,
     manager: IngestManager,
     pick_folder: Optional[Callable[[], dict]] = None,
+    connected_project_id: Optional[str] = None,
 ) -> None:
     """Register the ingestion-management routes on *app*."""
+
+    def _require_connected_project(project_id: str, operation: str) -> None:
+        if connected_project_id is not None and project_id != connected_project_id:
+            raise HTTPException(
+                409,
+                f"{operation} applies only to the connected Project.",
+            )
+
+    def _require_connected_path(path: Path, operation: str) -> None:
+        if connected_project_id is None:
+            return
+        registered = [
+            Path(candidate).expanduser().resolve()
+            for candidate, project_id in load_path_registry().items()
+            if project_id == connected_project_id
+        ]
+        if path not in registered:
+            raise HTTPException(
+                409,
+                f"{operation} applies only to the connected Project. Open the Memory Map from that Project to continue.",
+            )
 
     @app.get("/api/fs")
     async def api_fs(path: str = "") -> dict:  # type: ignore[type-arg]
@@ -427,9 +449,16 @@ def mount_ingest_api(
         p = Path(body.path).expanduser()
         if not p.is_dir():
             raise HTTPException(400, f"Not a directory: {body.path}")
+        resolved = p.resolve()
+        if body.mode == "global":
+            raise HTTPException(
+                400,
+                "Global Build is retired. Build the connected Project only.",
+            )
+        _require_connected_path(resolved, "Build")
         try:
             job = await manager.start(
-                str(p.resolve()), mode=body.mode, reembed=body.reembed
+                str(resolved), mode="project", reembed=body.reembed
             )
         except RuntimeError as exc:
             raise HTTPException(409, str(exc))
@@ -441,6 +470,7 @@ def mount_ingest_api(
 
     @app.post("/api/clear")
     async def api_clear(request: Request, body: ClearBody) -> dict:  # type: ignore[type-arg]
+        _require_connected_project(body.project_id, "Clear")
         registry = load_path_registry()
         if body.project_id not in set(registry.values()):
             raise HTTPException(404, f"Unknown project {body.project_id!r}.")
@@ -459,6 +489,7 @@ def mount_ingest_api(
         if body.interval_minutes < 0:
             raise HTTPException(400, "interval_minutes must be >= 0.")
         norm = str(Path(body.path).expanduser().resolve())
+        _require_connected_path(Path(norm), "Auto-build")
         schedules = [s for s in load_schedules() if s.get("path") != norm]
         if body.interval_minutes > 0:
             schedules.append({

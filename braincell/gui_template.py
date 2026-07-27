@@ -353,7 +353,7 @@ svg.stage:active{cursor:grabbing}
       <input id="global-q" placeholder="Filter projects…" oninput="draw()">
     </label>
     <div class="active-wrap" id="active-wrap">
-      <button class="active-chip" id="active-chip" onclick="openActiveDropdown()" title="Active project — whose memory you're viewing. Click to switch.">…</button>
+      <button class="active-chip" id="active-chip" type="button" title="Connected Project — ordinary memory actions stay here.">…</button>
       <div class="active-dd" id="active-dd" style="display:none"></div>
     </div>
     <div class="scope-seg" id="scope-seg" role="group" aria-label="Memory scope">
@@ -461,11 +461,6 @@ svg.stage:active{cursor:grabbing}
 <!-- Live memory feed — full-height right rail, flex sibling OUTSIDE the stage wrapper -->
 <aside class="rail" id="feed-rail">
   <div class="rail-hd"><span class="live"></span> LIVE MEMORY
-    <span class="feed-scope" id="feed-scope" style="display:none">
-      <span class="feed-scope-name" id="feed-scope-name"></span>
-      <button id="feed-scope-active" onclick="setFeedScope('active')" title="Only the active project's activity">Active</button>
-      <button id="feed-scope-all" class="active" onclick="setFeedScope('all')" title="All projects — the namespace-wide stream">All</button>
-    </span>
     <span class="chev" onclick="toggleRail()" title="Collapse the live feed — reopen from the ▸ Live feed tab on the right edge">⟩</span></div>
   <div class="rail-building" id="feed-building" style="display:none"></div>
   <div class="newpill" id="feed-newpill" style="display:none" onclick="feedFlushNew()">▲ 0 new</div>
@@ -662,7 +657,7 @@ function setScope(m){
    edge), so the two are never combined. Both branches follow the ACTIVE
    project; family additionally re-seeds the fan-out when active ≠ launch. */
 function scopeParams(){
-  return "&projects="+encodeURIComponent(seedProjectId||"");
+  return "";
 }
 
 /* ════════ ACTIVE PROJECT (viewing) vs LAUNCH PROJECT (managing) ════════
@@ -681,45 +676,20 @@ function isLaunch(){
      project to pin to, so they keep today's behavior. */
   if(status.mode!=="project")return true;
   if(!seedProjectId)return true;
-  return activeProjectId===seedProjectId;
+  return selected===seedProjectId;
 }
 function renderActiveChip(){
   const b=document.getElementById("active-chip");
   if(!b)return;
-  if(!activeProjectId){b.innerHTML=`All projects ▾`;return;}
-  const nd=nodes.find(n=>n.id===activeProjectId);
-  const name=nd?nd.name:activeProjectId;
-  const uid=activeProjectId;
+  const nd=nodes.find(n=>n.id===seedProjectId);
+  const name=nd?nd.name:(seedProjectId||"No connected Project");
+  const uid=seedProjectId||"";
   const su=uid.length>8?uid.slice(0,6)+"…"+uid.slice(-2):uid;
-  const launch=status.mode==="project"&&seedProjectId&&activeProjectId===seedProjectId;
-  const home=launch?`<span class="ac-home" title="Launch project — writes stay here">⌂</span> `:"";
-  const ro=(status.mode==="project"&&seedProjectId&&!launch)?` <span class="ac-ro" title="${RO_VIEW_TITLE}">RO</span>`:"";
-  b.innerHTML=`${home}${esc(name)} · ${esc(su)}${ro} ▾`;
+  b.innerHTML=`<span class="ac-home" title="Connected Project">⌂</span> ${esc(name)} · ${esc(su)}`;
 }
 function openActiveDropdown(){
-  const dd=document.getElementById("active-dd");
-  if(!dd)return;
-  if(dd.style.display!=="none"){dd.style.display="none";return;}
-  /* launch project pinned first, then by name */
-  const rows=[...nodes].sort((a,b)=>{
-    if(a.id===seedProjectId)return -1;
-    if(b.id===seedProjectId)return 1;
-    return a.name.localeCompare(b.name);
-  });
-  let html="";
-  if(status.mode==="global")
-    html+=`<div class="ad-item${!activeProjectId?" cur":""}" onclick="setActiveProject(null)"><span class="ad-name">All projects</span><span class="ad-meta">namespace-wide</span></div>`;
-  html+=rows.map(n=>{
-    const fams=famOf(n.id);
-    const launch=status.mode==="project"&&seedProjectId&&n.id===seedProjectId;
-    return `<div class="ad-item${n.id===activeProjectId?" cur":""}" onclick="setActiveProject('${esc(n.id).replace(/'/g,"\\'")}')">
-      <span class="ad-name">${launch?"⌂ ":""}${esc(n.name)}</span>
-      <span class="ad-meta">${esc(n.path)}</span>
-      <span class="ad-meta">${Number(n.docs)} docs · ${Number(n.chunks)} chunks · ${Number(n.notes)} notes${fams.length?" · "+fams.map(esc).join(", "):""}</span>
-    </div>`;
-  }).join("");
-  dd.innerHTML=html||`<div class="ad-item" style="cursor:default"><span class="ad-meta">No projects registered yet.</span></div>`;
-  dd.style.display="";
+  /* Kept as a compatibility no-op for old embedded renderers.  Ordinary
+     memory views never switch away from the connected Project. */
 }
 /* click-away closes the dropdown (clicks inside #active-wrap don't) */
 addEventListener("click",e=>{
@@ -752,7 +722,11 @@ addEventListener("resize",()=>{
   if(dd&&dd.style.display!=="none")dd.style.display="none";
 });
 function setActiveProject(pid){
-  activeProjectId=pid||null;
+  if(seedProjectId&&pid&&pid!==seedProjectId){
+    toast("This Memory Map is connected to one Project. Use an explicit Pool action to read another Project's memory.");
+    return;
+  }
+  activeProjectId=seedProjectId||pid||null;
   const dd=document.getElementById("active-dd");
   if(dd)dd.style.display="none";
   /* ?active= rides the internal URL beside ?scope= and ?t= */
@@ -794,7 +768,7 @@ async function loadAll(){
      of the seed, /api/config Phase D); ?active= wins for restored state. */
   if(!_activeInit){
     _activeInit=true;
-    activeProjectId=_urlActive||(cfg&&cfg.launch_project_id)||seedProjectId||null;
+    activeProjectId=(cfg&&cfg.launch_project_id)||seedProjectId||null;
   }
   applyScopeAvailability();
   buildModel(projs||[],fams||[]);
@@ -1454,6 +1428,7 @@ async function poolFamily(fi){
 /* ════════ INSPECTOR DOCK (bottom of the left column) ════════ */
 function openDock(nd){
   selected=nd.id;
+  const connected=!seedProjectId||nd.id===seedProjectId;
   document.getElementById("dr-name").textContent=nd.name;
   document.getElementById("dr-ulid").textContent=nd.shortUlid;
   document.getElementById("dr-path").textContent=nd.path;
@@ -1461,7 +1436,7 @@ function openDock(nd){
   document.getElementById("dr-chunks").textContent=nd.chunks.toLocaleString();
   document.getElementById("dr-notes").textContent=nd.notes;
   renderFamTags(nd);
-  document.getElementById("dr-actions").style.display=status.allow_writes?"":"none";
+  document.getElementById("dr-actions").style.display=status.allow_writes&&connected?"":"none";
   syncSchedUi(nd);
   paintInspectorRo();
   paintMcpBlock(nd);
@@ -1475,7 +1450,7 @@ function openDock(nd){
    here is structurally impossible; disable (never hide) with the explanatory
    title, mirroring the hook toggle's wdis convention. */
 function paintInspectorRo(){
-  const ro=!isLaunch();
+  const ro=!!(seedProjectId&&selected!==seedProjectId);
   [["dr-rebuild-btn","Build this project's memory again now"],
    ["dr-clear-btn","Wipe built docs & chunks — the next build re-absorbs everything fresh"]]
   .forEach(([id,tip])=>{
@@ -1614,9 +1589,13 @@ function notBuiltHtml(){
   return `<div style="color:var(--faint);font-size:12px">Not built yet — <b>Build memory</b> to absorb this folder.</div>`;
 }
 async function loadDrawerNotes(){
+  const list=document.getElementById("dr-notes-list");
+  if(seedProjectId&&selected!==seedProjectId){
+    list.innerHTML=`<div style="color:var(--faint);font-size:12px">This catalog entry is not open for ordinary memory reads. The Memory Map remains connected to ${esc((nodes.find(n=>n.id===seedProjectId)||{}).name||seedProjectId)}. Use <b>Search Pool</b> or <b>Recall from Pool</b> for an intentional cross-project read.</div>`;
+    return;
+  }
   const data=await apiFetchView(`/api/notes?k=20${scopeParams()}`);
   if(!data)return;
-  const list=document.getElementById("dr-notes-list");
   if(data.notBuilt){list.innerHTML=notBuiltHtml();return;}
   let html="";
   if(data.warning)html+=`<div class="warn-note">${esc(data.warning)}</div>`;
@@ -1662,6 +1641,10 @@ async function drawerSearch(){
   const nd=nodes.find(n=>n.id===selected);if(!nd)return;
   const q=document.getElementById("dr-q").value.trim();
   if(!q){document.getElementById("dr-hits-list").innerHTML="";return;}
+  if(seedProjectId&&selected!==seedProjectId){
+    document.getElementById("dr-hits-list").innerHTML=`<div style="color:var(--faint);font-size:12px">Search stays in the connected Project. Use <b>Search Pool</b> to query a named Pool.</div>`;
+    return;
+  }
   const data=await apiFetchView(`/api/search?q=${encodeURIComponent(q)}&k=20&mode=hybrid${scopeParams()}`);
   const el=document.getElementById("dr-hits-list");
   if(!data){el.innerHTML=`<div style="color:var(--faint);font-size:12px">Search unavailable.</div>`;return;}
@@ -1688,7 +1671,8 @@ let _cmdPending=null,_opsPoll=null;
 
 function wdis(){return status.allow_writes?"":' disabled title="read-only: launch with --allow-writes"';}
 function cmdProjOptions(){
-  return nodes.map(n=>`<option value="${esc(n.id)}" data-path="${esc(n.path)}"${n.id===selected?" selected":""}>${esc(n.name)}</option>`).join("");
+  const targets=seedProjectId?nodes.filter(n=>n.id===seedProjectId):nodes;
+  return targets.map(n=>`<option value="${esc(n.id)}" data-path="${esc(n.path)}"${n.id===seedProjectId?" selected":""}>${esc(n.name)}</option>`).join("");
 }
 function cmdFamOptions(){
   /* 0 families used to render a bare empty <select> (owner-reported: a tiny

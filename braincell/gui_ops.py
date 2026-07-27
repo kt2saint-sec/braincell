@@ -298,11 +298,22 @@ def run_reembed_notes(db_path: Path, project_id: str) -> Optional[dict]:
 
 # ── Route mounting (called by gui.create_app when allow_writes=True) ──────────
 
-def mount_ops_api(app: FastAPI, *, db_path: Path, manager: OpsJobManager) -> None:
+def mount_ops_api(
+    app: FastAPI,
+    *,
+    db_path: Path,
+    manager: OpsJobManager,
+    connected_project_id: Optional[str] = None,
+) -> None:
     """Register the maintenance-command routes on *app*."""
 
     def _require_project(project_id: str) -> None:
-        # Mirrors /api/clear: only registered projects are valid targets.
+        if connected_project_id is not None and project_id != connected_project_id:
+            raise HTTPException(
+                409,
+                "Maintenance operations apply only to the connected Project.",
+            )
+        # The unseeded test factory still uses the registered-project guard.
         if project_id not in set(load_path_registry().values()):
             raise HTTPException(404, f"Unknown project {project_id!r}.")
 

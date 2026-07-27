@@ -192,75 +192,38 @@ def create_app(
         parts = [p.strip() for p in projects.split(",") if p.strip()]
         return parts if parts else None
 
-    def _open_for_view(
-        request: Request, proj_filter: Optional[list[str]]
-    ) -> tuple[SqliteStore, bool]:
-        """Resolve which store serves this read → ``(store, close_after)``.
+    def _normal_project_filter(request: Request, projects: str, operation: str) -> Optional[list[str]]:
+        """Return the connected Project filter for an ordinary GUI operation.
 
-        The opened (launch) store, close_after=False, when: no filter; no launch
-        seed (global-mode launch — the global db carries every project, the
-        in-db ``projects=`` filter is correct); a multi-ULID filter (today's
-        filter-the-opened-db behavior — the map never sends one); or the filter
-        names the launch project itself.
+        A Memory Map owns one already-open Project store.  Accepting a sibling
+        ULID here used to turn normal Recall, Search, and Feed into an implicit
+        cross-project database opener.  Cross-project reads are deliberately
+        available only via the explicit named-Pool endpoints below.
 
-        A single OTHER registered ULID in project mode → that sibling's own db,
-        opened READ-ONLY (federation's recipe: ``mode=ro`` + ``query_only`` —
-        the sibling is never written), close_after=True so the caller closes it
-        per-request in a try/finally.  Unregistered, or registered with no db
-        file yet → 404 whose detail says "not built" (the SPA maps it to the
-        build-me empty state).
+        ``create_app`` remains usable in isolated tests without a connected
+        Project.  The native launcher always supplies a connected Project, so
+        this compatibility case is not a production GUI route.
         """
-        store = _store(request)
-        if not proj_filter or seed_project_id is None or len(proj_filter) != 1:
-            return store, False
-        pid = proj_filter[0]
-        if pid == seed_project_id:
-            return store, False
-        from .config import get_db_path
-        if pid not in set(load_path_registry().values()):
+        selected = _split_projects(projects)
+        connected = getattr(request.app.state, "seed_project_id", None)
+        if connected is None:
+            return selected
+        if selected and selected != [connected]:
             raise HTTPException(
-                404, f"Project {pid!r} not built — not a registered project."
+                400,
+                f"{operation} reads only the connected Project. Use an explicit named Pool for cross-project reads.",
             )
-        db = get_db_path(pid)
-        if not db.exists():
-            raise HTTPException(
-                404, f"Project {pid!r} not built — no per-project brain exists yet."
-            )
-        return SqliteStore(db, read_only=True), True
+        return [connected]
 
-    def _resolve_seed_param(seed: str) -> Optional[str]:
-        """Validate an optional ``?seed=`` ULID against the path registry."""
-        seed = seed.strip()
-        if not seed:
-            return None
-        if seed != seed_project_id and seed not in set(load_path_registry().values()):
+    def _reject_retired_cross_project_query(
+        *, federate: bool, seed: str, operation: str
+    ) -> None:
+        """Reject legacy query switches instead of silently changing scope."""
+        if federate or seed.strip():
             raise HTTPException(
-                404, f"Unknown seed project {seed!r} — not in the registry."
+                400,
+                f"{operation} is project-only. Use Search Pool or Recall from Pool with an explicit Pool name.",
             )
-        return seed
-
-    def _open_seed_store(
-        request: Request, view_seed: str
-    ) -> tuple[SqliteStore, bool]:
-        """Self-store for a federated query seeded at ``view_seed``.
-
-        ``federated_recall``/``federated_search`` treat the target whose
-        ``project_id == plan.seed_pid`` as *self* and query the PASSED store —
-        so a non-launch seed must come with an RO-opened store of the seed's
-        OWN db (reads only — safe), or the merge would silently read the launch
-        db as the seed member.  close_after=True for that RO store; the launch
-        seed reuses the opened store (close_after=False).
-        """
-        if view_seed == seed_project_id:
-            return _store(request), False
-        from .config import get_db_path
-        db = get_db_path(view_seed)
-        if not db.exists():
-            raise HTTPException(
-                404,
-                f"Project {view_seed!r} not built — no per-project brain exists yet.",
-            )
-        return SqliteStore(db, read_only=True), True
 
     # ── Read endpoints ────────────────────────────────────────────────────────
 
@@ -437,13 +400,12 @@ def create_app(
 
     @app.get("/api/projects")
     async def api_projects(request: Request) -> list:  # type: ignore[type-arg]
-        """All registered projects sorted by path, enriched with doc/chunk/note counts.
+        """Registered Project metadata with counts from the connected store only.
 
-        Project-mode launches (a seed is set) enrich each SIBLING row from the
-        sibling's own db, opened READ-ONLY per request — the opened store holds
-        only the launch project, so its counts for siblings would always read
-        zero.  A missing / corrupt sibling contributes zeros, never a 500
-        (per-member isolation, mirroring ``resolve_federation_targets``).
+        The path registry is machine-level bookkeeping, so it may list known
+        Projects for intentional Pool membership management.  This normal map
+        route must never open their databases: a sibling's memory is readable
+        only through an explicit named Pool query.
 
         ``mcp_registered`` is the Claude-client registration summary per path,
         computed from ONE ``~/.claude.json`` read for all cells
@@ -461,24 +423,6 @@ def create_app(
             )
         except Exception:  # detection must never break the map
             reg_map = {}
-        if seed_project_id is not None:
-            from .config import get_db_path
-            for ulid in set(registry.values()):
-                if ulid == seed_project_id:
-                    continue
-                db = get_db_path(ulid)
-                if not db.exists():
-                    continue  # not built yet — honest zeros
-                try:
-                    sibling = SqliteStore(db, read_only=True)
-                    try:
-                        counts[ulid] = (await sibling.project_counts()).get(ulid, {})
-                    finally:
-                        await sibling.aclose()
-                except Exception as exc:  # corrupt sibling → zeros, never a 500
-                    log.warning(
-                        "projects: sibling %s counts skipped (%r)", ulid, exc
-                    )
         return sorted(
             [
                 {
@@ -522,20 +466,19 @@ def create_app(
         federate: bool = False,
         seed: str = "",
     ) -> dict:  # type: ignore[type-arg]
-        """Recall memory notes (recency/keyword when q empty; best-effort embed when q set).
+        """Recall memory notes from the connected Project only.
 
         The embedder is never required: if it is unavailable the endpoint falls
         back to keyword/recency recall and includes a ``warning`` field.  It
         never returns 5xx because Ollama is down.
 
-        ``projects=<single-other-registered-ulid>`` in project mode serves the
-        SIBLING's real rows from its own db, opened read-only per request
-        (``_open_for_view``).  ``seed=<ulid>`` (optional, registry-validated)
-        re-seeds the federated family branch at the ACTIVE project instead of
-        the launch project; ignored on the non-federated path.
+        A named Pool is the only cross-project recall surface.  Legacy
+        ``federate`` and ``seed`` query flags are rejected rather than inferred.
         """
-        proj_filter = _split_projects(projects)
-        view_seed = _resolve_seed_param(seed)
+        _reject_retired_cross_project_query(
+            federate=federate, seed=seed, operation="Recall"
+        )
+        proj_filter = _normal_project_filter(request, projects, "Recall")
 
         qvec = None
         warning: Optional[str] = None
@@ -548,34 +491,9 @@ def create_app(
                     f"Embedder unavailable; using keyword/recency fallback. ({exc!r})"
                 )
 
-        # Opt-in federated family recall: when the toggle is on, the flag is set,
-        # and a seed is known (the launch project, or an explicit ?seed= active
-        # project), fan out across that seed's family instead of querying only
-        # the opened store.
-        # The Memory Map is a HISTORY viewer, not an answer engine: it shows what a
-        # project believed as well as what it believes now, so it opts into the
-        # historical set and renders supersession as state rather than hiding it.
-        from .federate import federated_recall, federation_enabled, plan_for_seed
-        effective_seed = view_seed or seed_project_id
-        if federate and federation_enabled() and effective_seed:
-            plan = plan_for_seed(effective_seed)
-            self_store, close_self = _open_seed_store(request, effective_seed)
-            try:
-                notes = await federated_recall(
-                    self_store, plan, qvec, k, qtext=q, include_superseded=True,
-                )
-            finally:
-                if close_self:
-                    await self_store.aclose()
-        else:
-            view_store, close_view = _open_for_view(request, proj_filter)
-            try:
-                notes = await view_store.recall(
-                    qvec, proj_filter, k, qtext=q, include_superseded=True,
-                )
-            finally:
-                if close_view:
-                    await view_store.aclose()
+        notes = await _store(request).recall(
+            qvec, proj_filter, k, qtext=q, include_superseded=True,
+        )
         return {
             "notes": [
                 {
@@ -613,17 +531,18 @@ def create_app(
         keyword mode and includes a ``warning`` field in the 200 response rather
         than raising a 5xx.
 
-        ``projects=`` / ``seed=`` follow the same active-project contract as
-        ``/api/notes``: a single OTHER registered ULID serves the sibling's own
-        db read-only, and ``seed=<ulid>`` re-seeds the federated family branch.
+        A named Pool is the only cross-project search surface.  Legacy
+        ``federate`` and ``seed`` query flags are rejected rather than inferred.
         """
         if mode not in ("hybrid", "semantic", "keyword"):
             raise HTTPException(status_code=400, detail=f"Invalid mode {mode!r}.")
         if k < 1 or k > 100:
             raise HTTPException(status_code=400, detail="k must be 1–100.")
 
-        proj_filter = _split_projects(projects)
-        view_seed = _resolve_seed_param(seed)
+        _reject_retired_cross_project_query(
+            federate=federate, seed=seed, operation="Search"
+        )
+        proj_filter = _normal_project_filter(request, projects, "Search")
 
         warning: Optional[str] = None
         effective_mode = mode
@@ -639,27 +558,9 @@ def create_app(
                 f"Embedder unavailable; using keyword fallback. ({exc!r})"
             )
 
-        from .federate import federated_search, federation_enabled, plan_for_seed
-        effective_seed = view_seed or seed_project_id
-        if federate and federation_enabled() and effective_seed:
-            plan = plan_for_seed(effective_seed)
-            self_store, close_self = _open_seed_store(request, effective_seed)
-            try:
-                hits = await federated_search(
-                    self_store, plan, qvec, q, k, effective_mode
-                )
-            finally:
-                if close_self:
-                    await self_store.aclose()
-        else:
-            view_store, close_view = _open_for_view(request, proj_filter)
-            try:
-                hits = await view_store.search(
-                    qvec, q, proj_filter, k, effective_mode
-                )
-            finally:
-                if close_view:
-                    await view_store.aclose()
+        hits = await _store(request).search(
+            qvec, q, proj_filter, k, effective_mode
+        )
         return {
             "hits": [
                 {
@@ -693,10 +594,11 @@ def create_app(
         """
         store = _store(request)
         k = min(max(k, 1), 50)
+        project_filter = _normal_project_filter(request, projects, "Feed")
         data = await store.tail_since(
             note_after=after_note,
             doc_after=after_doc,
-            projects=_split_projects(projects),
+            projects=project_filter,
             limit=k,
         )
         job = None
@@ -843,6 +745,12 @@ def create_app(
         @app.post("/api/forget")
         async def api_forget(request: Request, body: _ForgetBody) -> dict:  # type: ignore[type-arg]
             """Soft-delete a memory note by id + project."""
+            connected = getattr(request.app.state, "seed_project_id", None)
+            if connected is not None and body.project != connected:
+                raise HTTPException(
+                    409,
+                    "Forget writes only to the connected Project.",
+                )
             store = _store(request)
             deleted = await store.forget(body.note_id, body.project)
             return {"deleted": deleted}
@@ -909,6 +817,7 @@ def create_app(
             db_path=db_path,
             manager=app.state.ingest_manager,
             pick_folder=(native_bridge.pick_folder if native_bridge is not None else None),
+            connected_project_id=seed_project_id,
         )
 
         # Project-local client connection and Project-skill management.
@@ -919,7 +828,12 @@ def create_app(
         # backup/memory log+undo) — the GUI counterparts of the remaining CLI.
         from .gui_ops import OpsJobManager, mount_ops_api
         app.state.ops_manager = OpsJobManager()
-        mount_ops_api(app, db_path=db_path, manager=app.state.ops_manager)
+        mount_ops_api(
+            app,
+            db_path=db_path,
+            manager=app.state.ops_manager,
+            connected_project_id=seed_project_id,
+        )
 
     return app
 
