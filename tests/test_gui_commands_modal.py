@@ -98,6 +98,7 @@ _RUNNER = textwrap.dedent("""
 @pytest.fixture(scope="module")
 def modal_state(tmp_path_factory):
     import os
+
     from braincell.gui_template import INDEX_HTML
 
     tmp = tmp_path_factory.mktemp("cmdmodal")
@@ -110,6 +111,7 @@ def modal_state(tmp_path_factory):
         capture_output=True, text=True, timeout=180,
         env={**os.environ, "QT_QPA_PLATFORM": "offscreen",
              "QTWEBENGINE_CHROMIUM_FLAGS": "--no-sandbox"},
+        check=False,
     )
     assert proc.returncode == 0, f"engine runner failed:\n{proc.stderr[-2000:]}"
     return json.loads(proc.stdout.strip().splitlines()[-1])

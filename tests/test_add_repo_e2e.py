@@ -16,7 +16,6 @@ from braincell.project_registry import add_to_pool, create_pool
 from braincell.store import SqliteStore
 from tests.conftest import fake_vec
 
-
 # ── Helpers (mirrors tests/test_federate.py + tests/test_install.py idioms) ────
 
 def _make_member(root: Path, notes: list[str]) -> str:

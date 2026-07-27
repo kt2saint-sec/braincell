@@ -23,7 +23,7 @@ import asyncio
 
 import pytest
 
-from tests.conftest import make_store, fake_vec, _insert_doc_and_chunk
+from tests.conftest import _insert_doc_and_chunk, fake_vec, make_store
 
 PROJ = "01TESTPROJECTULID0000000AA"  # 26 alnum chars — ULID-shaped
 

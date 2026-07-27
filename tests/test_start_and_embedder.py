@@ -25,7 +25,6 @@ import pytest
 from braincell import embed_spec, launch
 from braincell.install import claude_registered_map, registration_status
 
-
 # ── shared stubs ──────────────────────────────────────────────────────────────
 
 def _stub_embedder(monkeypatch, ok: bool = True, detail: str = ""):
@@ -244,6 +243,7 @@ class TestPreflight:
 def test_doc_count_reads_real_store(tmp_path):
     """_doc_count counts bc_documents via a read-only sqlite3 open."""
     import asyncio
+
     from tests.conftest import _insert_doc_and_chunk, make_store
 
     store = make_store(tmp_path)
@@ -267,7 +267,7 @@ class TestCmdStart:
         monkeypatch.setattr("braincell.native_shell.alert", lambda *a, **k: True)
 
     def _args(self, path, **kw):
-        defaults = dict(path=str(path), port=8765, global_brain=False)
+        defaults = {"path": str(path), "port": 8765, "global_brain": False}
         defaults.update(kw)
         return argparse.Namespace(**defaults)
 

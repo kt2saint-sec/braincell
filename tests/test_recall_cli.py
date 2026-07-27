@@ -23,7 +23,6 @@ from braincell.config import get_db_path, get_project_id
 from braincell.store import SqliteStore
 from tests.conftest import fake_vec
 
-
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _seed_project(root, notes: list[str]) -> str:

@@ -115,10 +115,9 @@ class TestConnectedProjectViews:
 
     def test_default_notes_and_search_use_connected_store(self, tmp_path):
         self._setup_two_brains(tmp_path)
-        with _embedder_down():
-            with TestClient(_launch_app(PID_A)) as client:
-                notes = client.get("/api/notes").json()["notes"]
-                hits = client.get("/api/search?q=alpha").json()["hits"]
+        with _embedder_down(), TestClient(_launch_app(PID_A)) as client:
+            notes = client.get("/api/notes").json()["notes"]
+            hits = client.get("/api/search?q=alpha").json()["hits"]
         assert [note["content"] for note in notes] == ["launch-only alpha note"]
         assert [hit["doc_key"] for hit in hits] == ["doc-a"]
 

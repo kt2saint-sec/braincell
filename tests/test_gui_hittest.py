@@ -116,6 +116,7 @@ def test_toolbar_and_header_controls_hittable_at_narrow_widths(tmp_path: Path):
             "QT_QPA_PLATFORM": "offscreen",   # no window, no display needed
             "QTWEBENGINE_CHROMIUM_FLAGS": "--no-sandbox",  # CI-safe
         },
+        check=False,
     )
     assert proc.returncode == 0, f"hit-test runner failed:\n{proc.stderr[-2000:]}"
     results = json.loads(proc.stdout.strip().splitlines()[-1])
@@ -216,6 +217,7 @@ _RUNNER2 = textwrap.dedent("""
 @pytest.fixture(scope="module")
 def chrome_metrics(tmp_path_factory):
     import os
+
     from braincell.gui_template import INDEX_HTML
 
     tmp = tmp_path_factory.mktemp("hittest2")
@@ -228,6 +230,7 @@ def chrome_metrics(tmp_path_factory):
         capture_output=True, text=True, timeout=180,
         env={**os.environ, "QT_QPA_PLATFORM": "offscreen",
              "QTWEBENGINE_CHROMIUM_FLAGS": "--no-sandbox"},
+        check=False,
     )
     assert proc.returncode == 0, f"engine runner failed:\n{proc.stderr[-2000:]}"
     results = json.loads(proc.stdout.strip().splitlines()[-1])

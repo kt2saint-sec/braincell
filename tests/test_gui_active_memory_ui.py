@@ -125,7 +125,9 @@ class TestActiveChip:
     def test_switch_reruns_the_open_drawer(self, tmp_path):
         """setActiveProject repaints the chip and re-runs the open drawer view."""
         html = _page(tmp_path)
-        m = re.search(r"function setActiveProject\(pid\)\{(.*?)\n\}", html, re.S)
+        m = re.search(
+            r"function setActiveProject\(pid\)\{(.*?)\n\}", html, re.DOTALL
+        )
         assert m, "setActiveProject not found"
         body = m.group(1)
         assert "renderActiveChip()" in body
@@ -173,7 +175,9 @@ class TestInspectorReadOnly:
             "read-only view — launch braincell gui on this folder to manage it"
             in html
         ), "RO controls must explain WHY they are unavailable"
-        m = re.search(r"function paintInspectorRo\(\)\{(.*?)\n\}", html, re.S)
+        m = re.search(
+            r"function paintInspectorRo\(\)\{(.*?)\n\}", html, re.DOTALL
+        )
         assert m, "paintInspectorRo not found"
         body = m.group(1)
         assert "isLaunch()" in body, "RO state must key on isLaunch()"
@@ -241,7 +245,7 @@ class TestCountsBannerGone:
 # ── Embedded-JS hygiene gates ────────────────────────────────────────────────
 
 def _extract_script(html: str) -> str:
-    m = re.search(r"<script>\n(.*)</script>", html, re.S)
+    m = re.search(r"<script>\n(.*)</script>", html, re.DOTALL)
     assert m, "embedded <script> block not found"
     return m.group(1)
 
@@ -254,7 +258,10 @@ class TestEmbeddedJsHygiene:
         js_file = tmp_path / "gui_script.js"
         js_file.write_text(js)
         proc = subprocess.run(
-            ["node", "--check", str(js_file)], capture_output=True, text=True
+            ["node", "--check", str(js_file)],
+            capture_output=True,
+            text=True,
+            check=False,
         )
         assert proc.returncode == 0, f"node --check failed:\n{proc.stderr}"
 
