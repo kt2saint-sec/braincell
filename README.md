@@ -13,9 +13,10 @@ See [CHANGELOG.md](CHANGELOG.md) for verified public release notes.
 
 This release establishes project-local connections and skills, CLI Pools,
 Project-local Automatic Pool recall for Claude, and native Memory Map Pool
-membership/live-query controls. Database-open isolation coverage and
-preview-first legacy configuration/data migration are still in progress. Do
-not rely on legacy automation or shared-data behavior as part of the
+membership/live-query controls. Database-open isolation coverage and the
+migration apply workflow are still in progress. A read-only legacy inventory
+and verified-backup CLI foundation is available; it does not migrate or retire
+data. Do not rely on legacy automation or shared-data behavior as part of the
 project-only workflow.
 
 ## What is isolated

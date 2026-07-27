@@ -1429,6 +1429,51 @@ def cmd_legacy_service(args: argparse.Namespace) -> None:
         print(f"  systemctl said: {result['detail']}", file=sys.stderr)
 
 
+def cmd_legacy_migration(args: argparse.Namespace) -> None:
+    """Preview or back up legacy shared data; never migrates or retires it."""
+    import json
+    from .legacy_migration import (
+        backup_legacy_database,
+        default_legacy_database,
+        inspect_legacy_database,
+        write_manifest,
+    )
+
+    source = Path(args.source).expanduser() if args.source else default_legacy_database()
+    if args.legacy_migration_cmd == "preview":
+        result = inspect_legacy_database(source)
+        if args.manifest:
+            write_manifest(result, Path(args.manifest))
+        if args.json:
+            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+        else:
+            print(f"Legacy source: {result.source}")
+            print(f"Readable: {'yes' if result.readable else 'no'}")
+            print(f"Quick check: {result.quick_check}")
+            print(f"Projects identified: {len(result.project_ids)}")
+            for table, count in sorted(result.counts.items()):
+                print(f"  {table}: {count}")
+            print(f"  pooled rows: {sum(result.pooled_rows.values())}")
+            print(f"  unclassified rows: {sum(result.ambiguous_rows.values())}")
+            print(f"  note links: {result.link_rows} ({result.dangling_link_rows} dangling)")
+            print(f"  audit operations: {result.operation_rows} / {result.operation_note_rows} note entries")
+            for warning in result.warnings:
+                print(f"WARNING: {warning}", file=sys.stderr)
+        return
+
+    if not args.destination:
+        raise SystemExit("legacy-migration backup requires --destination")
+    result = backup_legacy_database(source, Path(args.destination))
+    if args.manifest:
+        write_manifest(result, Path(args.manifest))
+    if args.json:
+        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+    else:
+        print(f"Verified backup: {result.destination}")
+        print(f"SHA-256: {result.sha256}")
+        print(f"Bytes: {result.bytes}")
+
+
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="braincell", description="Standalone BrainCell memory CLI.")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -1725,6 +1770,29 @@ def main(argv: list[str] | None = None) -> None:
     prun.add_argument("--pool", required=True)
     prun.add_argument("--project-id", required=True)
     prun.set_defaults(func=cmd_automatic_pool_recall)
+
+    pmig = sub.add_parser(
+        "legacy-migration",
+        help="Preview or back up legacy shared data; never applies or retires it.",
+    )
+    migsub = pmig.add_subparsers(dest="legacy_migration_cmd", required=True)
+    for action, help_text in (
+        ("preview", "Read-only inventory of the legacy database."),
+        ("backup", "Create and verify a read-consistent SQLite backup."),
+    ):
+        parser = migsub.add_parser(action, help=help_text)
+        parser.add_argument(
+            "--source", default=None,
+            help="Legacy SQLite path (default: the retired shared database path).",
+        )
+        parser.add_argument(
+            "--manifest", default=None,
+            help="Write the machine-readable JSON manifest to this path.",
+        )
+        parser.add_argument("--json", action="store_true", help="Print JSON output.")
+        if action == "backup":
+            parser.add_argument("--destination", required=True, help="New backup path; never overwritten.")
+        parser.set_defaults(func=cmd_legacy_migration)
 
     pls = sub.add_parser(
         "legacy-service",
