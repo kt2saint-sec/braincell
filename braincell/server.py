@@ -34,6 +34,7 @@ from .project_registry import (
     load_families,
     load_path_registry,
     normalize_path,
+    resolve_pool,
 )
 from .store import open_store, Hit, Note, SqliteStore
 
@@ -326,6 +327,30 @@ class FamilyInfo(BaseModel):
     project_ids: list[str]  # ULIDs of registered members only (lazy-link)
 
 
+class PoolMemberResult(BaseModel):
+    """One named-Pool member's live query status."""
+
+    project_id: str
+    status: str
+    detail: str
+
+
+class PoolSearchResult(BaseModel):
+    """Explicit named-Pool Search response."""
+
+    pool: str
+    results: list[SearchHit]
+    members: list[PoolMemberResult]
+
+
+class PoolRecallResult(BaseModel):
+    """Explicit named-Pool Recall response."""
+
+    pool: str
+    results: list[MemoryNote]
+    members: list[PoolMemberResult]
+
+
 # ── Search core (shared by the MCP `search` tool + the CLI `braincell search`) ─
 
 async def search_hits(
@@ -366,8 +391,9 @@ async def search(
     rank: str = "hybrid",
     scope: str = "self",
     projects: Optional[list[str]] = None,
+    pool: Optional[str] = None,
     ctx: Context = None,  # type: ignore[assignment]
-) -> list[SearchHit]:
+) -> list[SearchHit] | PoolSearchResult:
     """Hybrid (vector + keyword) search over ingested documents & transcripts.
 
     Args:
@@ -401,11 +427,31 @@ async def search(
         and `fts_matched` flags chunks that also matched full-text search. Judge a hit's
         relevance by `cosine` + `fts_matched`, not by `score`.
     """
-    hits = await search_hits(
-        _store(ctx), query, project=project, k=k, rank=rank, scope=scope,
-        projects=projects,
-    )
-    return [
+    store = _store(ctx)
+    plan = None
+    if pool is not None:
+        if project is not None or projects or scope != "self":
+            raise ValueError(
+                "pool cannot be combined with project, projects, or a non-self scope."
+            )
+        connected_project_id = os.environ.get("BRAINCELL_PROJECT_ID", "").strip()
+        if not connected_project_id:
+            raise ValueError("A named Pool query requires a connected Project.")
+        from .federate import federated_search, plan_for_pool
+
+        plan = plan_for_pool(pool, connected_project_id)
+        if rank not in ("hybrid", "semantic", "keyword"):
+            raise ValueError(f"Invalid rank '{rank}'. Must be hybrid|semantic|keyword.")
+        if k < 1 or k > 100:
+            raise ValueError("k must be between 1 and 100.")
+        qvec = await embed_query_async(query)
+        hits = await federated_search(store, plan, qvec, query, k, rank)
+    else:
+        hits = await search_hits(
+            store, query, project=project, k=k, rank=rank, scope=scope,
+            projects=projects,
+        )
+    results = [
         SearchHit(
             chunk_id=h.chunk_id,
             doc_key=h.doc_key,
@@ -418,6 +464,14 @@ async def search(
         )
         for h in hits
     ]
+    if plan is None:
+        return results
+    display_name, _members = resolve_pool(pool)
+    return PoolSearchResult(
+        pool=display_name,
+        results=results,
+        members=[PoolMemberResult(**vars(member)) for member in plan.member_status],
+    )
 
 
 # ── Chunk fallback (cold-start recall degradation) ───────────────────────────
@@ -596,8 +650,9 @@ async def recall(
     scope: str = "self",
     projects: Optional[list[str]] = None,
     include_superseded: bool = False,
+    pool: Optional[str] = None,
     ctx: Context = None,  # type: ignore[assignment]
-) -> list[MemoryNote]:
+) -> list[MemoryNote] | PoolRecallResult:
     """Recall curated memory notes (decisions, bug lessons, observations).
 
     Args:
@@ -650,12 +705,40 @@ async def recall(
         negative ids to forget/supersede. Disable via
         BRAINCELL_RECALL_CHUNK_FALLBACK=off.
     """
-    notes = await recall_notes(
-        _store(ctx), query, project=project, k=k, min_cosine=min_cosine,
-        dedup=dedup, scope=scope, projects=projects,
-        include_superseded=include_superseded,
-    )
-    return [
+    store = _store(ctx)
+    plan = None
+    if pool is not None:
+        if project is not None or projects or scope != "self":
+            raise ValueError(
+                "pool cannot be combined with project, projects, or a non-self scope."
+            )
+        connected_project_id = os.environ.get("BRAINCELL_PROJECT_ID", "").strip()
+        if not connected_project_id:
+            raise ValueError("A named Pool query requires a connected Project.")
+        if k < 1 or k > 50:
+            raise ValueError("k must be between 1 and 50.")
+        if min_cosine is not None and not (0.0 <= min_cosine <= 1.0):
+            raise ValueError("min_cosine must be between 0.0 and 1.0.")
+        qvec = None
+        if query and query.strip():
+            try:
+                qvec = await embed_query_async(query)
+            except Exception as exc:
+                log.warning("Pool Recall embedding unavailable; using lexical/recency: %s", exc)
+        from .federate import federated_recall, plan_for_pool
+
+        plan = plan_for_pool(pool, connected_project_id)
+        notes = await federated_recall(
+            store, plan, qvec, k, qtext=query, min_cosine=min_cosine,
+            dedup=dedup, include_superseded=include_superseded,
+        )
+    else:
+        notes = await recall_notes(
+            store, query, project=project, k=k, min_cosine=min_cosine,
+            dedup=dedup, scope=scope, projects=projects,
+            include_superseded=include_superseded,
+        )
+    results = [
         MemoryNote(
             id=n.id,
             project_id=n.project_id,
@@ -676,6 +759,14 @@ async def recall(
         )
         for n in notes
     ]
+    if plan is None:
+        return results
+    display_name, _members = resolve_pool(pool)
+    return PoolRecallResult(
+        pool=display_name,
+        results=results,
+        members=[PoolMemberResult(**vars(member)) for member in plan.member_status],
+    )
 
 
 # ── Tool: remember ───────────────────────────────────────────────────────────

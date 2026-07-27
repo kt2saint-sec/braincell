@@ -142,20 +142,20 @@ def resolve_pool_targets(
             current_path = resolve_ulid_to_path(project_id)
             if current_path is None:
                 log.warning("pool %s: skip %s (no current registered project path)", display_name, project_id)
-                member_status.append(PoolMemberStatus(project_id, "missing-path", "No current registered Project path."))
+                member_status.append(PoolMemberStatus(project_id, "missing", "No current registered Project path."))
                 continue
             if not current_path.is_dir():
                 log.warning("pool %s: skip %s (project path unavailable: %s)", display_name, project_id, current_path)
-                member_status.append(PoolMemberStatus(project_id, "unavailable-path", "Registered Project path is unavailable."))
+                member_status.append(PoolMemberStatus(project_id, "unavailable", "Registered Project path is unavailable."))
                 continue
             db = get_db_path(project_id)
             if not db.exists():
                 log.info("pool %s: skip %s (no built project memory at %s)", display_name, project_id, db)
-                member_status.append(PoolMemberStatus(project_id, "missing-database", "Project memory has not been built."))
+                member_status.append(PoolMemberStatus(project_id, "missing", "Project memory has not been built."))
                 continue
             probe = _read_fingerprint_and_version_ro(db)
             if probe is None:
-                member_status.append(PoolMemberStatus(project_id, "unreadable-database", "Project memory is inaccessible or corrupt."))
+                member_status.append(PoolMemberStatus(project_id, "corrupt", "Project memory is inaccessible or corrupt."))
                 continue
             fingerprint, version = probe
             if version is not None and version != MEMORY_SCHEMA_VERSION:
@@ -163,18 +163,18 @@ def resolve_pool_targets(
                     "pool %s: skip %s (schema v%s != engine v%s)",
                     display_name, project_id, version, MEMORY_SCHEMA_VERSION,
                 )
-                member_status.append(PoolMemberStatus(project_id, "incompatible-schema", "Project memory schema is incompatible."))
+                member_status.append(PoolMemberStatus(project_id, "incompatible", "Project memory schema is incompatible."))
                 continue
             fingerprint_ok = fingerprint == embed_spec.FINGERPRINT
             if not fingerprint_ok and _strict():
                 log.warning("pool %s: skip %s (embedding fingerprint mismatch)", display_name, project_id)
-                member_status.append(PoolMemberStatus(project_id, "embedding-mismatch", "Project memory uses a different embedding model."))
+                member_status.append(PoolMemberStatus(project_id, "incompatible", "Project memory uses a different embedding model."))
                 continue
             targets.append(FederationTarget(project_id, db, fingerprint_ok))
             member_status.append(PoolMemberStatus(project_id, "ready", "Opened read-only for this Pool query."))
         except Exception as exc:  # one malformed registry member must not fail the Pool
             log.warning("pool %s: skip %s (%r)", display_name, project_id, exc)
-            member_status.append(PoolMemberStatus(project_id, "resolution-failed", str(exc)))
+            member_status.append(PoolMemberStatus(project_id, "unavailable", str(exc)))
     return display_name, targets, member_status
 
 
