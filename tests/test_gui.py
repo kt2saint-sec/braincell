@@ -23,7 +23,6 @@ from fastapi.testclient import TestClient
 
 from tests.conftest import _insert_doc_and_chunk, fake_vec, make_store
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _seed_notes(tmp_path: Path, project_id: str, texts: list[str]) -> list[int]:
@@ -50,8 +49,10 @@ def _app(tmp_path: Path, *, allow_writes: bool = False):
 
 def _init_global_db(xdg_path: Path) -> Path:
     """Initialise a global braincell.db under xdg_path; return its path."""
-    from braincell.store import SqliteStore
     import os
+
+    from braincell.store import SqliteStore
+
     # get_global_db_path reads XDG_DATA_HOME from env at call time via _xdg_data_home()
     data_ns = os.environ.get("BRAINCELL_DATA_NAMESPACE", "braincell_test")
     global_dir = xdg_path / data_ns / "global"
@@ -427,9 +428,11 @@ class TestApiNotes:
         pid = "NOTESTEST0003"
         _seed_notes(tmp_path, pid, ["keyword match note"])
         app = _app(tmp_path)
-        with patch("braincell.gui.embed_query_async", side_effect=RuntimeError("Ollama down")):
-            with TestClient(app) as client:
-                r = client.get("/api/notes?q=keyword")
+        with (
+            patch("braincell.gui.embed_query_async", side_effect=RuntimeError("Ollama down")),
+            TestClient(app) as client,
+        ):
+            r = client.get("/api/notes?q=keyword")
         assert r.status_code == 200
         data = r.json()
         assert data["warning"] is not None
@@ -443,9 +446,11 @@ class TestApiNotes:
         called = []
         async def _fake_embed(q):
             called.append(q)
-        with patch("braincell.gui.embed_query_async", side_effect=_fake_embed):
-            with TestClient(_app(tmp_path)) as client:
-                r = client.get("/api/notes?q=")
+        with (
+            patch("braincell.gui.embed_query_async", side_effect=_fake_embed),
+            TestClient(_app(tmp_path)) as client,
+        ):
+            r = client.get("/api/notes?q=")
         assert r.status_code == 200
         assert not called, "embed_query_async should not be called when q is empty"
 
@@ -486,16 +491,20 @@ class TestApiSearch:
         assert r.status_code == 422
 
     def test_search_invalid_mode_returns_400(self, tmp_path):
-        with patch("braincell.gui.embed_query_async", side_effect=RuntimeError("down")):
-            with TestClient(_app(tmp_path)) as client:
-                r = client.get("/api/search?q=test&mode=bogus")
+        with (
+            patch("braincell.gui.embed_query_async", side_effect=RuntimeError("down")),
+            TestClient(_app(tmp_path)) as client,
+        ):
+            r = client.get("/api/search?q=test&mode=bogus")
         assert r.status_code == 400
 
     def test_search_embedder_down_returns_200_with_warning(self, tmp_path):
         app = _app(tmp_path)
-        with patch("braincell.gui.embed_query_async", side_effect=RuntimeError("Ollama down")):
-            with TestClient(app) as client:
-                r = client.get("/api/search?q=test+query")
+        with (
+            patch("braincell.gui.embed_query_async", side_effect=RuntimeError("Ollama down")),
+            TestClient(app) as client,
+        ):
+            r = client.get("/api/search?q=test+query")
         assert r.status_code == 200
         data = r.json()
         assert "hits" in data
@@ -504,9 +513,11 @@ class TestApiSearch:
         assert "Embedder unavailable" in data["warning"]
 
     def test_search_response_shape(self, tmp_path):
-        with patch("braincell.gui.embed_query_async", side_effect=RuntimeError("down")):
-            with TestClient(_app(tmp_path)) as client:
-                data = client.get("/api/search?q=anything").json()
+        with (
+            patch("braincell.gui.embed_query_async", side_effect=RuntimeError("down")),
+            TestClient(_app(tmp_path)) as client,
+        ):
+            data = client.get("/api/search?q=anything").json()
         assert isinstance(data["hits"], list)
 
     def test_search_projects_filter_scoped_isolation(self, tmp_path):
@@ -524,10 +535,12 @@ class TestApiSearch:
 
         asyncio.run(_seed())
 
-        with patch("braincell.gui.embed_query_async", side_effect=RuntimeError("down")):
-            with TestClient(_app(tmp_path)) as client:
-                r_a = client.get(f"/api/search?q=alpha&projects={pid_a}").json()
-                r_b = client.get(f"/api/search?q=beta&projects={pid_b}").json()
+        with (
+            patch("braincell.gui.embed_query_async", side_effect=RuntimeError("down")),
+            TestClient(_app(tmp_path)) as client,
+        ):
+            r_a = client.get(f"/api/search?q=alpha&projects={pid_a}").json()
+            r_b = client.get(f"/api/search?q=beta&projects={pid_b}").json()
 
         # Both return hits (keyword fallback); doc_keys must be scoped.
         # Just verify we can hit the endpoint without error — full isolation
