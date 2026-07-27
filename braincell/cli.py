@@ -1436,6 +1436,31 @@ def cmd_legacy_service(args: argparse.Namespace) -> None:
         print(f"  systemctl said: {result['detail']}", file=sys.stderr)
 
 
+def cmd_legacy_recovery(args: argparse.Namespace) -> None:
+    """Preview or explicitly apply retired shared-data recovery."""
+    import json
+
+    from .legacy_recovery import LegacyRecoveryError, apply, preview
+
+    source = Path(args.source).expanduser().resolve() if args.source else None
+    try:
+        if args.legacy_recovery_action == "preview":
+            result = preview(source)
+        else:
+            result = apply(
+                source_path=source,
+                project_ids=args.project,
+                approval_digest=args.approve,
+                backup_dir=(
+                    Path(args.backup_dir).expanduser().resolve()
+                    if args.backup_dir else None
+                ),
+            )
+    except LegacyRecoveryError as exc:
+        raise SystemExit(f"braincell legacy-recovery: {exc}") from exc
+    print(json.dumps(result, indent=2, sort_keys=True))
+
+
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="braincell", description="Standalone BrainCell memory CLI.")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -1736,6 +1761,37 @@ def main(argv: list[str] | None = None) -> None:
         help="status=inspect legacy residue; remove=disable, stop, and delete it.",
     )
     pls.set_defaults(func=cmd_legacy_service)
+
+    precovery = sub.add_parser(
+        "legacy-recovery",
+        help="Preview or apply recovery from a retired shared BrainCell database.",
+    )
+    recoverysub = precovery.add_subparsers(
+        dest="legacy_recovery_action", required=True
+    )
+    precovery_preview = recoverysub.add_parser(
+        "preview", help="Classify recoverable rows without writing anything."
+    )
+    precovery_preview.add_argument(
+        "--source", help="Legacy database path (default: discovered retired database)."
+    )
+    precovery_preview.set_defaults(func=cmd_legacy_recovery)
+    precovery_apply = recoverysub.add_parser(
+        "apply", help="Copy selected attributable Projects after exact preview approval."
+    )
+    precovery_apply.add_argument("--source")
+    precovery_apply.add_argument(
+        "--project", action="append", required=True,
+        help="Project ULID to recover; repeat for multiple Projects.",
+    )
+    precovery_apply.add_argument(
+        "--approve", required=True,
+        help="Exact approval_digest from the current preview.",
+    )
+    precovery_apply.add_argument(
+        "--backup-dir", help="Directory for the retained original backup."
+    )
+    precovery_apply.set_defaults(func=cmd_legacy_recovery)
 
     pst = sub.add_parser(
         "stats",
