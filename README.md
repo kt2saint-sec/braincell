@@ -52,9 +52,16 @@ py -m pip install --user pipx
 pipx ensurepath
 pipx install braincell-mcp
 ```
+Install and start Ollama:
 
-Install and start Ollama for your operating system, then download the model:
+- **Debian/Ubuntu:** install from [ollama.com](https://ollama.com/download/linux), then run `ollama serve` if it is not already running.
+- **macOS:** `brew install ollama`, then run `ollama serve`.
+- **Windows:** install Ollama from [ollama.com](https://ollama.com/download/windows); the Ollama application starts the service.
 
+Then download the verified embedding model:
+
+```bash
+ollama pull qwen3-embedding:4b
 ```bash
 ollama pull qwen3-embedding:4b
 ```
@@ -182,5 +189,5 @@ python3 -m pip install -e ".[dev,openai]"
 python3 -m pytest
 ruff check braincell tests
 ```
-
 The Memory Map is a PySide6/QtWebEngine application. Test its native window and bridge for desktop changes; a standalone-browser test is supplemental only. See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution requirements.
+
