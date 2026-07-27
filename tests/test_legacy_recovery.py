@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import shutil
+import sqlite3
 
 import pytest
 
@@ -113,7 +115,7 @@ def test_apply_requires_exact_approval_selection_and_retains_backup(tmp_path):
         "bc_chunks_fts": "ok",
         "memory_fts": "ok",
     }
-    assert verification["source_links"] == verification["destination_links"] == 1
+    assert verification["links_verified"] == 1
     assert result["projects"]["01POOLED"]["verification"]["ok"] is True
 
 
@@ -163,3 +165,109 @@ def test_cli_preview_only_uses_explicit_disposable_source(tmp_path, capsys):
     source = _legacy_fixture(tmp_path)
     main(["legacy-recovery", "preview", "--source", str(source)])
     assert '"approval_digest"' in capsys.readouterr().out
+
+
+def test_preview_opens_source_and_destination_read_only_without_filesystem_writes(tmp_path):
+    from braincell.config import get_db_path
+    from braincell.legacy_recovery import preview
+    from braincell.store import SqliteStore
+
+    source = _legacy_fixture(tmp_path)
+    destination = get_db_path("01ATTRIBUTABLE")
+    destination.parent.mkdir(parents=True)
+    SqliteStore(destination).assert_schema_version()
+    before = {path.relative_to(tmp_path): hashlib.sha256(path.read_bytes()).hexdigest()
+              for path in tmp_path.rglob("*") if path.is_file()}
+    preview(source)
+    after = {path.relative_to(tmp_path): hashlib.sha256(path.read_bytes()).hexdigest()
+             for path in tmp_path.rglob("*") if path.is_file()}
+    assert after == before
+
+
+def test_pooled_from_project_id_disagreement_is_ambiguous_and_unselectable(tmp_path):
+    from braincell.legacy_recovery import LegacyRecoveryError, apply, preview
+
+    source = _legacy_fixture(tmp_path)
+    with sqlite3.connect(source) as connection:
+        connection.execute(
+            "UPDATE bc_documents SET pooled_from='01POOLED' WHERE project_id='01ATTRIBUTABLE'"
+        )
+        connection.commit()
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    report = preview(source)
+    assert report["classifications"]["ambiguous_pooled_from_conflict"]["01POOLED"] == 1
+    assert report["projects"]["01ATTRIBUTABLE"]["documents"] == 0
+    with pytest.raises(LegacyRecoveryError, match="not attributable"):
+        apply(source_path=source, project_ids=["01UNKNOWN"], approval_digest=report["approval_digest"])
+
+
+def test_verification_failure_restores_existing_destination(tmp_path, monkeypatch):
+    from braincell.config import get_db_path
+    from braincell import legacy_recovery
+    from braincell.store import SqliteStore
+
+    source = _legacy_fixture(tmp_path)
+    destination = get_db_path("01ATTRIBUTABLE")
+    destination.parent.mkdir(parents=True)
+    SqliteStore(destination).assert_schema_version()
+    before = hashlib.sha256(destination.read_bytes()).hexdigest()
+    report = legacy_recovery.preview(source)
+    monkeypatch.setattr(legacy_recovery, "_verify", lambda *_args: {"ok": False, "failures": ["forced"]})
+    with pytest.raises(legacy_recovery.LegacyRecoveryError, match="destination was restored"):
+        legacy_recovery.apply(source_path=source, project_ids=["01ATTRIBUTABLE"], approval_digest=report["approval_digest"])
+    assert hashlib.sha256(destination.read_bytes()).hexdigest() == before
+
+
+def test_second_project_failure_reports_completed_and_restores_failed_destination(tmp_path, monkeypatch):
+    from braincell.config import get_db_path
+    from braincell import legacy_recovery
+
+    source = _legacy_fixture(tmp_path)
+    report = legacy_recovery.preview(source)
+    real_copy = legacy_recovery._copy_project
+
+    def fail_second(connection, destination, project_id, selected):
+        copied = real_copy(connection, destination, project_id, selected)
+        if project_id == "01POOLED":
+            raise RuntimeError("forced second-project failure")
+        return copied
+
+    monkeypatch.setattr(legacy_recovery, "_copy_project", fail_second)
+    with pytest.raises(legacy_recovery.LegacyRecoveryError) as error:
+        legacy_recovery.apply(source_path=source, project_ids=["01ATTRIBUTABLE", "01POOLED"], approval_digest=report["approval_digest"])
+    assert error.value.completed_projects == ("01ATTRIBUTABLE",)
+    assert get_db_path("01ATTRIBUTABLE").is_file()
+    assert not get_db_path("01POOLED").exists()
+
+
+def test_moved_source_retry_uses_stable_note_ids_and_is_idempotent(tmp_path):
+    from braincell.config import get_db_path
+    from braincell.legacy_recovery import apply, preview
+
+    source = _legacy_fixture(tmp_path)
+    first = preview(source)
+    apply(source_path=source, project_ids=["01ATTRIBUTABLE"], approval_digest=first["approval_digest"])
+    with sqlite3.connect(get_db_path("01ATTRIBUTABLE")) as destination:
+        initial_uids = [row[0] for row in destination.execute("SELECT note_uid FROM memory_notes ORDER BY id")]
+    moved = tmp_path / "moved-legacy.db"
+    shutil.copy2(source, moved)
+    retry = preview(moved)
+    result = apply(source_path=moved, project_ids=["01ATTRIBUTABLE"], approval_digest=retry["approval_digest"])
+    assert result["projects"]["01ATTRIBUTABLE"]["copied"]["notes"] == 0
+    with sqlite3.connect(get_db_path("01ATTRIBUTABLE")) as destination:
+        assert [row[0] for row in destination.execute("SELECT note_uid FROM memory_notes ORDER BY id")] == initial_uids
+
+
+def test_verification_checks_foreign_keys_and_fts_for_selected_rows(tmp_path):
+    from braincell import legacy_recovery
+    from braincell.config import get_db_path
+
+    source = _legacy_fixture(tmp_path)
+    report = legacy_recovery.preview(source)
+    legacy_recovery.apply(source_path=source, project_ids=["01ATTRIBUTABLE"], approval_digest=report["approval_digest"])
+    with legacy_recovery._read_only(source) as connection:
+        manifest, _ = legacy_recovery._manifest(connection, {"01ATTRIBUTABLE", "01POOLED"})
+        verification = legacy_recovery._verify(connection, get_db_path("01ATTRIBUTABLE"), "01ATTRIBUTABLE", manifest["01ATTRIBUTABLE"])
+    assert verification["ok"] is True
+    assert verification["foreign_key_violations"] == 0
+    assert verification["fts"] == {"bc_chunks_fts": "ok", "memory_fts": "ok"}

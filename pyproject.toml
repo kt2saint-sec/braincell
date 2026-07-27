@@ -87,5 +87,5 @@ extend-exclude = ["evals/task-ab/tasks/*/repo"]
 # cooldown: released 2026-07-23, unvetted), so silence the noise here instead.
 # Remove this filter if/when httpx2 is vetted and adopted as a test dependency.
 filterwarnings = [
-    "ignore::starlette.exceptions.StarletteDeprecationWarning",
+    "ignore:.*Starlette.*:DeprecationWarning",
 ]

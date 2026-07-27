@@ -1893,7 +1893,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     pgui.add_argument(
         "--allow-writes", action="store_true", default=False,
-        help="Enable write endpoints (forget notes, manage families). Default: read-only.",
+        help="Enable write endpoints (forget notes, manage Pools). Default: read-only.",
     )
     pgui.add_argument(
         "--rotate-token", action="store_true", default=False,
