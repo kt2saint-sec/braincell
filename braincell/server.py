@@ -292,6 +292,8 @@ async def search(
 
     Args:
         query:    Natural-language search query.
+        project:  Compatibility Project ULID. If supplied, it must equal the
+                  connected Project and cannot select another database.
         k:        Maximum results to return (default 10).
         rank:     'hybrid' (default) | 'semantic' | 'keyword' — the ranking
                   strategy. The normal query is always pinned to the connected
@@ -534,6 +536,8 @@ async def recall(
         query:      Natural-language query. When non-empty and embedding is
                     available, uses hybrid recall (vector cosine + FTS5 RRF-fused).
                     Falls back to keyword/recency when embedding is unavailable.
+        project:    Compatibility Project ULID. If supplied, it must equal the
+                    connected Project and cannot select another database.
         k:          Maximum notes to return (default 5).
         min_cosine: Optional cosine similarity floor [0, 1]. When set, notes whose
                     stored-vector cosine to the query falls below this threshold are
@@ -882,6 +886,7 @@ async def list_documents(
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 async def list_projects() -> list[ProjectInfo]:
     """List registered Project ULIDs and paths without opening any Project database."""
+    connected_project_id()
     return [
         ProjectInfo(project_id=project_id, path=path)
         for path, project_id in sorted(load_path_registry().items())
@@ -891,6 +896,7 @@ async def list_projects() -> list[ProjectInfo]:
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 async def list_pools() -> list[PoolInfo]:
     """List named Pool memberships without opening member databases or reading memory."""
+    connected_project_id()
     registered = set(load_path_registry().values())
     return [
         PoolInfo(

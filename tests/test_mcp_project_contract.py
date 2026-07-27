@@ -72,6 +72,7 @@ def test_pool_cannot_combine_with_project_compatibility_argument(
 
 
 def test_project_and_pool_catalog_tools_are_metadata_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BRAINCELL_PROJECT_ID", "01CONNECTEDPROJECT0000000001")
     monkeypatch.setattr(
         server,
         "load_path_registry",
