@@ -1433,6 +1433,7 @@ def cmd_legacy_migration(args: argparse.Namespace) -> None:
     """Preview or back up legacy shared data; never migrates or retires it."""
     import json
     from .legacy_migration import (
+        apply_legacy_migration,
         backup_legacy_database,
         default_legacy_database,
         inspect_legacy_database,
@@ -1459,6 +1460,22 @@ def cmd_legacy_migration(args: argparse.Namespace) -> None:
             print(f"  audit operations: {result.operation_rows} / {result.operation_note_rows} note entries")
             for warning in result.warnings:
                 print(f"WARNING: {warning}", file=sys.stderr)
+        return
+
+    if args.legacy_migration_cmd == "apply":
+        if not args.backup or not args.project_ids:
+            raise SystemExit("legacy-migration apply requires --backup and at least one --project-id")
+        results = apply_legacy_migration(source, Path(args.backup), args.project_ids)
+        payload = [result.to_dict() for result in results]
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            for result in results:
+                print(
+                    f"{result['project_id'] if isinstance(result, dict) else result.project_id}: "
+                    f"{result.notes_migrated if not isinstance(result, dict) else result['notes_migrated']} notes, "
+                    f"{result.documents_migrated if not isinstance(result, dict) else result['documents_migrated']} documents migrated"
+                )
         return
 
     if not args.destination:
@@ -1779,6 +1796,7 @@ def main(argv: list[str] | None = None) -> None:
     for action, help_text in (
         ("preview", "Read-only inventory of the legacy database."),
         ("backup", "Create and verify a read-consistent SQLite backup."),
+        ("apply", "Migrate only explicitly approved, provenance-tagged Project rows."),
     ):
         parser = migsub.add_parser(action, help=help_text)
         parser.add_argument(
@@ -1792,6 +1810,10 @@ def main(argv: list[str] | None = None) -> None:
         parser.add_argument("--json", action="store_true", help="Print JSON output.")
         if action == "backup":
             parser.add_argument("--destination", required=True, help="New backup path; never overwritten.")
+        if action == "apply":
+            parser.add_argument("--backup", required=True, help="Verified backup created before applying.")
+            parser.add_argument("--project-id", dest="project_ids", action="append", required=True,
+                                help="Explicit Project ULID to migrate; repeat for multiple Projects.")
         parser.set_defaults(func=cmd_legacy_migration)
 
     pls = sub.add_parser(

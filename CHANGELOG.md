@@ -24,8 +24,9 @@ details are intentionally excluded.
   and deleting named Pools, plus explicit live Pool Search and Recall. These
   controls manage ULID membership metadata only; they do not materialize a
   shared memory database.
-- Read-only legacy migration inventory and verified SQLite backup commands;
-  these commands do not apply migrations or retire legacy data.
+- Read-only legacy migration inventory, verified SQLite backups, and an
+  explicit provenance-only apply command. Ambiguous rows remain untouched and
+  no legacy data is retired automatically.
 
 ### Safety and behavior changes
 

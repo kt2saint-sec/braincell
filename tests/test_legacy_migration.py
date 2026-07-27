@@ -8,9 +8,11 @@ import sqlite3
 import pytest
 
 from braincell.legacy_migration import (
+    apply_legacy_migration,
     backup_legacy_database,
     inspect_legacy_database,
 )
+from braincell.config import get_db_path
 from braincell.store import SqliteStore
 
 
@@ -97,3 +99,45 @@ def test_missing_source_is_safe(tmp_path):
     report = inspect_legacy_database(tmp_path / "missing.db")
     assert report.readable is False
     assert report.warnings == ["legacy database does not exist"]
+
+
+def test_apply_migrates_only_provenance_rows_and_is_idempotent(tmp_path):
+    source = tmp_path / "legacy.db"
+    backup = tmp_path / "backup.db"
+    _seed_legacy(source)
+    backup_legacy_database(source, backup)
+
+    first = apply_legacy_migration(source, backup, ["A"])
+    assert first[0].notes_migrated == 1
+    assert first[0].documents_migrated == 1
+    assert first[0].skipped_legacy_unclassified == 3
+    destination = get_db_path("A")
+    con = sqlite3.connect(destination)
+    try:
+        assert con.execute("SELECT COUNT(*) FROM memory_notes").fetchone()[0] == 1
+        assert con.execute("SELECT COUNT(*) FROM bc_documents").fetchone()[0] == 1
+    finally:
+        con.close()
+
+    second = apply_legacy_migration(source, backup, ["A"])
+    assert second[0].notes_migrated == 0
+    assert second[0].documents_migrated == 0
+    assert second[0].notes_skipped == 1
+    assert second[0].documents_skipped == 1
+
+
+def test_apply_rolls_back_destination_on_failure(tmp_path):
+    source = tmp_path / "legacy.db"
+    backup = tmp_path / "backup.db"
+    _seed_legacy(source)
+    backup_legacy_database(source, backup)
+
+    with pytest.raises(RuntimeError, match="injected migration failure"):
+        apply_legacy_migration(source, backup, ["A"], failure_after=1)
+    destination = get_db_path("A")
+    con = sqlite3.connect(destination)
+    try:
+        assert con.execute("SELECT COUNT(*) FROM bc_documents").fetchone()[0] == 0
+        assert con.execute("SELECT COUNT(*) FROM memory_notes").fetchone()[0] == 0
+    finally:
+        con.close()
