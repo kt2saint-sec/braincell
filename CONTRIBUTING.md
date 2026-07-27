@@ -95,6 +95,19 @@ break the dual-license). PRs without a sign-off will be asked to amend.
 4. Sign off your commits: `git commit -s`.
 5. Open the PR with a clear description of what and why.
 
+## Project-only boundary
+
+Read [NAMINGS.md](NAMINGS.md) before changing user-facing copy. BrainCell has
+one database per Project; client connections are Project-local; ordinary
+operations use only the Connected project. A named Pool is passive ULID
+membership and permits only an explicit, live, read-only cross-Project Search
+or Recall. Do not reintroduce shared memory, copied Pool rows, user-scoped MCP
+registration, or an all-Projects query.
+
+Legacy shared configuration and data are recovery inputs only. Changes to that
+path must remain preview-first, preserve the original source and verified
+backup, and never run during normal startup.
+
 ## Dev setup & checks
 
 The base package includes the native GUI runtime (PySide6/QtWebEngine). To work on it:
@@ -106,7 +119,7 @@ pip install -e ".[dev,openai]"
 # sanity
 python -c "import braincell.server, braincell.cli; print('ok')"
 python -m braincell.cli --help
-ruff check braincell
+ruff check braincell tests
 python -m pytest
 ```
 

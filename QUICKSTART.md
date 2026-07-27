@@ -4,6 +4,10 @@ BrainCell connects to one selected **Project** at a time. Installing the
 package does not enable it for unrelated Projects. The terminology contract is
 [NAMINGS.md](NAMINGS.md).
 
+> **Current status:** Project-local connections, skills, Pools, Automatic Pool
+> recall, and ordinary Memory Map database isolation are implemented. Native
+> desktop acceptance coverage and legacy-data retirement remain in progress.
+
 ## Install BrainCell
 
 ```bash
@@ -108,3 +112,25 @@ braincell disconnect . --client codex
 This removes only BrainCell's managed connection for the selected client and
 Project. Project memory remains intact. `braincell uninstall` is a temporary
 compatibility alias.
+
+## Recover legacy shared data
+
+Older shared-data installations are not used during normal startup. Keep them
+until you have previewed and backed them up. The recovery workflow copies only
+explicitly approved, provenance-tagged rows into matching Project databases;
+ambiguous rows remain in the legacy source for review.
+
+```bash
+braincell legacy-migration preview --source /path/to/legacy.db
+braincell legacy-migration backup --source /path/to/legacy.db \
+  --destination /safe/backups/braincell-legacy.db
+braincell legacy-migration apply --source /path/to/legacy.db \
+  --backup /safe/backups/braincell-legacy.db \
+  --receipt /safe/backups/braincell-recovery-receipt.json \
+  --project-id <project-ulid>
+```
+
+The receipt records the verified backup, selected Project ULIDs, exact copied
+and skipped counts, and the retained legacy audit trail. It does not delete or
+retire the legacy database. See [the migration guide](docs/project-only-migration.md)
+before applying recovery to real data.

@@ -6,8 +6,10 @@ activation. See [NAMINGS.md](../NAMINGS.md) for the public vocabulary.
 
 > **Current scope:** this runbook covers shipped project-local connections and
 > skills, live CLI Pools, project-local Automatic Pool recall, and the native
-> Memory Map Pool controls. Preview-first legacy migration and final
-> database-open isolation verification remain separate work.
+> Memory Map Pool controls. Ordinary Memory Map operations are now enforced to
+> the Connected Project. Native desktop acceptance and legacy-data retirement
+> remain separate work; see [the migration guide](project-only-migration.md)
+> for the preview-first recovery workflow.
 
 ## Prerequisites
 
@@ -94,3 +96,11 @@ This removes only BrainCell's managed entry for the selected client and
 Project. It preserves the Project database and all unrelated configuration.
 Existing legacy client-wide entries are detected for explicit cleanup; they are
 not silently removed.
+
+## Legacy recovery remains separate
+
+An earlier shared-data database is not part of normal Project operation. Do not
+delete it. Use `braincell legacy-migration preview`, create a verified backup,
+then apply only explicitly selected Project ULIDs with a new recovery receipt.
+Ambiguous rows and the source audit trail remain available for review. See
+[Project-only migration](project-only-migration.md) for the exact sequence.

@@ -13,7 +13,11 @@ and code identifiers.
   project ULID. Say **project folder** only while asking for a filesystem path.
   Do not use “repo”; Git is not required for a BrainCell project.
 - **Project memory** — searchable information stored in one Project database.
-- **Viewed project** — the Project currently displayed in the Memory Map.
+- **Viewed project** — the Project currently displayed in the Memory Map. In
+  the current project-only Memory Map, ordinary memory views remain on the
+  Connected project; selecting another Project catalog entry shows metadata and
+  explains that its memory is not open. Pool results identify their source
+  Project instead.
 - **Connected project** — the Project connected to the current MCP or Memory
   Map session. New memory always saves here. When it differs from the Viewed
   project, say: “Viewing Project B. New memory still saves to Project A.”
@@ -50,6 +54,15 @@ and code identifiers.
   client connections are unchanged.”
 - **Automatic Pool recall** — optional proactive Pool-memory offer during a
   client session. It is project-local and Disabled by default.
+
+## Legacy recovery
+
+- **Legacy recovery** — the preview-first workflow for data from an earlier
+  shared-data installation. It is not a normal runtime mode.
+- **Recovery receipt** — a non-overwriting JSON record of a completed,
+  provenance-only legacy recovery apply. It records the verified backup,
+  selected Project ULIDs, results, and retained audit trail. It does not retire
+  or delete the original source.
 
 Pool names are unique after Unicode NFKC normalization, trimming, collapsing
 internal whitespace, and Unicode case-folding. The original spelling is kept

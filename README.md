@@ -8,6 +8,8 @@ The public vocabulary is defined in [NAMINGS.md](NAMINGS.md). In particular,
 BrainCell uses **Project**, **Build**, **Connect**, **Pool**, and **Decouple
 from Pool**. Earlier terms are compatibility or migration language only.
 See [CHANGELOG.md](CHANGELOG.md) for verified public release notes.
+For recovery from an older shared-data installation, see
+[the project-only migration guide](docs/project-only-migration.md).
 
 ## Current status
 
@@ -158,6 +160,9 @@ Project, and ordinary Recall remains Project-only.
 - A legacy shared installation or database is a recovery/migration concern,
   not a normal runtime mode. Do not delete it until the dedicated migration
   workflow has previewed, backed up, and verified the recovery.
+- A completed legacy recovery apply writes a non-overwriting receipt. It is not
+  a retirement action; retain the original source and verified backup until a
+  later, explicit retirement workflow is available.
 
 ## Development
 
