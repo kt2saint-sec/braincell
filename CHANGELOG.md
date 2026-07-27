@@ -20,6 +20,10 @@ details are intentionally excluded.
   local scope uses `.claude/settings.local.json`; intentional shareable scope
   uses `.claude/settings.json`.
 - Native Memory Map controls for Project-local skills and Automatic Pool recall.
+- Native Memory Map Commands controls for creating, adding to, decoupling from,
+  and deleting named Pools, plus explicit live Pool Search and Recall. These
+  controls manage ULID membership metadata only; they do not materialize a
+  shared memory database.
 
 ### Safety and behavior changes
 
@@ -30,6 +34,8 @@ details are intentionally excluded.
 - Automatic Pool recall stores a Pool name and stable Project ULID, never an
   absolute machine path, and does nothing outside the connected Project.
 - Pool membership changes never copy or delete Project memory.
+- Ordinary Memory Map scope remains the connected Project. Cross-project reads
+  require an explicitly named Pool action.
 
 ### Still in progress
 

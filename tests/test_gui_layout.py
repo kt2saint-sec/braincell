@@ -120,23 +120,15 @@ class TestLockedLayout:
         html = _page(tmp_path)
         assert ">8)dragMoved=true" in html, "dragMoved threshold must be 8px"
 
-    def test_global_brain_decorative_but_honest(self, tmp_path):
-        """Org node dims with an explanatory title when no global brain exists,
-        and never gains an onclick or .cell-g class."""
+    def test_no_global_memory_map_target(self, tmp_path):
+        """The native map does not present a shared/global memory target."""
         html = _page(tmp_path)
-        assert "org-missing" in html, "Missing the org-missing dimming class"
-        assert "<title>no global brain" in html, (
-            "Missing the SVG title explaining how to create the global brain"
-        )
-        assert "braincell build --mode global" in html
-        # the org group is built from these two template branches — neither
-        # carries an onclick or the interactive cell class
-        assert 'class="org-missing"><title>' in html
+        assert "GLOBAL BRAIN" not in html
 
-    def test_legend_leads_with_click_and_family_color(self, tmp_path):
+    def test_legend_leads_with_click_and_explicit_pool(self, tmp_path):
         html = _page(tmp_path)
         assert "Click a cell" in html, "Legend must lead with the click affordance"
-        assert "family's color" in html, "Legend must mention the family color ring"
+        assert "Commands → Pool" in html
 
 
 # ── C: Pass-2 command surface ─────────────────────────────────────────────────
@@ -144,12 +136,16 @@ class TestLockedLayout:
 class TestPass2Commands:
     def test_pool_card_wired(self, tmp_path):
         html = _page(tmp_path)
-        assert "cmdPool" in html, "Missing the cmdPool handler"
-        assert "/api/pool" in html, "cmdPool must post to /api/pool"
-        assert "cmdFamOptions" in html, "Missing the family select helper"
-        assert 'id="cmd-pool-fam"' in html
-        assert 'id="cmd-pool-all"' in html
-        assert 'id="cmd-pool-prune"' in html
+        assert "cmdPoolMembership" in html
+        assert "cmdLivePool" in html
+        assert "/api/pools" in html
+        assert 'id="cmd-pool-name"' in html
+        assert 'id="cmd-pool-query"' in html
+        assert "Create Pool" in html
+        assert "Add to Pool" in html
+        assert "Decouple from Pool" in html
+        assert "Search Pool" in html
+        assert "Recall from Pool" in html
 
     def test_skills_card_wired(self, tmp_path):
         html = _page(tmp_path)
@@ -176,10 +172,10 @@ class TestPass2Commands:
         )
         assert "GUI only" in html or "GUI server process only" in html or "THIS GUI" in html
 
-    def test_build_modal_reembed_and_global_checkboxes(self, tmp_path):
+    def test_build_modal_has_reembed_without_global_mode(self, tmp_path):
         html = _page(tmp_path)
         assert 'id="ing-reembed"' in html, "Missing the --reembed checkbox"
-        assert 'id="ing-global"' in html, "Missing the --mode global checkbox"
+        assert 'id="ing-global"' not in html, "Global build must not be a GUI option"
         assert "startIngestFromModal" in html, (
             "Build button must route through startIngestFromModal"
         )

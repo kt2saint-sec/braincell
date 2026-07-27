@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Optional
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from . import embed_spec
 from .embed import embed_query_async, embedder_status
@@ -33,10 +33,16 @@ from .install import claude_registered_map, registration_status
 from .log import get as _get_log
 from .mode import resolve_mode
 from .project_registry import (
+    add_to_pool,
     add_family_members,
+    create_pool,
+    decouple_from_pool,
+    delete_pool,
     load_families,
+    load_pools,
     load_path_registry,
     normalize_path,
+    pools_for_project,
     remove_family,
 )
 from .store import EmbedderMismatchError, SqliteStore
@@ -63,6 +69,24 @@ class _PoolBody(BaseModel):
     family: Optional[str] = None
     all_projects: bool = False
     prune: bool = False
+
+
+class _LivePoolQueryBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pool: str
+    query: str = ""
+    k: int = 10
+    rank: str = "hybrid"
+
+
+class _PoolMembershipBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: str
+    name: str
+    project_ids: Optional[list[str]] = None
+    project_id: Optional[str] = None
 
 
 # ── App factory ───────────────────────────────────────────────────────────────
@@ -129,6 +153,7 @@ def create_app(
             log.info("BrainCell GUI store closed")
 
     app = FastAPI(title="BrainCell GUI", lifespan=_lifespan)
+    app.state.seed_project_id = seed_project_id
 
     # ── A4: optional shared-secret guard on all /api/* routes ─────────────────
     if auth_token:
@@ -689,9 +714,131 @@ def create_app(
             }
         return {**data, "job": job}
 
+    @app.get("/api/pools")
+    async def api_pools(request: Request) -> dict:  # type: ignore[type-arg]
+        """Return passive Pool membership metadata, never memory rows."""
+        pools = load_pools()
+        connected = getattr(request.app.state, "seed_project_id", None)
+        return {
+            "pools": [
+                {
+                    "name": name,
+                    "project_ids": list(members),
+                    "connected": bool(connected and name in pools_for_project(connected)),
+                }
+                for name, members in pools.items()
+            ],
+            "connected_project_id": connected,
+        }
+
+    def _connected_pool_project(request: Request) -> str:
+        project_id = getattr(request.app.state, "seed_project_id", None)
+        if not project_id:
+            raise HTTPException(409, "Pool actions require a connected Project session.")
+        return project_id
+
+    @app.post("/api/pools/search")
+    async def api_pool_search(
+        request: Request, body: _LivePoolQueryBody
+    ) -> dict:  # type: ignore[type-arg]
+        """Search one explicitly named Pool through read-only member stores."""
+        from .federate import federated_search, plan_for_pool
+
+        connected = _connected_pool_project(request)
+        try:
+            plan = plan_for_pool(body.pool, connected)
+        except (KeyError, ValueError) as exc:
+            raise HTTPException(404, str(exc)) from exc
+        k = min(max(body.k, 1), 100)
+        try:
+            qvec = await embed_query_async(body.query)
+            mode = body.rank if body.rank in {"hybrid", "semantic", "keyword"} else "hybrid"
+        except Exception as exc:
+            qvec = np.zeros(embed_spec.DIM, dtype=np.float32)
+            mode = "keyword"
+            warning = f"Embedder unavailable; using keyword fallback. ({exc!r})"
+        else:
+            warning = None
+        hits = await federated_search(None, plan, qvec, body.query, k, mode)
+        return {
+            "pool": body.pool,
+            "connected_project_id": connected,
+            "warning": warning,
+            "hits": [
+                {
+                    "chunk_id": hit.chunk_id,
+                    "doc_key": hit.doc_key,
+                    "title": hit.title,
+                    "snippet": hit.snippet,
+                    "score": round(hit.score, 6),
+                    "source_path": hit.source_path,
+                }
+                for hit in hits
+            ],
+        }
+
+    @app.post("/api/pools/recall")
+    async def api_pool_recall(
+        request: Request, body: _LivePoolQueryBody
+    ) -> dict:  # type: ignore[type-arg]
+        """Recall one explicitly named Pool through read-only member stores."""
+        from .federate import federated_recall, plan_for_pool
+
+        connected = _connected_pool_project(request)
+        try:
+            plan = plan_for_pool(body.pool, connected)
+        except (KeyError, ValueError) as exc:
+            raise HTTPException(404, str(exc)) from exc
+        try:
+            qvec = await embed_query_async(body.query) if body.query.strip() else None
+        except Exception:
+            qvec = None
+        notes = await federated_recall(None, plan, qvec, min(max(body.k, 1), 100), qtext=body.query)
+        return {
+            "pool": body.pool,
+            "connected_project_id": connected,
+            "notes": [
+                {
+                    "id": note.id,
+                    "project_id": note.project_id,
+                    "kind": note.kind,
+                    "content": note.content,
+                }
+                for note in notes
+            ],
+        }
+
     # ── Write endpoints (only mounted when allow_writes=True) ─────────────────
 
     if allow_writes:
+
+        @app.post("/api/pools")
+        async def api_pool_membership(
+            request: Request, body: _PoolMembershipBody
+        ) -> dict:  # type: ignore[type-arg]
+            """Change Pool membership metadata only; never open a memory database."""
+            _connected_pool_project(request)
+            try:
+                if body.action == "create":
+                    pools = create_pool(body.name)
+                elif body.action == "add":
+                    if not body.project_ids:
+                        raise HTTPException(400, "Add to Pool requires project_ids.")
+                    add_to_pool(body.name, body.project_ids)
+                    pools = load_pools()
+                elif body.action == "decouple":
+                    if not body.project_id:
+                        raise HTTPException(400, "Decouple from Pool requires project_id.")
+                    decouple_from_pool(body.name, body.project_id)
+                    pools = load_pools()
+                elif body.action == "delete":
+                    delete_pool(body.name)
+                    pools = load_pools()
+                else:
+                    raise HTTPException(400, "Use create, add, decouple, or delete.")
+            except (KeyError, ValueError, RuntimeError) as exc:
+                raise HTTPException(409, str(exc)) from exc
+            return {"ok": True, "pools": pools}
 
         @app.post("/api/forget")
         async def api_forget(request: Request, body: _ForgetBody) -> dict:  # type: ignore[type-arg]

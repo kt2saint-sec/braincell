@@ -60,22 +60,15 @@ class TestActiveState:
             "Active init must run once — later loadAll() calls must not clobber a switch"
         )
 
-    def test_scope_params_follow_the_active_project(self, tmp_path):
-        """'This project' scopes to the ACTIVE project (not the last-clicked cell)."""
+    def test_scope_params_follow_the_connected_project(self, tmp_path):
+        """Ordinary Memory Map scope stays pinned to the connected project."""
         html = _page(tmp_path)
-        assert '"&projects="+encodeURIComponent(activeProjectId||seedProjectId||"")' in html, (
-            "scopeParams project branch must use activeProjectId"
-        )
+        assert '"&projects="+encodeURIComponent(seedProjectId||"")' in html
 
-    def test_scope_params_family_reseeds_from_active(self, tmp_path):
-        """Family federation appends &seed=<active> when active ≠ launch seed (B3)."""
+    def test_scope_params_has_no_implicit_pool_branch(self, tmp_path):
+        """Pool reads are explicit Commands actions, not an implicit scope."""
         html = _page(tmp_path)
-        assert '"&seed="+encodeURIComponent(activeProjectId)' in html, (
-            "Family branch must append &seed=<active>"
-        )
-        assert "activeProjectId&&activeProjectId!==seedProjectId" in html, (
-            "The seed param must be sent only when active ≠ launch seed"
-        )
+        assert '"&seed="+encodeURIComponent(activeProjectId)' not in html
 
     def test_url_rides_active_param_via_replace_state(self, tmp_path):
         """setActiveProject updates ?active= via history.replaceState (shareable tab)."""

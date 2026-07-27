@@ -80,7 +80,7 @@ class TestGlobalMissingA2:
 
     def test_template_has_global_cta(self):
         from braincell.gui_template import INDEX_HTML
-        assert "No global brain yet" in INDEX_HTML
+        assert "No global brain yet" not in INDEX_HTML
 
 
 # ── A3: launcher ──────────────────────────────────────────────────────────────

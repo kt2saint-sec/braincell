@@ -149,7 +149,7 @@ svg.stage:active{cursor:grabbing}
 .pool-btn.disabled rect{fill:rgba(200,207,216,.12)}
 .pool-btn.disabled text{fill:var(--silver-d)}
 .org-label{font-family:var(--disp);font-weight:700;font-size:12px;fill:var(--silver-h);text-anchor:middle;letter-spacing:.06em;paint-order:stroke;stroke:rgba(0,0,0,.5);stroke-width:3px}
-/* decorative-but-honest: no global brain yet → the org node dims (title explains) */
+/* Project cells are always rendered against their own memory boundary. */
 .org-missing{opacity:.45}
 
 /* ── empty/loading overlay ── */
@@ -350,21 +350,19 @@ svg.stage:active{cursor:grabbing}
     </div>
     <label class="searchbar">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-      <input id="global-q" placeholder="Search all memory…" oninput="draw()">
+      <input id="global-q" placeholder="Filter projects…" oninput="draw()">
     </label>
     <div class="active-wrap" id="active-wrap">
       <button class="active-chip" id="active-chip" onclick="openActiveDropdown()" title="Active project — whose memory you're viewing. Click to switch.">…</button>
       <div class="active-dd" id="active-dd" style="display:none"></div>
     </div>
     <div class="scope-seg" id="scope-seg" role="group" aria-label="Memory scope">
-      <button id="scope-project" onclick="setScope('project')" title="Only the active project's memory">This project</button>
-      <button id="scope-family" onclick="setScope('family')" title="Federated family recall from the active project">Family</button>
-      <button id="scope-all" class="active" onclick="setScope('all')" title="All projects — namespace-wide memory">All</button>
+      <button id="scope-project" class="active" onclick="setScope('project')" title="Only the connected project's memory">This project</button>
     </div>
     <div class="status" id="status-chips">
       <span class="chip"><span class="dot"></span>Mode <b id="c-mode">—</b></span>
       <span class="chip">Projects <b id="c-proj">—</b></span>
-      <span class="chip">Families <b id="c-pool">—</b></span>
+      <span class="chip">Pools <b id="c-pool">—</b></span>
       <span class="chip" id="chip-writes" style="display:none"></span>
       <span class="chip" id="chip-embedder" style="display:none" onclick="embedderChipClick()"><span class="dot"></span><b id="chip-embedder-txt">—</b></span>
       <span class="chip" id="chip-job" style="display:none"><span class="dot"></span><b id="chip-job-txt">building…</b></span>
@@ -372,14 +370,14 @@ svg.stage:active{cursor:grabbing}
   </header>
 
   <div class="stage-wrap">
-    <!-- Numbered setup path first (Project connection, then optional grouping),
+    <!-- Numbered setup path first (Project connection, then optional Pool),
          then a separator, then the un-numbered secondary actions. "Build
          memory (no MCP)" is deliberately NOT numbered: the Add-project wizard
          already builds, so labeling build-only "2" would teach a redundant
          rebuild — it is an ALTERNATIVE to step 1, not its successor. -->
     <div class="toolbar">
-      <button class="btn primary" id="add-repo-btn" onclick="openAddRepoModal()" title="Build memory, register the MCP, and optionally join a family">1 · ✚ Add project</button>
-      <button class="btn" id="new-family-btn" onclick="newPool()" title="Create a family — an opt-in cross-project recall grouping">2 · ＋ New family</button>
+      <button class="btn primary" id="add-repo-btn" onclick="openAddRepoModal()" title="Build project memory and connect BrainCell">1 · ✚ Add project</button>
+      <button class="btn" id="new-family-btn" onclick="openCommandsModal()" title="Create or manage a Pool">2 · ＋ Pool</button>
       <span class="tb-sep"></span>
       <button class="btn" id="build-btn" onclick="openIngestModal()" title="Build memory only — no MCP registration">⬇ Build memory (no MCP)</button>
       <button class="btn" id="cmd-btn" onclick="openCommandsModal()" title="Every braincell command — what it does and where to run it">★ Commands</button>
@@ -389,12 +387,9 @@ svg.stage:active{cursor:grabbing}
     </div>
     <svg class="stage" id="stage"></svg>
     <div class="legend">
-      <b>Click a cell</b> to open its inspector along the bottom · cells wear their <b>family's color</b> (ring) — hover glows neon green ·
-      <b>1 · ✚ Add project</b> builds a folder's memory and registers the MCP · <b>⬇ Build memory (no MCP)</b> builds only ·
-      <b>drag a cell into a membrane</b> to add it to that family ·
-      <b>drag it out</b> to remove ·
-      <b>click a family's ◉ Pool now</b> to fuse it into the global brain.
-      <br><b>New families save when you drop the first cell in.</b>
+      <b>Click a cell</b> to open its inspector along the bottom · hover glows neon green ·
+      <b>1 · ✚ Add project</b> builds project memory and connects BrainCell · <b>⬇ Build memory (no MCP)</b> builds only ·
+      <b>use Commands → Pool</b> to create memberships or run an explicit live Pool query.
       <br><b>★ Commands</b> lists every braincell command with instructions, plus the
       maintenance tools (consolidate, reflect, contradictions, backup, undo…).
       <br><b>? Help</b> replays the guided tour.
@@ -443,8 +438,8 @@ svg.stage:active{cursor:grabbing}
       <div class="sec" style="margin-top:12px">MCP</div>
       <div class="mcp-status" id="dr-mcp-status">—</div>
       <div class="dr-actions" id="dr-mcp-actions">
-        <button class="btn" id="dr-mcp-register-btn" onclick="mcpRegisterSelected()">Register MCP</button>
-        <button class="btn" id="dr-mcp-deregister-btn" onclick="mcpDeregisterSelected()">Deregister MCP</button>
+        <button class="btn" id="dr-mcp-register-btn" onclick="mcpRegisterSelected()">Connect BrainCell</button>
+        <button class="btn" id="dr-mcp-deregister-btn" onclick="mcpDeregisterSelected()">Disconnect BrainCell</button>
       </div>
       <div class="mcp-note" id="dr-mcp-note">To restart the MCP server, reconnect in your client — run <b>/mcp</b> in Claude Code. The GUI cannot restart it; it runs inside your MCP client.</div>
     </div>
@@ -624,44 +619,34 @@ async function apiFetchView(url){
   }catch(e){console.error("fetch err",url,e);return null;}
 }
 
-/* ════════ SCOPE TOGGLE (This project / Family / All) ════════ */
-/* Governs what memory the drawer's notes + search show, mapping to the EXISTING
-   /api/notes|/api/search params — no new backend capability:
-     · 'all'     → namespace-wide (no projects filter, no federate)
-     · 'project' → projects=<active project>   (existing scoped filter)
-     · 'family'  → federate=true               (existing seed-based fan-out)
-   Seed presence comes from /api/config. Without a launch seed (global-mode)
-   both 'project' and 'family' are meaningless → disabled, scope pinned to 'all'.
-   State is in-memory (persists across drawer/tab switches for the session); an
-   initial ?scope= is honoured when allowed. */
-let scopeMode="all", seedProjectId=null, federateAvailable=false;
+/* ════════ PROJECT-ONLY MEMORY SCOPE ════════ */
+/* Ordinary Memory Map search and Recall stay pinned to the connected project.
+   Cross-project reads are available only through an explicit named Pool action
+   in the Commands modal. */
+let scopeMode="project", seedProjectId=null, federateAvailable=false;
 (function(){const s=new URLSearchParams(location.search).get("scope");
-  if(s==="project"||s==="family"||s==="all")scopeMode=s;})();
+  if(s==="project")scopeMode=s;})();
 
 function applyScopeAvailability(){
-  const bp=document.getElementById("scope-project"),bf=document.getElementById("scope-family");
+  const bp=document.getElementById("scope-project");
   if(!federateAvailable){
-    bp.disabled=true;bf.disabled=true;
-    bp.title="Launch BrainCell on a project folder to scope to it";
-    bf.title="Launch BrainCell on a project folder to enable family recall";
-    scopeMode="all";
+    bp.disabled=true;
+    bp.title="Connect BrainCell to a project to view its memory";
   } else {
-    bp.disabled=false;bf.disabled=false;
+    bp.disabled=false;
     bp.title="Only the active project's memory";
-    bf.title="Federated family recall from the active project";
-    /* default to per-project when we know the seed (preserves the drawer's
-       per-project view); an explicit ?scope= above still wins */
-    if(!new URLSearchParams(location.search).get("scope"))scopeMode="project";
+    scopeMode="project";
   }
   syncScopeUi();
 }
 function syncScopeUi(){
-  ["all","project","family"].forEach(m=>{
+  ["project"].forEach(m=>{
     const b=document.getElementById("scope-"+m);
     if(b)b.classList.toggle("active",scopeMode===m);
   });
 }
 function setScope(m){
+  if(m!=="project")return;
   const b=document.getElementById("scope-"+m);
   if(!b||b.disabled)return;
   scopeMode=m;syncScopeUi();
@@ -677,14 +662,7 @@ function setScope(m){
    edge), so the two are never combined. Both branches follow the ACTIVE
    project; family additionally re-seeds the fan-out when active ≠ launch. */
 function scopeParams(){
-  if(scopeMode==="family"&&federateAvailable){
-    let p="&federate=true";
-    if(activeProjectId&&activeProjectId!==seedProjectId)
-      p+="&seed="+encodeURIComponent(activeProjectId);
-    return p;
-  }
-  if(scopeMode==="project")return "&projects="+encodeURIComponent(activeProjectId||seedProjectId||"");
-  return "";
+  return "&projects="+encodeURIComponent(seedProjectId||"");
 }
 
 /* ════════ ACTIVE PROJECT (viewing) vs LAUNCH PROJECT (managing) ════════
@@ -929,26 +907,11 @@ function draw(){
     const labelColor=famLabelFill(fi);
     s+=`<text class="mem-label" x="${c.x.toFixed(1)}" y="${ly.toFixed(1)}" text-anchor="middle" fill="${labelColor}">${esc(f.name)}</text>`;
     s+=`<text class="mem-count" x="${c.x.toFixed(1)}" y="${(ly+15).toFixed(1)}" text-anchor="middle">${c.n} cell${c.n!==1?"s":""}</text>`;
-    const poolDisabled=!status.allow_writes||!status.global_brain||!status.global_brain.exists;
-    const disAttr=poolDisabled?` class="pool-btn disabled"`:` class="pool-btn"`;
-    const titleAttr=poolDisabled
-      ?(!status.allow_writes?` title="read-only: launch with --allow-writes"`:`title="no global brain — run braincell build --mode global"`)
-      :``;
-    s+=`<g${disAttr}${titleAttr} transform="translate(${(c.x-34).toFixed(1)},${(ly+22).toFixed(1)})" onclick="poolFamily(${fi})"><rect width="68" height="22" rx="11"/><text x="34" y="15" text-anchor="middle">◉ Pool now</text></g>`;});
-  /* global organism — silver specular rim over gold core (owner request).
-     Decorative-but-honest: never clickable, and when no global brain exists it
-     dims (.org-missing) with a title saying how to create one. */
-  const orgMissing=!(status.global_brain&&status.global_brain.exists);
-  s+=orgMissing
-    ?`<g class="org-missing"><title>no global brain — run braincell build --mode global</title>`
-    :`<g>`;
-  s+=`<circle cx="${org.x}" cy="${org.y}" r="${org.r+20}" fill="rgba(200,207,216,.06)"/>`;
-  s+=`<circle cx="${org.x}" cy="${org.y}" r="${org.r+13}" fill="none" stroke="rgba(200,207,216,.22)" stroke-width="1"/>`;
-  s+=`<circle cx="${org.x}" cy="${org.y}" r="${org.r+7}" fill="none" stroke="rgba(238,242,246,.4)" stroke-width="1.3"/>`;
-  s+=`<circle cx="${org.x}" cy="${org.y}" r="${org.r+2}" fill="none" stroke="rgba(24,201,138,.6)" stroke-width="1.5"/>`;
-  s+=`<circle cx="${org.x}" cy="${org.y}" r="${org.r}" fill="url(#orgG)"/>`;
-  s+=`<text class="org-label" x="${org.x}" y="${org.y+org.r+18}">GLOBAL BRAIN</text>`;
-  s+=`</g>`;
+    /* Pool membership is managed from Commands; the map never materializes
+       pooled memory or offers a destructive Pool-now action. */
+  });
+  /* There is no global Memory Map target. Cross-project reads are explicit
+     live Pool actions and never rendered as a shared brain. */
   /* project cells: green nucleus + family-colored outer ring.
      Ring = first family's hue (~.85 alpha); no family → dimmed silver (~.35).
      Hover (JS-tracked hoveredId) is the primary interactive signal: neon
@@ -1162,17 +1125,14 @@ function openIngestModal(){
     `<label style="display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--mut);margin-top:12px">
        <input type="checkbox" id="ing-reembed"> Rebuild embeddings from scratch (--reembed)
      </label>
-     <label style="display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--mut);margin-top:8px">
-       <input type="checkbox" id="ing-global"> Build into the global brain (--mode global)
-     </label>`,
+    `,
     `<button class="btn" onclick="closeModal()">Cancel</button>
      <button class="btn primary" onclick="startIngestFromModal()">⬇ Build this folder</button>`);
   fsGo("");
 }
 function startIngestFromModal(){
   const reembed=!!(document.getElementById("ing-reembed")||{}).checked;
-  const globalMode=!!(document.getElementById("ing-global")||{}).checked;
-  startIngest(fsCur,null,{reembed,global:globalMode});
+  startIngest(fsCur,null,{reembed});
 }
 let _pendingPool=null,_jobPoll=null;
 async function startIngest(path,poolName,opts){
@@ -1225,7 +1185,8 @@ function watchJob(){
   },1500);
 }
 
-/* ════════ NEW POOL (modal: name + optional project folder) ════════ */
+/* Legacy family wizard retained internally for migration compatibility; the
+   supported Pool flow is the Commands modal and uses membership-only API. */
 function newPool(){
   openModal("New family","Name the family. Optionally pick a project folder to build straight into it.",
     `<div class="mo-label">Family name</div>
@@ -1327,8 +1288,8 @@ function arWatchBuild(){
 }
 function arStepInstall(){
   arStep=3;
-  openModal("Add a project — 3/4: Register MCP",
-    `Register the braincell MCP server for <b>${esc(arPath.split("/").pop())}</b>.`,
+  openModal("Add a project — 3/4: Connect BrainCell",
+    `Connect BrainCell for <b>${esc(arPath.split("/").pop())}</b>.`,
     `<div class="mo-label">MCP client</div>
      <select class="mo-input" id="ar-client">
        <option value="claude">claude</option>
@@ -1341,7 +1302,7 @@ function arStepInstall(){
      </select>
      <div id="ar-install-err" class="warn-note" style="display:none;margin-top:10px"></div>`,
     `<button class="btn" onclick="closeModal()">Cancel</button>
-     <button class="btn primary" onclick="arDoInstall()">Register MCP →</button>`);
+     <button class="btn primary" onclick="arDoInstall()">Connect BrainCell →</button>`);
 }
 async function arDoInstall(){
   const client=document.getElementById("ar-client").value;
@@ -1350,43 +1311,43 @@ async function arDoInstall(){
   try{
     const res=await apiPost("/api/install",{path:arPath,client,scope});
     arProjectId=res.project_id;arClient=client;
-    arStepFamily();
+    arStepPool();
   }catch(err){
     if(errBox){errBox.style.display="";errBox.textContent=err.message;}
   }
 }
-async function arStepFamily(){
+async function arStepPool(){
   arStep=4;
-  openModal("Add a project — 4/4: Family","Optional — most projects stay isolated. Group this project with siblings only if you want federated family recall across them.",
-    `<div id="ar-fam-body"><div class="fs-empty">Loading projects…</div></div>`,
+  openModal("Add a project — 4/4: Add to Pool","Optional — most projects stay isolated. Add this project to a named Pool only for intentional live cross-project Recall or Search.",
+    `<div id="ar-pool-body"><div class="fs-empty">Loading projects…</div></div>`,
     `<button class="btn" onclick="arFinish()">Skip — keep isolated</button>
-     <button class="btn primary" onclick="arDoFamily()">Add to family →</button>`);
+     <button class="btn primary" onclick="arDoPool()">Add to Pool →</button>`);
   const projs=await apiFetch("/api/projects");
-  const body=document.getElementById("ar-fam-body");
+  const body=document.getElementById("ar-pool-body");
   if(!body)return;
   const siblings=(projs||[]).filter(p=>p.project_id!==arProjectId);
-  body.innerHTML=`<div class="mo-label">Family name</div>
-    <input class="mo-input" id="ar-fam-name" placeholder="e.g. acme-suite">
-    <div class="mo-label">Sibling projects</div>
+  body.innerHTML=`<div class="mo-label">Pool name</div>
+    <input class="mo-input" id="ar-pool-name" placeholder="e.g. acme-suite">
+    <div class="mo-label">Other project members</div>
     <div class="fs-list" style="max-height:160px">${
       siblings.length
         ?siblings.map(p=>`<label class="fs-item" style="cursor:pointer">
-             <input type="checkbox" class="ar-fam-sib" value="${esc(p.path||"")}"> ${esc((p.path||"").replace(/\/$/,"").split("/").pop()||p.project_id)}
+             <input type="checkbox" class="ar-pool-sib" value="${esc(p.project_id||"")}"> ${esc((p.path||"").replace(/\/$/,"").split("/").pop()||p.project_id)}
            </label>`).join("")
         :`<div class="fs-empty">No other projects registered yet.</div>`
     }</div>`;
 }
-async function arDoFamily(){
-  const nameEl=document.getElementById("ar-fam-name");
+async function arDoPool(){
+  const nameEl=document.getElementById("ar-pool-name");
   const name=nameEl?nameEl.value.trim():"";
-  if(!name){toast("Give the family a name (or Skip)","err");return;}
-  const paths=[...document.querySelectorAll(".ar-fam-sib:checked")].map(el=>el.value);
-  paths.push(arPath);
+  if(!name){toast("Give the Pool a name (or Skip)","err");return;}
+  const project_ids=[...document.querySelectorAll(".ar-pool-sib:checked")].map(el=>el.value);
+  project_ids.push(arProjectId);
   try{
-    await apiPost("/api/family",{action:"add",name,paths});
-    toast(`Family "${name}" created`);
-    await refreshFamilies();
-  }catch(err){toast(`Family create failed: ${err.message}`,"err");}
+    await apiPost("/api/pools",{action:"create",name});
+    if(project_ids.length)await apiPost("/api/pools",{action:"add",name,project_ids});
+    toast(`Pool "${name}" created`);
+  }catch(err){toast(`Pool setup failed: ${err.message}`,"err");}
   arFinish();
 }
 function arFinish(){
@@ -1805,16 +1766,22 @@ function openCommandsModal(){
        next to the database — safe while in use; the source is never modified.</div>
        <div style="margin-top:6px"><button class="btn"${wdis()} onclick="cmdBackup()">⛁ Back up now</button></div></div>
 
-     <div class="note"><div class="k">pool</div>
-       <div class="c">Fuse a family's brains — or every project at once — into the global brain.
-       "prune deleted" also removes global rows whose source rows were deleted since the last pool.
-       (Each family's <b>◉ Pool now</b> button on the map does the plain single-family run.)</div>
+     <div class="note"><div class="k">Pool</div>
+       <div class="c">A Pool stores stable Project memberships only. Search and Recall read member
+       Project memory live and read-only; they never copy data into a shared database.</div>
        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:11.5px;color:var(--mut)">
-         <select class="mo-input" id="cmd-pool-fam" style="width:auto;padding:4px 8px"${families.length?"":' disabled title="No families yet — create one with ＋ New family; the all-projects checkbox still works"'}>${cmdFamOptions()}</select>
-         <label><input type="checkbox" id="cmd-pool-all"> all projects</label>
-         <label><input type="checkbox" id="cmd-pool-prune"> prune deleted</label>
-         <button class="btn"${wdis()} onclick="cmdPool()">Run</button>
-       </div></div>
+         <input class="mo-input" id="cmd-pool-name" placeholder="Pool name" style="width:140px">
+         <button class="btn"${wdis()} onclick="cmdPoolMembership('create')">Create Pool</button>
+         <button class="btn"${wdis()} onclick="cmdPoolMembership('add')">Add to Pool</button>
+         <button class="btn"${wdis()} onclick="cmdPoolMembership('decouple')">Decouple from Pool</button>
+         <button class="btn danger"${wdis()} onclick="cmdPoolMembership('delete')">Delete Pool</button>
+       </div>
+       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:11.5px;color:var(--mut)">
+         <input class="mo-input" id="cmd-pool-query" placeholder="Search or Recall query" style="width:220px">
+         <button class="btn" onclick="cmdLivePool('search')">Search Pool</button>
+         <button class="btn" onclick="cmdLivePool('recall')">Recall from Pool</button>
+       </div>
+       <div class="fs-list" id="cmd-pool-results" style="max-height:160px;margin-top:6px;display:none"></div></div>
 
      <div class="note"><div class="k">Project skills</div>
        <div class="c">Adds BrainCell skills inside the Viewed project. Existing edited copies are
@@ -1854,7 +1821,7 @@ function openCommandsModal(){
 
      <div class="mo-label">MCP status &amp; controls</div>
 
-     <div class="note"><div class="k">Deregister MCP</div>
+     <div class="note"><div class="k">Disconnect BrainCell</div>
        <div class="c">Removes the Project's BrainCell connection from a client. Project memory is untouched. VS Code removal is manual —
        the server returns instructions. To restart the MCP server, reconnect in your client —
        run /mcp in Claude Code.</div>
@@ -1865,7 +1832,7 @@ function openCommandsModal(){
          <select class="mo-input" id="cmd-un-scope" style="width:auto;padding:4px 8px">
            <option value="local">local</option><option value="project">project</option>
          </select>
-         <button class="btn danger"${wdis()} onclick="cmdUninstall()">Deregister MCP</button>
+         <button class="btn danger"${wdis()} onclick="cmdUninstall()">Disconnect BrainCell</button>
        </div></div>
 
      <div class="note"><div class="k">restart GUI</div>
@@ -1877,8 +1844,8 @@ function openCommandsModal(){
      <div class="note"><div class="k">build / sync</div><div class="c">Build a project folder's transcripts into its brain (sync = the same incremental run) → toolbar <b>⬇ Build memory (no MCP)</b>, or a cell's <b>⟳ Rebuild now</b>.</div></div>
      <div class="note"><div class="k">search / recall</div><div class="c">search = ranked document chunks; recall = curated memory notes → click a cell: the drawer's search box and Recent notes (scope toggle applies).</div></div>
      <div class="note"><div class="k">forget</div><div class="c">Soft-delete one note → the ✕ on any note in the drawer's Recent notes (writes on).</div></div>
-     <div class="note"><div class="k">family / pool</div><div class="c">Group projects and fuse them into the global brain → <b>＋ New family</b>, drag cells in/out, click a family's <b>◉ Pool now</b>.</div></div>
-     <div class="note"><div class="k">install</div><div class="c">Wire a project into an MCP client (build → register MCP → family) → toolbar <b>1 · ✚ Add project</b> wizard.</div></div>
+     <div class="note"><div class="k">Pool</div><div class="c">Create a named Pool, add Project memberships, and use Search Pool or Recall from Pool for explicit live read-only queries. Pools never copy project memory.</div></div>
+     <div class="note"><div class="k">Connect</div><div class="c">Build project memory and connect BrainCell to a client for this Project → toolbar <b>1 · ✚ Add project</b> wizard.</div></div>
      <div class="note"><div class="k">stats / clear / schedule</div><div class="c">Store counts live in each cell's drawer header; <b>✕ Clear memory</b> and <b>Auto-build</b> sit right beside them.</div></div>
 
      <div class="mo-label">Run from the CLI</div>
@@ -1983,32 +1950,36 @@ async function cmdBackup(){
     toast(`Backup written: ${r.path}`);
   }catch(err){toast(`Backup failed: ${err.message}`,"err");}
 }
-/* pool --all/--prune — the maintenance face of POST /api/pool (the map's
-   ◉ Pool now button stays the plain single-family run) */
-async function cmdPool(){
+async function cmdPoolMembership(action){
   if(!requireWrites())return;
-  const all=!!(document.getElementById("cmd-pool-all")||{}).checked;
-  const fam=((document.getElementById("cmd-pool-fam")||{}).value||"");
-  const prune=!!(document.getElementById("cmd-pool-prune")||{}).checked;
-  if(!all&&!fam){toast("Pick a family (or tick all projects)","err");return;}
+  const name=((document.getElementById("cmd-pool-name")||{}).value||"").trim();
+  const nd=nodes.find(n=>n.id===selected);
+  if(!name){toast("Enter a Pool name","err");return;}
+  if((action==="add"||action==="decouple")&&(!nd||!nd.id)){toast("Select a Viewed project first","err");return;}
+  const body={action,name};
+  if(action==="add")body.project_ids=[nd.id];
+  if(action==="decouple")body.project_id=nd.id;
   const go=async()=>{
-    try{
-      const res=await apiPost("/api/pool",{family:all?null:fam,all_projects:all,prune});
-      const pooled=res.pooled||[];
-      const totNotes=pooled.reduce((a,p)=>a+(p.notes_copied||0),0);
-      /* the endpoint has no top-level "pruned" — the real counts ride each
-         PoolStats row (notes_pruned/docs_pruned); summing res.pruned always
-         showed "pruned 0" no matter what was actually pruned */
-      const pruned=pooled.reduce((a,p)=>a+(p.notes_pruned||0)+(p.docs_pruned||0),0);
-      toast(`Pooled ${pooled.length} project(s) → global · ${totNotes} notes copied${prune?` · pruned ${pruned}`:""}`);
-      await loadAll();
-    }catch(err){toast(`Pool failed: ${err.message}`,"err");}
+    try{await apiPost("/api/pools",body);toast(`${action} completed for Pool ${name}`);}
+    catch(err){toast(`Pool ${action} failed: ${err.message}`,"err");}
   };
-  if(prune){
-    cmdConfirm("Prune removes global-brain rows whose source rows were deleted since the last pool. Run pool with --prune?",go);
-    return;
-  }
-  go();
+  if(action==="delete"||action==="decouple"){
+    cmdConfirm(`${action==="delete"?"Delete":"Decouple from"} Pool ${name}? Project memory and client connections are unchanged.`,go);
+  }else go();
+}
+async function cmdLivePool(kind){
+  const pool=((document.getElementById("cmd-pool-name")||{}).value||"").trim();
+  const query=((document.getElementById("cmd-pool-query")||{}).value||"").trim();
+  const el=document.getElementById("cmd-pool-results");
+  if(!pool){toast("Enter a Pool name","err");return;}
+  try{
+    const r=await apiPost(`/api/pools/${kind}`,{pool,query,k:10,rank:"hybrid"});
+    const rows=kind==="search"?(r.hits||[]):(r.notes||[]);
+    if(el){el.style.display="";el.innerHTML=rows.length
+      ?rows.map(x=>`<div class="fs-item" style="cursor:default"><span style="flex:1">${esc(x.content||x.snippet||x.title||"")}</span></div>`).join("")
+      :`<div class="fs-empty">No Pool results.</div>`;}
+    toast(`${kind==="search"?"Search":"Recall"} Pool returned ${rows.length} result(s)`);
+  }catch(err){toast(`Pool ${kind} failed: ${err.message}`,"err");}
 }
 async function cmdSkills(action){
   if(!requireWrites())return;
@@ -2115,14 +2086,14 @@ function updateStatusChips(){
 }
 function refreshCounts(){
   document.getElementById("c-proj").textContent=nodes.length;
-  document.getElementById("c-pool").textContent=families.length;
+  document.getElementById("c-pool").textContent="—";
 }
 /* Read-only affordance: the toolbar write buttons follow the wdis() pattern —
    disabled + explanatory title, instead of the click-then-fail toast. */
 function paintWriteButtons(){
-  [["add-repo-btn","Build memory, register the MCP, and optionally join a family"],
+  [["add-repo-btn","Build project memory and connect BrainCell"],
    ["build-btn","Build memory only — no MCP registration"],
-   ["new-family-btn","Create a family — an opt-in cross-project recall grouping"]]
+   ["new-family-btn","Create or manage a named Pool"]]
   .forEach(([id,tip])=>{
     const b=document.getElementById(id);
     if(!b)return;
@@ -2146,9 +2117,7 @@ function hideOverlay(){
    the tour runs; skipping with the map still empty brings the overlay back). */
 function paintOverlayState(){
   if(tourActive()){hideOverlay();return;}
-  if(status.mode==="global" && !(status.global_brain&&status.global_brain.exists)){
-    showOverlay("No global brain yet","Run <code>braincell build --mode global</code>, then reload.");
-  } else if(!nodes.length){
+  if(!nodes.length){
     showOverlay("No projects yet",status.allow_writes
       ?`Pick a project folder and BrainCell will absorb its memory.<br><button class="btn primary" onclick="openAddRepoModal()">✚ Add your first project</button>`
       :"Run braincell build <path> to index your first project.");
@@ -2356,16 +2325,16 @@ const TOUR_STEPS=[
   {t:null,title:"Welcome to BrainCell",
    body:`Every <b>project folder</b> you register gets its own brain — a private memory built from its transcripts and documents. This map shows each brain as a cell. Two minutes of tour shows you the whole flow.`},
   {t:"#add-repo-btn",title:"1 · Add project — the full setup",
-   body:`Pick a project folder, and BrainCell <b>Builds</b> its memory, <b>Registers the MCP</b> server so Claude Code's braincell tools work inside that folder, and optionally joins it to a <b>Family</b>. One wizard, four steps — this is the button for every folder you work in.`,
+   body:`Pick a project folder, and BrainCell <b>Builds</b> its memory, <b>Connects BrainCell</b> so client tools work inside that folder, and optionally adds it to a <b>Pool</b>. One wizard, four steps — this is the button for every folder you work in.`,
    cta:{label:"Open the wizard",run:"tourEnd(true);openAddRepoModal()"}},
   {t:"#build-btn",title:"Build only — no MCP",
    body:`This builds a folder's memory so you can search it <b>from this map and the CLI</b>, but wires nothing into an MCP client. Use it for reference material you only want to search — for folders where you'll actually run Claude Code, use <b>1 · Add project</b> instead.`},
-  {t:"#active-chip",title:"This window has ONE active project",
-   body:`You launched BrainCell from one project folder — the <b>active project</b>, shown in this chip and marked ACTIVE on the map. &ldquo;This project&rdquo; scopes search and notes to its brain; other cells are separate brains, viewed read-only here. Adding folders never merges memories — cross-project recall is always opt-in.`},
-  {t:"#new-family-btn",title:"2 · New family — optional grouping",
-   body:`A <b>Family</b> groups related project folders for cross-project recall. Brains stay physically separate — family recall fans out read-only and merges the ranking. Create one here, or drag a cell into a family's membrane on the map. Most projects are fine isolated — skipping this is the default.`},
-  {t:".stage-wrap",rect:"right",title:"Pool — the only fuse",
-   body:`<b>Pool</b> physically copies a family's brains into the separate global brain — the one action that merges data, and it's always an explicit click (<b>◉ Pool now</b> on a family). Until a global brain is built, that big cell stays dimmed.`},
+  {t:"#active-chip",title:"Connected and Viewed projects",
+   body:`The connected Project is the write boundary. You may view another Project read-only, but new memory still saves to the connected Project. Cross-project reads happen only through an explicitly named Pool action.`},
+  {t:"#new-family-btn",title:"2 · Pool — optional grouping",
+   body:`A <b>Pool</b> groups stable Project ULIDs for intentional live cross-project Search or Recall. Pools contain membership metadata only; they never copy memory. Create and manage one from Commands.`},
+  {t:".stage-wrap",rect:"right",title:"Project memory boundaries",
+   body:`Each Project keeps its own memory database. Use <b>Search Pool</b> or <b>Recall from Pool</b> for an explicit read-only query across named Pool members.`},
   {t:"#feed-rail",alt:"#rail-tab",title:"Watch memory happen",
    body:`The live feed streams notes and documents as they land. Project memory starts with built documents; curated notes accrue as you work.<br><br>You're set — start with <b>1 · Add project</b>. Replay this tour anytime from <b>? Help</b>.`},
 ];
@@ -2485,7 +2454,6 @@ addEventListener("resize",()=>{if(tourActive())tourReposition();});
 function size(){
   const r=stage.getBoundingClientRect();W=r.width;H=r.height;
   stage.setAttribute("viewBox",`0 0 ${W} ${H}`);
-  /* keep the GLOBAL BRAIN org node visible in the (possibly narrower) stage */
   org.x=W-110;org.y=H/2;
 }
 addEventListener("resize",()=>{size();if(_initDone&&nodes.length){initNodes();}});

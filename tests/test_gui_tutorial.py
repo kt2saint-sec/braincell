@@ -41,7 +41,7 @@ class TestNumberedToolbar:
     def test_numbered_happy_path_labels(self, tmp_path):
         html = _page(tmp_path)
         assert "1 · ✚ Add project" in html, "Missing numbered '1 · ✚ Add project'"
-        assert "2 · ＋ New family" in html, "Missing numbered '2 · ＋ New family'"
+        assert "2 · ＋ Pool" in html, "Missing numbered Pool action"
         assert "Family recall" not in html
 
     def test_add_project_still_first_and_primary(self, tmp_path):
@@ -145,14 +145,14 @@ class TestTourSteps:
 
     def test_core_teaching_points(self, tmp_path):
         steps = self._steps(tmp_path)
-        # (a) active project vs added directories
-        assert "active project" in steps
-        assert "never merges memories" in steps
+        # (a) connected project vs viewed directories
+        assert "connected Project" in steps
+        assert "never copy memory" in steps
         # (b) Add project vs Build memory (no MCP)
-        assert "Registers the MCP" in steps
+        assert "Connects BrainCell" in steps
         assert "wires nothing into an MCP client" in steps
-        # Pool is the only fuse; chunks-vs-notes gotcha
-        assert "the one action that merges data" in steps
+        # Pool is membership-only and live
+        assert "intentional live cross-project" in steps
         assert "curated notes accrue as you work" in steps
 
     def test_namings_canon_in_tour_copy(self, tmp_path):

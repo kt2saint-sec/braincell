@@ -79,11 +79,11 @@ class TestIndex:
         assert 'id="stage"' in r.text, 'Missing id="stage"'
         assert "#bcCell" in r.text, "Missing #bcCell"
 
-    def test_html_contains_pool_now(self, tmp_path):
-        """Memory-Map page carries Pool-now button text."""
+    def test_html_contains_pool_controls(self, tmp_path):
+        """Memory-Map page carries explicit Pool controls."""
         with TestClient(_app(tmp_path)) as client:
             r = client.get("/")
-        assert "Pool now" in r.text, "Missing 'Pool now'"
+        assert "Search Pool" in r.text and "Recall from Pool" in r.text
 
     def test_html_contains_memory_map(self, tmp_path):
         """Page title / heading references the memory map."""
@@ -106,15 +106,15 @@ class TestIndex:
             "Page JS must reference /api/pool or /api/family"
         )
 
-    def test_html_contains_scope_toggle(self, tmp_path):
-        """Page carries the 3-state scope toggle markup (This project/Family/All)."""
+    def test_html_contains_project_scope(self, tmp_path):
+        """Ordinary Memory Map scope is connected-project-only."""
         with TestClient(_app(tmp_path)) as client:
             r = client.get("/")
         assert 'id="scope-seg"' in r.text, 'Missing id="scope-seg"'
         assert 'id="scope-project"' in r.text, "Missing 'This project' scope button"
-        assert 'id="scope-family"' in r.text, "Missing 'Family' scope button"
-        assert 'id="scope-all"' in r.text, "Missing 'All' scope button"
-        assert "This project" in r.text and "Family" in r.text
+        assert 'id="scope-family"' not in r.text
+        assert 'id="scope-all"' not in r.text
+        assert "This project" in r.text
 
     def test_global_hook_toggle_is_absent(self, tmp_path):
         with TestClient(_app(tmp_path)) as client:
@@ -178,27 +178,20 @@ class TestPhase1Terminology:
         assert 'id="build-btn"' in r.text, 'Missing id="build-btn"'
         assert "Build memory (no MCP)" in r.text, "Missing build-only copy"
 
-    def test_new_family_button_and_family_terminology(self, tmp_path):
-        """Grouping is a 'family' everywhere: button, header chip, drawer tag."""
+    def test_pool_button_and_pool_terminology(self, tmp_path):
         with TestClient(_app(tmp_path)) as client:
             r = client.get("/")
         assert 'id="new-family-btn"' in r.text, 'Missing id="new-family-btn"'
-        assert "＋ New family" in r.text, "Missing '＋ New family' button copy"
-        assert 'Families <b id="c-pool">' in r.text, "Header chip must say 'Families'"
-        assert "no family" in r.text, "Drawer tag must say 'no family'"
-        # Stale copy must be gone; 'pool' survives ONLY as the fuse action.
-        assert "no pool" not in r.text
-        assert "New pool" not in r.text
-        assert "Pool now" in r.text, "The fuse button keeps the reserved 'Pool now'"
+        assert "＋ Pool" in r.text
+        assert 'Pools <b id="c-pool">' in r.text
+        assert "Create Pool" in r.text
+        assert "Pool now" not in r.text
 
-    def test_wizard_register_mcp_step_and_skip_copy(self, tmp_path):
-        """Wizard step 3 is 'Register MCP' (not 'Install'); step 4 skip is explicit."""
+    def test_wizard_connect_step_and_skip_copy(self, tmp_path):
         with TestClient(_app(tmp_path)) as client:
             r = client.get("/")
-        assert "Add a project — 3/4: Register MCP" in r.text, (
-            "Wizard step 3 must be titled 'Register MCP'"
-        )
-        assert "Register MCP →" in r.text, "Wizard step-3 button must say 'Register MCP →'"
+        assert "Add a project — 3/4: Connect BrainCell" in r.text
+        assert "Connect BrainCell →" in r.text
         assert "Skip — keep isolated" in r.text, (
             "Step-4 skip must say 'Skip — keep isolated'"
         )

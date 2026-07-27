@@ -103,24 +103,20 @@ class TestDockMcpBlock:
 # ── Commands modal regroup ────────────────────────────────────────────────────
 
 class TestCommandsModalRegroup:
-    def test_uninstall_row_renamed_deregister_mcp(self, tmp_path):
+    def test_uninstall_row_renamed_disconnect_braincell(self, tmp_path):
         html = _page(tmp_path)
-        assert '<div class="k">Deregister MCP</div>' in html, (
-            "The uninstall row must be titled Deregister MCP (NAMINGS)"
-        )
+        assert '<div class="k">Disconnect BrainCell</div>' in html
         assert '<div class="k">uninstall</div>' not in html, (
             "'uninstall' must not survive as GUI copy"
         )
-        assert 'onclick="cmdUninstall()">Deregister MCP<' in html, (
-            "The action button must read Deregister MCP"
-        )
+        assert 'onclick="cmdUninstall()">Disconnect BrainCell<' in html
 
     def test_deregister_grouped_with_restart_gui_under_mcp_label(self, tmp_path):
         """Both rows sit under one 'MCP status & controls' mo-label, mirroring
         the dock's mental model."""
         html = _page(tmp_path)
         label = html.index("MCP status &amp; controls")
-        dereg = html.index('<div class="k">Deregister MCP</div>')
+        dereg = html.index('<div class="k">Disconnect BrainCell</div>')
         restart = html.index('<div class="k">restart GUI</div>')
         maint = html.index("Maintenance tools")
         assert maint < label < dereg < restart, (
