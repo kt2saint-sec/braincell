@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 
 import pytest
@@ -11,6 +12,7 @@ from braincell.legacy_migration import (
     apply_legacy_migration,
     backup_legacy_database,
     inspect_legacy_database,
+    write_migration_receipt,
 )
 from braincell.config import get_db_path
 from braincell.store import SqliteStore
@@ -40,6 +42,10 @@ def _seed_legacy(path):
         con.execute(
             "INSERT INTO bc_documents "
             "(project_id, doc_key, title, pooled_from) VALUES ('A', 'a', 'A', 'A')"
+        )
+        con.execute(
+            "INSERT INTO bc_chunks (document_id, chunk_index, chunk_text, chunk_hash) "
+            "VALUES (1, 0, 'legacy chunk', X'01')"
         )
         con.execute(
             "INSERT INTO bc_documents (project_id, doc_key, title) VALUES ('B', 'b', 'B')"
@@ -110,7 +116,8 @@ def test_apply_migrates_only_provenance_rows_and_is_idempotent(tmp_path):
     first = apply_legacy_migration(source, backup, ["A"])
     assert first[0].notes_migrated == 1
     assert first[0].documents_migrated == 1
-    assert first[0].skipped_legacy_unclassified == 3
+    assert first[0].preserved_global_native == 0
+    assert first[0].skipped_legacy_unclassified == 1
     destination = get_db_path("A")
     con = sqlite3.connect(destination)
     try:
@@ -124,6 +131,60 @@ def test_apply_migrates_only_provenance_rows_and_is_idempotent(tmp_path):
     assert second[0].documents_migrated == 0
     assert second[0].notes_skipped == 1
     assert second[0].documents_skipped == 1
+
+
+def test_apply_repairs_missing_chunks_for_an_already_migrated_document(tmp_path):
+    source = tmp_path / "legacy.db"
+    backup = tmp_path / "backup.db"
+    _seed_legacy(source)
+    backup_legacy_database(source, backup)
+    apply_legacy_migration(source, backup, ["A"])
+
+    destination = get_db_path("A")
+    con = sqlite3.connect(destination)
+    try:
+        con.execute("DELETE FROM bc_chunks")
+        con.commit()
+    finally:
+        con.close()
+
+    repaired = apply_legacy_migration(source, backup, ["A"])
+    assert repaired[0].documents_skipped == 1
+    assert repaired[0].chunks_migrated == 1
+    con = sqlite3.connect(destination)
+    try:
+        assert con.execute("SELECT chunk_text FROM bc_chunks").fetchone()[0] == "legacy chunk"
+    finally:
+        con.close()
+
+
+def test_apply_writes_an_atomic_non_overwriting_recovery_receipt(tmp_path):
+    source = tmp_path / "legacy.db"
+    backup = tmp_path / "backup.db"
+    receipt_path = tmp_path / "receipt.json"
+    _seed_legacy(source)
+    backup_legacy_database(source, backup)
+
+    results = apply_legacy_migration(source, backup, ["A"])
+    receipt = write_migration_receipt(
+        source=source,
+        backup=backup,
+        results=results,
+        destination=receipt_path,
+    )
+
+    payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert receipt.selected_project_ids == ["A"]
+    assert payload["backup_sha256"]
+    assert payload["results"][0]["project_id"] == "A"
+    assert "bc_operations and bc_operation_notes remain" in payload["audit_trail"]
+    with pytest.raises(FileExistsError):
+        write_migration_receipt(
+            source=source,
+            backup=backup,
+            results=results,
+            destination=receipt_path,
+        )
 
 
 def test_apply_rolls_back_destination_on_failure(tmp_path):

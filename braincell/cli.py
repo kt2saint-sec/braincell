@@ -1430,7 +1430,7 @@ def cmd_legacy_service(args: argparse.Namespace) -> None:
 
 
 def cmd_legacy_migration(args: argparse.Namespace) -> None:
-    """Preview or back up legacy shared data; never migrates or retires it."""
+    """Preview, back up, or recover explicitly approved legacy shared data."""
     import json
     from .legacy_migration import (
         apply_legacy_migration,
@@ -1438,6 +1438,7 @@ def cmd_legacy_migration(args: argparse.Namespace) -> None:
         default_legacy_database,
         inspect_legacy_database,
         write_manifest,
+        write_migration_receipt,
     )
 
     source = Path(args.source).expanduser() if args.source else default_legacy_database()
@@ -1463,19 +1464,31 @@ def cmd_legacy_migration(args: argparse.Namespace) -> None:
         return
 
     if args.legacy_migration_cmd == "apply":
-        if not args.backup or not args.project_ids:
-            raise SystemExit("legacy-migration apply requires --backup and at least one --project-id")
+        if not args.backup or not args.project_ids or not args.receipt:
+            raise SystemExit(
+                "legacy-migration apply requires --backup, --receipt, and at least one --project-id"
+            )
         results = apply_legacy_migration(source, Path(args.backup), args.project_ids)
+        receipt = write_migration_receipt(
+            source=source,
+            backup=Path(args.backup),
+            results=results,
+            destination=Path(args.receipt),
+        )
+        if args.manifest:
+            manifest = Path(args.manifest).expanduser().resolve()
+            if manifest != Path(args.receipt).expanduser().resolve():
+                write_manifest(receipt, manifest)
         payload = [result.to_dict() for result in results]
         if args.json:
-            print(json.dumps(payload, indent=2, sort_keys=True))
+            print(json.dumps({"results": payload, "receipt": receipt.to_dict()}, indent=2, sort_keys=True))
         else:
             for result in results:
                 print(
-                    f"{result['project_id'] if isinstance(result, dict) else result.project_id}: "
-                    f"{result.notes_migrated if not isinstance(result, dict) else result['notes_migrated']} notes, "
-                    f"{result.documents_migrated if not isinstance(result, dict) else result['documents_migrated']} documents migrated"
+                    f"{result.project_id}: {result.notes_migrated} notes, "
+                    f"{result.documents_migrated} documents migrated"
                 )
+            print(f"Migration receipt: {args.receipt}")
         return
 
     if not args.destination:
@@ -1790,7 +1803,7 @@ def main(argv: list[str] | None = None) -> None:
 
     pmig = sub.add_parser(
         "legacy-migration",
-        help="Preview or back up legacy shared data; never applies or retires it.",
+        help="Preview, back up, or recover explicitly approved legacy shared data.",
     )
     migsub = pmig.add_subparsers(dest="legacy_migration_cmd", required=True)
     for action, help_text in (
@@ -1812,6 +1825,10 @@ def main(argv: list[str] | None = None) -> None:
             parser.add_argument("--destination", required=True, help="New backup path; never overwritten.")
         if action == "apply":
             parser.add_argument("--backup", required=True, help="Verified backup created before applying.")
+            parser.add_argument(
+                "--receipt", required=True,
+                help="New JSON recovery receipt; never overwritten.",
+            )
             parser.add_argument("--project-id", dest="project_ids", action="append", required=True,
                                 help="Explicit Project ULID to migrate; repeat for multiple Projects.")
         parser.set_defaults(func=cmd_legacy_migration)

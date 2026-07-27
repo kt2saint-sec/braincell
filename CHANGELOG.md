@@ -25,8 +25,10 @@ details are intentionally excluded.
   controls manage ULID membership metadata only; they do not materialize a
   shared memory database.
 - Read-only legacy migration inventory, verified SQLite backups, and an
-  explicit provenance-only apply command. Ambiguous rows remain untouched and
-  no legacy data is retired automatically.
+  explicit provenance-only apply command. Each apply now requires an atomic,
+  non-overwriting recovery receipt that records its verified backup, selected
+  Project ULIDs, exact results, and retained legacy audit trail. Ambiguous rows
+  remain untouched and no legacy data is retired automatically.
 
 ### Safety and behavior changes
 

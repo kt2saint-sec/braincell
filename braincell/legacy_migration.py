@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -70,6 +72,24 @@ class MigrationStats:
     skipped_legacy_unclassified: int = 0
     audit_rows_preserved_in_source: int = 0
     foreign_key_errors: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class LegacyMigrationReceipt:
+    """Durable record of one completed, provenance-only migration apply."""
+
+    completed_at: str
+    source: str
+    backup: str
+    backup_sha256: str
+    backup_bytes: int
+    selected_project_ids: list[str]
+    source_inventory: LegacyInventory
+    results: list[MigrationStats]
+    audit_trail: str
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -258,6 +278,16 @@ def _rebuild_fts(con: sqlite3.Connection) -> None:
             pass
 
 
+def _unclassified_rows(con: sqlite3.Connection, table: str, project_id: str) -> int:
+    """Count unattributed legacy rows belonging to one selected Project only."""
+    if table not in _tables(con) or "pooled_from" not in _table_columns(con, table):
+        return 0
+    return int(con.execute(
+        f"SELECT COUNT(*) FROM {table} WHERE project_id=? AND pooled_from IS NULL",
+        (project_id,),
+    ).fetchone()[0])
+
+
 def apply_legacy_migration(
     source: Path,
     backup: Path,
@@ -327,31 +357,31 @@ def apply_legacy_migration(
                             conflicts += 1
                         doc_map[int(row["id"])] = int(existing[0])
                         skipped_docs += 1
-                        continue
-                    values = {
-                        key: row[key] for key in doc_columns
-                        if key not in {"id", "pooled_from"} and key in row.keys()
-                    }
-                    values["project_id"] = project_id
-                    keys = list(values)
-                    cur = con.execute(
-                        f"INSERT INTO bc_documents ({', '.join(keys)}) VALUES ({', '.join('?' for _ in keys)})",
-                        [values[key] for key in keys],
-                    )
-                    doc_map[int(row["id"])] = int(cur.lastrowid)
-                    docs += 1
+                    else:
+                        values = {
+                            key: row[key] for key in doc_columns
+                            if key not in {"id", "pooled_from"} and key in row.keys()
+                        }
+                        values["project_id"] = project_id
+                        keys = list(values)
+                        cur = con.execute(
+                            f"INSERT INTO bc_documents ({', '.join(keys)}) VALUES ({', '.join('?' for _ in keys)})",
+                            [values[key] for key in keys],
+                        )
+                        doc_map[int(row["id"])] = int(cur.lastrowid)
+                        docs += 1
                     for chunk in src.execute(
                         "SELECT chunk_index, chunk_text, chunk_hash, embedding, run_id "
                         "FROM bc_chunks WHERE document_id=? ORDER BY chunk_index",
                         (row["id"],),
                     ):
-                        con.execute(
+                        chunk_result = con.execute(
                             "INSERT OR IGNORE INTO bc_chunks "
                             "(document_id, chunk_index, chunk_text, chunk_hash, embedding, run_id) "
                             "VALUES (?, ?, ?, ?, ?, ?)",
                             (doc_map[int(row["id"])], chunk[0], chunk[1], chunk[2], chunk[3], chunk[4]),
                         )
-                        chunks += 1
+                        chunks += int(chunk_result.rowcount > 0)
                     if failure_after is not None and docs >= failure_after:
                         raise RuntimeError("injected migration failure")
 
@@ -408,13 +438,17 @@ def apply_legacy_migration(
                 raise
             finally:
                 con.close()
-            legacy_notes = source_inventory.ambiguous_rows.get("memory_notes", 0)
-            legacy_docs = source_inventory.ambiguous_rows.get("bc_documents", 0)
+            legacy_notes = _unclassified_rows(src, "memory_notes", project_id)
+            legacy_docs = _unclassified_rows(src, "bc_documents", project_id)
             results.append(MigrationStats(
                 project_id=project_id, notes_migrated=notes, notes_skipped=skipped_notes,
                 documents_migrated=docs, documents_skipped=skipped_docs, chunks_migrated=chunks,
                 links_migrated=links, conflicts=conflicts,
-                preserved_global_native=legacy_notes + legacy_docs,
+                # A legacy shared database cannot reliably distinguish native
+                # rows from other unclassified rows.  Nothing is reclassified
+                # or moved automatically; the source + verified backup retain
+                # every such row for a separate review/export path.
+                preserved_global_native=0,
                 skipped_legacy_unclassified=legacy_notes + legacy_docs,
                 audit_rows_preserved_in_source=source_inventory.operation_rows + source_inventory.operation_note_rows,
             ))
@@ -423,12 +457,63 @@ def apply_legacy_migration(
     return results
 
 
-def write_manifest(value: LegacyInventory | LegacyBackup, destination: Path) -> Path:
-    """Write a human-readable JSON manifest without changing source data."""
+def _write_json_new(value: dict[str, Any], destination: Path) -> Path:
+    """Atomically write a JSON report, refusing to replace an existing record."""
     destination = Path(destination).expanduser().resolve()
+    if destination.exists():
+        raise FileExistsError(f"report destination already exists: {destination}")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(json.dumps(value.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary = destination.with_name(destination.name + ".tmp")
+    try:
+        with temporary.open("x", encoding="utf-8") as stream:
+            stream.write(json.dumps(value, indent=2, sort_keys=True) + "\n")
+        os.replace(temporary, destination)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
     return destination
+
+
+def write_manifest(
+    value: LegacyInventory | LegacyBackup | LegacyMigrationReceipt, destination: Path
+) -> Path:
+    """Write a human-readable JSON report without changing source data."""
+    return _write_json_new(value.to_dict(), destination)
+
+
+def write_migration_receipt(
+    *,
+    source: Path,
+    backup: Path,
+    results: list[MigrationStats],
+    destination: Path,
+) -> LegacyMigrationReceipt:
+    """Record a completed apply without touching the legacy source or backup.
+
+    The source audit tables remain in place because their note IDs and backup
+    paths are meaningful in the legacy store.  The receipt records that choice
+    explicitly so a later retirement action has a reviewable recovery trail.
+    """
+    source = Path(source).expanduser().resolve()
+    backup = Path(backup).expanduser().resolve()
+    inventory = inspect_legacy_database(source)
+    receipt = LegacyMigrationReceipt(
+        completed_at=datetime.now(timezone.utc).isoformat(),
+        source=str(source),
+        backup=str(backup),
+        backup_sha256=_sha256(backup),
+        backup_bytes=backup.stat().st_size,
+        selected_project_ids=[result.project_id for result in results],
+        source_inventory=inventory,
+        results=results,
+        audit_trail=(
+            "bc_operations and bc_operation_notes remain in the read-only legacy source "
+            "and verified backup; they are not copied because note IDs and backup paths require "
+            "a separate audited remapping workflow."
+        ),
+    )
+    _write_json_new(receipt.to_dict(), destination)
+    return receipt
 
 
 def default_legacy_database() -> Path:
