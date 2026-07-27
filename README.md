@@ -60,8 +60,7 @@ Install and start Ollama:
 
 Then download the verified embedding model:
 
-```bash
-ollama pull qwen3-embedding:4b
+
 ```bash
 ollama pull qwen3-embedding:4b
 ```
