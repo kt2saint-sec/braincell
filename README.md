@@ -160,7 +160,7 @@ Project, and ordinary Recall remains Project-only.
 
 ## Safety model
 
-- There is no normal all-Projects query.
+- There is no ordinary query that reads every Project.
 - There is no shared operational memory database.
 - Writes remain pinned to the Connected Project.
 - Pool reads are explicit; an ordinary Recall or Search never silently widens

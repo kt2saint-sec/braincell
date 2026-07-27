@@ -173,7 +173,7 @@ def preflight(
             lines.append(f"  MCP: registered — {', '.join(registered)}")
         else:
             lines.append(
-                "  MCP: not registered — the map's Register MCP button "
+                "  MCP: not registered — the map's Connect BrainCell control "
                 "(or `braincell connect`) wires it"
             )
     except Exception as exc:  # noqa: BLE001  # Client-config status is informational preflight data.

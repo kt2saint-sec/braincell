@@ -150,7 +150,7 @@ class TestPhase1Terminology:
     Canonical copy: 'Add project' (wizard) is the primary path, 'Build memory
     (no MCP)' is the demoted build-only path, the grouping is a 'family'
     ('pool' is reserved for the family→global fuse: '◉ Pool now'), and the
-    wizard's step 3 is 'Register MCP', never 'Install'.
+    wizard's step 3 is 'Connect BrainCell', never 'Install'.
     """
 
     def test_add_project_is_first_and_primary_toolbar_button(self, tmp_path):
@@ -183,13 +183,15 @@ class TestPhase1Terminology:
         assert "Pool now" not in r.text
 
     def test_wizard_register_mcp_step_and_skip_copy(self, tmp_path):
-        """Wizard step 3 is 'Register MCP' (not 'Install'); step 4 skip is explicit."""
+        """Wizard step 3 is 'Connect BrainCell' (not 'Install'); step 4 skip is explicit."""
         with TestClient(_app(tmp_path)) as client:
             r = client.get("/")
-        assert "Add a project — 3/4: Register MCP" in r.text, (
-            "Wizard step 3 must be titled 'Register MCP'"
+        assert "Add a project — 3/4: Connect BrainCell" in r.text, (
+            "Wizard step 3 must be titled 'Connect BrainCell'"
         )
-        assert "Register MCP →" in r.text, "Wizard step-3 button must say 'Register MCP →'"
+        assert "Connect BrainCell →" in r.text, (
+            "Wizard step-3 button must say 'Connect BrainCell →'"
+        )
         assert "Skip — keep isolated" in r.text, (
             "Step-4 skip must say 'Skip — keep isolated'"
         )

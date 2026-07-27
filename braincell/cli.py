@@ -1702,8 +1702,9 @@ def main(argv: list[str] | None = None) -> None:
     pse.add_argument(
         "--rank", choices=["hybrid", "semantic", "keyword"], default="hybrid",
         help=(
-            "Ranking strategy (default hybrid = RRF over vector + FTS5). NOT the "
-            "brain selector — that is --mode."
+            "Ranking strategy (default hybrid = RRF over vector + FTS5). Normal "
+            "Search reads only the connected Project; use `braincell pool search` "
+            "for an explicit named Pool."
         ),
     )
     pse.add_argument(

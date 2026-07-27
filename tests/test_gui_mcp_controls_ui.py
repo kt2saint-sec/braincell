@@ -39,7 +39,7 @@ class TestDockMcpBlock:
 
     def test_mcp_buttons_wired_to_handlers(self, tmp_path):
         html = _page(tmp_path)
-        assert 'onclick="mcpRegisterSelected()"' in html, "Register MCP button unwired"
+        assert 'onclick="mcpRegisterSelected()"' in html, "Connect BrainCell button unwired"
         assert 'onclick="mcpDeregisterSelected()"' in html, "Deregister MCP button unwired"
         for fn in ("function mcpStatusText", "function paintMcpBlock",
                    "function mcpRegisterSelected", "function mcpDeregisterSelected",
@@ -47,11 +47,11 @@ class TestDockMcpBlock:
             assert fn in html, f"Missing {fn}"
 
     def test_register_reuses_add_project_wizard_register_step(self, tmp_path):
-        """Register MCP prefills the path + jumps to the existing wizard step
+        """Connect BrainCell prefills the path + jumps to the existing wizard step
         — no new install flow."""
         html = _page(tmp_path)
         assert "arPath=nd.path;arProjectId=nd.id" in html, (
-            "Register MCP must prefill the wizard with the cell's path"
+            "Connect BrainCell must prefill the wizard with the cell's path"
         )
         assert "arStepInstall();" in html
 

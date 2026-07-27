@@ -159,7 +159,7 @@ class TestTourSteps:
 
     def test_namings_canon_in_tour_copy(self, tmp_path):
         """Tour copy draws from the canonical terminology: 'project folder',
-        Build, Register MCP, Family, Pool — never 'repo' or 'Ingest'."""
+        Build, Connect BrainCell, Pool — never 'repo' or 'Ingest'."""
         steps = self._steps(tmp_path)
         assert "project folder" in steps
         assert " repo" not in steps, "'repo' is deprecated copy"
