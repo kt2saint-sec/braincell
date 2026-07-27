@@ -1763,7 +1763,9 @@ function openCommandsModal(){
      <div class="mo-label">Run from the CLI</div>
      <div class="note"><div class="k">serve</div><div class="c">Runs the MCP stdio server process for a client — it is launched BY the MCP client (via install), not by this desktop app.</div></div>
      <div class="note"><div class="k">gui</div><div class="c">Starts this very app (<b>braincell gui --allow-writes</b> / braincell-map) — it cannot launch itself.</div></div>
-     <div class="note"><div class="k">register</div><div class="c">Mints a project ULID without building — subsumed here by Build memory / Add project, which register automatically.</div></div>`,
+     <div class="note"><div class="k">register</div><div class="c">Mints a project ULID without building — subsumed here by Build memory / Add project, which register automatically.</div></div>
+
+     <div style="margin-top:12px;text-align:center;font-size:11px;color:var(--mut)">BrainCell MCP © 2026 Karl Toussaint.</div>`,
     `<button class="btn" onclick="closeModal()">Close</button>`);
   if(_opsPoll===null)opsResume();
 }

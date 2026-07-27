@@ -41,6 +41,7 @@ _RUNNER = textwrap.dedent("""
         retired_family: !!document.getElementById('cmd-pool-fam'),
         retired_prune: !!document.getElementById('cmd-pool-prune'),
       };
+      out.attribution = document.body.textContent.includes('BrainCell MCP © 2026 Karl Toussaint.');
 
       const posted = [];
       const realPost = window.apiPost;
@@ -118,6 +119,9 @@ def modal_state(tmp_path_factory):
 
 
 class TestNamedPoolCommands:
+    def test_attribution_renders_in_commands_surface(self, modal_state):
+        assert modal_state["attribution"] is True
+
     def test_named_pool_controls_render_without_retired_materialization(self, modal_state):
         assert modal_state["controls"] == {
             "name": True,

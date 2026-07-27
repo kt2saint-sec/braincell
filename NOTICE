@@ -1,11 +1,10 @@
-braincell-mcp
+BrainCell MCP
 =============
 
-Copyright (c) 2026 Karl Toussaint (kt2saint)
-
-Licensed under the GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later);
-see LICENSE. A separate commercial license is available for use in proprietary /
-closed-source products — see COMMERCIAL-LICENSE.md.
+Copyright © 2026 Karl Toussaint
+GitHub: https://github.com/kt2saint-sec/braincell
+Released under AGPL-3.0-or-later; proprietary use requires the separate commercial license.
+See LICENSE and COMMERCIAL-LICENSE.md.
 
 
 Acknowledgements (prior art — no code from these projects is included)
