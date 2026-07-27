@@ -1885,7 +1885,13 @@ async function cmdLivePool(kind){
   try{
     const r=await apiPost(`/api/pools/${kind}`,{pool,query,k:10,rank:"hybrid"});
     const rows=kind==="search"?(r.hits||[]):(r.notes||[]);
-    if(el){el.style.display="";el.innerHTML=rows.length?rows.map(x=>`<div class="fs-item" style="cursor:default"><span style="flex:1">${esc(x.content||x.snippet||x.title||"")}</span></div>`).join(""):`<div class="fs-empty">No Pool results.</div>`;}
+    if(el){
+      const memberStatus=(r.member_status||[]).filter(m=>m.status!=="ready");
+      const statusRows=memberStatus.map(m=>`<div class="fs-item" style="cursor:default"><span style="flex:1">Skipped ${esc(m.project_id)} — ${esc(m.status)}: ${esc(m.detail||"")}</span></div>`).join("");
+      const resultRows=rows.map(x=>`<div class="fs-item" style="cursor:default"><span style="flex:1">${esc(x.content||x.snippet||x.title||"")}</span></div>`).join("");
+      el.style.display="";
+      el.innerHTML=(resultRows||`<div class="fs-empty">No Pool results.</div>`)+statusRows;
+    }
     toast(`${kind==="search"?"Search":"Recall"} Pool returned ${rows.length} result(s)`);
   }catch(err){toast(`Pool ${kind} failed: ${err.message}`,"err");}
 }
