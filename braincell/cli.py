@@ -218,6 +218,27 @@ def cmd_register(args: argparse.Namespace) -> None:
     print(f"Registered {root} → {pid}")
 
 
+def cmd_project_reassociate(args: argparse.Namespace) -> None:
+    """Associate an existing stable Project ULID with its moved directory."""
+    from .project_registry import reassociate_project_path
+    from .project_target import validate_project_target
+
+    target = validate_project_target(
+        args.new_path,
+        acknowledge_home=args.acknowledge_home,
+        acknowledge_non_git=args.acknowledge_non_git,
+        allow_privileged=args.allow_privileged,
+    )
+    try:
+        old_path, new_path = reassociate_project_path(args.project_id, target.path)
+    except (KeyError, ValueError) as exc:
+        raise SystemExit(f"braincell project reassociate: {exc}") from exc
+    print(f"Reassociated Project {args.project_id}")
+    print(f"  Old path: {old_path}")
+    print(f"  New path: {new_path}")
+    print("  Project memory and Pool memberships are unchanged.")
+
+
 def cmd_serve(_args: argparse.Namespace) -> None:
     from .server import main as serve_main
     serve_main()
@@ -1441,6 +1462,19 @@ def main(argv: list[str] | None = None) -> None:
     pr = sub.add_parser("register", help="Mint/confirm the project ULID (no ingest).")
     pr.add_argument("path", nargs="?", default=".", help="Project path (default: cwd).")
     pr.set_defaults(func=cmd_register)
+
+    pproject = sub.add_parser("project", help="Manage stable Project identity.")
+    projectsub = pproject.add_subparsers(dest="project_cmd", required=True)
+    preassociate = projectsub.add_parser(
+        "reassociate",
+        help="Associate an existing Project ULID with its moved folder.",
+    )
+    preassociate.add_argument("project_id", help="Stable Project ULID to preserve.")
+    preassociate.add_argument("new_path", help="Project's current folder.")
+    preassociate.add_argument("--acknowledge-home", action="store_true")
+    preassociate.add_argument("--acknowledge-non-git", action="store_true")
+    preassociate.add_argument("--allow-privileged", action="store_true")
+    preassociate.set_defaults(func=cmd_project_reassociate)
 
     pv = sub.add_parser("serve", help="Run the FastMCP stdio server.")
     pv.set_defaults(func=cmd_serve)

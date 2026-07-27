@@ -40,6 +40,7 @@ from .project_registry import (
     load_pools,
     load_path_registry,
     pools_for_project,
+    reassociate_project_path,
 )
 from .store import EmbedderMismatchError, SqliteStore
 
@@ -71,6 +72,16 @@ class _PoolMembershipBody(BaseModel):
     name: str
     project_ids: Optional[list[str]] = None
     project_id: Optional[str] = None
+
+
+class _ProjectReassociateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str
+    new_path: str
+    acknowledge_home: bool = False
+    acknowledge_non_git: bool = False
+    allow_privileged: bool = False
 
 
 # ── App factory ───────────────────────────────────────────────────────────────
@@ -684,6 +695,34 @@ def create_app(
             except (KeyError, ValueError, RuntimeError) as exc:
                 raise HTTPException(409, str(exc)) from exc
             return {"ok": True, "pools": pools}
+
+        @app.post("/api/projects/reassociate")
+        async def api_project_reassociate(
+            body: _ProjectReassociateBody,
+        ) -> dict:  # type: ignore[type-arg]
+            """Update one stable Project's current path; never touch its database."""
+            from .project_target import ProjectTargetError, validate_project_target
+
+            try:
+                target = validate_project_target(
+                    body.new_path,
+                    acknowledge_home=body.acknowledge_home,
+                    acknowledge_non_git=body.acknowledge_non_git,
+                    allow_privileged=body.allow_privileged,
+                )
+                old_path, new_path = reassociate_project_path(
+                    body.project_id, target.path
+                )
+            except (ProjectTargetError, KeyError, ValueError) as exc:
+                raise HTTPException(409, str(exc)) from exc
+            return {
+                "ok": True,
+                "project_id": body.project_id,
+                "old_path": str(old_path),
+                "new_path": str(new_path),
+                "memory_unchanged": True,
+                "pool_memberships_unchanged": True,
+            }
 
         @app.post("/api/forget")
         async def api_forget(request: Request, body: _ForgetBody) -> dict:  # type: ignore[type-arg]

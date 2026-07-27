@@ -412,6 +412,7 @@ svg.stage:active{cursor:grabbing}
       </div>
       <div class="dr-actions" id="dr-actions" style="display:none">
         <button class="btn" id="dr-rebuild-btn" onclick="reingestSelected()">⟳ Rebuild now</button>
+        <button class="btn" id="dr-reassociate-btn" onclick="reassociateSelected()">↪ Reassociate path</button>
         <button class="btn danger" id="dr-clear-btn" onclick="confirmClearSelected()">✕ Clear memory</button>
       </div>
       <div class="dr-sched" id="dr-sched" style="display:none">
@@ -1301,6 +1302,31 @@ function confirmClearSelected(){
     `<button class="btn" onclick="closeModal()">Cancel</button>
      <button class="btn danger" onclick="doClearSelected()">✕ Clear</button>`);
 }
+function reassociateSelected(){
+  const nd=nodes.find(n=>n.id===selected);if(!nd)return;
+  if(!requireWrites())return;
+  openModal("Reassociate Project path",
+    `Preserve <b>${esc(nd.name)}</b>'s stable ULID, memory database, and Pool memberships while recording its moved folder.<br><br>Old path: <code>${esc(nd.path||"unavailable")}</code>`,
+    `<div class="mo-label">New Project folder</div>
+     <input class="mo-input" id="rp-path" placeholder="/path/to/moved/project">
+     <label style="display:flex;gap:8px;margin-top:10px"><input type="checkbox" id="rp-nongit"> I intentionally selected a non-Git Project</label>`,
+    `<button class="btn" onclick="closeModal()">Cancel</button>
+     <button class="btn primary" onclick="doReassociateSelected()">Reassociate</button>`);
+}
+async function doReassociateSelected(){
+  const nd=nodes.find(n=>n.id===selected);if(!nd)return;
+  const path=(document.getElementById("rp-path")||{}).value||"";
+  const acknowledge_non_git=!!(document.getElementById("rp-nongit")||{}).checked;
+  try{
+    const result=await apiPost("/api/projects/reassociate",{
+      project_id:nd.id,new_path:path,acknowledge_non_git
+    });
+    closeModal();
+    toast(`Reassociated ${nd.name}: ${result.old_path} → ${result.new_path}`);
+    await loadAll();
+    const moved=nodes.find(n=>n.id===nd.id);if(moved)openDock(moved);
+  }catch(err){toast(`Reassociate failed: ${err.message}`,"err");}
+}
 async function doClearSelected(){
   const nd=nodes.find(n=>n.id===selected);if(!nd)return;
   const inclNotes=!!(document.getElementById("clr-notes")||{}).checked;
@@ -1364,6 +1390,7 @@ function openDock(nd){
 function paintInspectorRo(){
   const ro=!isLaunch();
   [["dr-rebuild-btn","Build this project's memory again now"],
+   ["dr-reassociate-btn","Record this Project's moved folder while preserving its stable identity"],
    ["dr-clear-btn","Wipe built docs & chunks — the next build re-absorbs everything fresh"]]
   .forEach(([id,tip])=>{
     const b=document.getElementById(id);
