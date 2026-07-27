@@ -7,6 +7,7 @@ starts it for, or exposes it to, Project B.
 The public vocabulary is defined in [NAMINGS.md](NAMINGS.md). In particular,
 BrainCell uses **Project**, **Build**, **Connect**, **Pool**, and **Decouple
 from Pool**. Earlier terms are compatibility or migration language only.
+See [CHANGELOG.md](CHANGELOG.md) for verified public release notes.
 
 ## Current status
 
