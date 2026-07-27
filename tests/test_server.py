@@ -467,3 +467,19 @@ class TestRecallScopeParameter:
         sig = inspect.signature(tool.fn)
         assert "scope" not in sig.parameters
         assert "projects" not in sig.parameters
+
+
+def test_mcp_entrypoint_help_exits_without_opening_store(monkeypatch, capsys):
+    """Release smoke: console-script --help must not start the MCP lifespan."""
+    from braincell import server
+
+    called = []
+    monkeypatch.setattr("sys.argv", ["braincell-mcp", "--help"])
+    monkeypatch.setattr(server.mcp, "run", lambda: called.append(True))
+
+    server.main()
+
+    assert called == []
+    help_text = capsys.readouterr().out
+    assert "braincell-mcp" in help_text
+    assert "connected Project" in help_text

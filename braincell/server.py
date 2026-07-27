@@ -915,6 +915,16 @@ async def list_pools() -> list[PoolInfo]:
 
 def main() -> None:
     """Run the FastMCP server on stdio (standard transport for `claude mcp add`)."""
+    import sys
+
+    if any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
+        print(
+            "usage: braincell-mcp\n\n"
+            "Run the BrainCell MCP stdio server for the connected Project.\n"
+            "The client registration supplies BRAINCELL_STORE=sqlite and "
+            "BRAINCELL_PROJECT_ID."
+        )
+        return
     mcp.run()
 
 
