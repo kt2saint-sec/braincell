@@ -10,11 +10,11 @@ readme = "README.md"
 requires-python = ">=3.11"
 # Dual-licensed: AGPL-3.0-or-later (LICENSE) + a separate commercial license
 # (COMMERCIAL-LICENSE.md) for proprietary/closed-source use.
-license = { file = "LICENSE" }
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE", "COMMERCIAL-LICENSE.md"]
 authors = [{ name = "Karl Toussaint", email = "kt2saint.create@gmail.com" }]
 keywords = ["mcp", "memory", "embeddings", "sqlite", "claude", "rag"]
 classifiers = [
-    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
     "Programming Language :: Python :: 3",
     "Topic :: Software Development :: Libraries",
 ]
