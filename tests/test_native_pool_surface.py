@@ -60,7 +60,7 @@ def test_native_memory_map_exercises_all_pool_actions(tmp_path):
     """), encoding="utf-8")
     process = subprocess.run(
         [sys.executable, str(runner), str(page)], capture_output=True, text=True,
-        timeout=60,
+        timeout=60, check=False,
         env={**os.environ, "QT_QPA_PLATFORM": "offscreen", "QTWEBENGINE_CHROMIUM_FLAGS": "--no-sandbox"},
     )
     assert process.returncode == 0, process.stderr[-2000:]

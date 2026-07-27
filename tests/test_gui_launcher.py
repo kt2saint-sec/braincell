@@ -140,7 +140,7 @@ class TestInstallLauncherA3:
         from braincell.gui import install_launcher
 
         install_launcher(tmp_path)
-        icon, desktop = install_launcher(tmp_path)  # second run must not error
+        _icon, desktop = install_launcher(tmp_path)  # second run must not error
         assert list((xdg / "applications").glob("*.desktop")) == [desktop]
 
     def test_main_map_calls_run_gui_with_documented_kwargs(self, monkeypatch):

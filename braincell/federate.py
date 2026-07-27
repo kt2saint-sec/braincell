@@ -45,12 +45,13 @@ import os
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 from . import embed_spec
 from .config import get_db_path
 from .log import get as _get_log
-from .mode import resolve_mode  # legacy compatibility path; ordinary Pool queries use plan_for_pool
+from .mode import (
+    resolve_mode,  # legacy compatibility path; ordinary Pool queries use plan_for_pool
+)
 from .project_registry import resolve_family_ulids, resolve_pool, resolve_ulid_to_path
 from .schema import MEMORY_SCHEMA_VERSION
 from .store import Hit, Note, SqliteStore
@@ -172,7 +173,7 @@ def resolve_pool_targets(
                 continue
             targets.append(FederationTarget(project_id, db, fingerprint_ok))
             member_status.append(PoolMemberStatus(project_id, "ready", "Opened read-only for this Pool query."))
-        except Exception as exc:  # one malformed registry member must not fail the Pool
+        except Exception as exc:  # noqa: BLE001  # One malformed member must not fail an explicit Pool query.
             log.warning("pool %s: skip %s (%r)", display_name, project_id, exc)
             member_status.append(PoolMemberStatus(project_id, "unavailable", str(exc)))
     return display_name, targets, member_status
@@ -197,7 +198,7 @@ def _mark_pool_member(plan: FederationPlan, project_id: str, status: str, detail
 
 def _read_fingerprint_and_version_ro(
     db_path: Path,
-) -> Optional[tuple[Optional[str], Optional[int]]]:
+) -> tuple[str | None, int | None] | None:
     """Read a sibling's embed fingerprint + schema version READ-ONLY (no writes).
 
     Uses ``file:…?mode=ro`` so the probe never migrates or checkpoints the sibling.
@@ -276,17 +277,17 @@ def resolve_federation_targets(seed_pid: str) -> list[FederationTarget]:
                 log.warning("federate: skip %s (embed fingerprint mismatch, STRICT)", pid)
                 continue
             targets.append(FederationTarget(project_id=pid, db_path=db, fingerprint_ok=fp_ok))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001  # Legacy compatibility discovery skips malformed members.
             log.warning("federate: skip %s (resolution error: %r)", pid, exc)
             continue
     return targets
 
 
 def build_federation_plan(
-    project: Optional[str],
+    project: str | None,
     scope: str,
-    projects: Optional[list[str]],
-) -> Optional[FederationPlan]:
+    projects: list[str] | None,
+) -> FederationPlan | None:
     """Return a FederationPlan when this recall should federate, else None.
 
     Federates ONLY when: the flag is on, the engine is in PROJECT mode, the caller
@@ -404,7 +405,7 @@ async def federated_recall(
     k: int,
     *,
     qtext: str = "",
-    min_cosine: Optional[float] = None,
+    min_cosine: float | None = None,
     dedup: bool = True,
     include_superseded: bool = False,
 ) -> list[Note]:
@@ -447,7 +448,7 @@ async def federated_recall(
                 # Strip graph-expansion "also-see" notes: second-degree hits should
                 # not compete with direct hits from other members in the merge.
                 return target.project_id, [n for n in notes if not n.expansion]
-            except Exception as exc:  # fail-degrade: one bad member never kills recall
+            except Exception as exc:  # noqa: BLE001  # One unreadable Pool member must not kill recall.
                 log.warning("federate: member %s skipped (%r)", target.project_id, exc)
                 _mark_pool_member(plan, target.project_id, "query-failed", str(exc))
                 return target.project_id, []
@@ -506,7 +507,7 @@ def _rrf_merge_hits(
     for pid, hits in ranked_lists:
         weight = active_weight if pid == seed_pid else 1.0
         for rank, hit in enumerate(hits, start=1):
-            key = hashlib.sha256(f"{hit.doc_key}\n{hit.snippet}".encode("utf-8")).hexdigest()
+            key = hashlib.sha256(f"{hit.doc_key}\n{hit.snippet}".encode()).hexdigest()
             scores[key] = scores.get(key, 0.0) + weight / (k_rrf + rank)
             if key not in best_rank or rank < best_rank[key]:
                 best_rank[key] = rank
@@ -532,7 +533,7 @@ def _dedup_hits(hits: list[Hit]) -> list[Hit]:
     seen: set[str] = set()
     out: list[Hit] = []
     for hit in hits:
-        h = hashlib.sha256(f"{hit.doc_key}\n{hit.snippet}".encode("utf-8")).hexdigest()
+        h = hashlib.sha256(f"{hit.doc_key}\n{hit.snippet}".encode()).hexdigest()
         if h in seen:
             continue
         seen.add(h)
@@ -568,7 +569,7 @@ async def federated_search(
                     qvec, qtext, target.project_id, fetch_k, use_mode, rerank=False
                 )
                 return target.project_id, hits
-            except Exception as exc:  # fail-degrade
+            except Exception as exc:  # noqa: BLE001  # One unreadable Pool member must not kill search.
                 log.warning("federate(search): member %s skipped (%r)", target.project_id, exc)
                 _mark_pool_member(plan, target.project_id, "query-failed", str(exc))
                 return target.project_id, []

@@ -50,7 +50,7 @@ openai = ["openai>=1.40.0,<3"]   # hosted embed provider (text-embedding-3-*)
 # base dependencies. Existing `[gui]` and `[native]` install commands remain valid.
 native = []
 gui = []
-dev = ["pytest>=8.0.0,<9", "ruff>=0.6.0,<1"]
+dev = ["pytest>=8.0.0,<9", "ruff==0.16.0"]
 
 [project.scripts]
 braincell-mcp = "braincell.server:main"

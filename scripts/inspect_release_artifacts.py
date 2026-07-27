@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Fail closed when release archives contain local-only development material."""
 
 from __future__ import annotations
@@ -7,7 +6,6 @@ import sys
 import tarfile
 import zipfile
 from pathlib import Path
-
 
 FORBIDDEN_PARTS = (".env", ".git/", "uv.lock", "__pycache__", ".pytest_cache", "evals/")
 

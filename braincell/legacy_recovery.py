@@ -13,11 +13,12 @@ import hashlib
 import json
 import os
 import sqlite3
+from collections.abc import Iterable
 from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from .config import DATA_NAMESPACE, get_db_path
 from .project_registry import load_path_registry
@@ -141,7 +142,7 @@ def _schema_version(connection: sqlite3.Connection) -> int:
 
 def _route(row: sqlite3.Row, registered: set[str]) -> tuple[str | None, str]:
     project_id = str(row["project_id"] or "").strip()
-    pooled_from = str(row["pooled_from"] or "").strip() if "pooled_from" in row.keys() else ""
+    pooled_from = str(row["pooled_from"] or "").strip() if "pooled_from" in row.keys() else ""  # noqa: SIM118  # sqlite3.Row membership checks values, not column names.
     if pooled_from:
         if pooled_from != project_id:
             return None, "ambiguous_pooled_from_conflict"
@@ -207,7 +208,7 @@ def preview(source_path: Path | None = None) -> dict[str, Any]:
 
 
 def _backup_database(source: Path, kind: str, backup_dir: Path | None = None) -> Path:
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     directory = (backup_dir or source.parent).expanduser().resolve()
     directory.mkdir(parents=True, exist_ok=True)
     destination = directory / f"{source.stem}.{kind}-backup-{timestamp}.db"
@@ -226,7 +227,7 @@ def create_backup(source: Path, backup_dir: Path | None = None) -> Path:
 
 
 def _value(row: sqlite3.Row, name: str, default: Any = None) -> Any:
-    return row[name] if name in row.keys() else default
+    return row[name] if name in row.keys() else default  # noqa: SIM118  # sqlite3.Row membership checks values and has no mapping get().
 
 
 def _note_uid(note: sqlite3.Row) -> str:
@@ -351,7 +352,7 @@ def _verify(
             for link in source.execute("SELECT * FROM bc_note_links"):
                 if link["src_id"] in note_map and link["dst_id"] in note_map:
                     expected_links.add((note_map[link["src_id"]], note_map[link["dst_id"]], link["kind"], link["weight"], link["created_at"]))
-        actual_links = set(tuple(row) for row in dest.execute("SELECT src_id,dst_id,kind,weight,created_at FROM bc_note_links WHERE src_id IN ({0}) AND dst_id IN ({0})".format(_placeholders(list(note_map.values()))), list(note_map.values()) * 2)) if note_map else set()
+        actual_links = {tuple(row) for row in dest.execute("SELECT src_id,dst_id,kind,weight,created_at FROM bc_note_links WHERE src_id IN ({0}) AND dst_id IN ({0})".format(_placeholders(list(note_map.values()))), list(note_map.values()) * 2)} if note_map else set()
         if expected_links != actual_links:
             failures.append("note_links")
         foreign_keys = dest.execute("PRAGMA foreign_key_check").fetchall()

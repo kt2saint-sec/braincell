@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request
@@ -37,8 +37,8 @@ from .project_registry import (
     create_pool,
     decouple_from_pool,
     delete_pool,
-    load_pools,
     load_path_registry,
+    load_pools,
     pools_for_project,
     reassociate_project_path,
 )
@@ -70,8 +70,8 @@ class _PoolMembershipBody(BaseModel):
 
     action: str
     name: str
-    project_ids: Optional[list[str]] = None
-    project_id: Optional[str] = None
+    project_ids: list[str] | None = None
+    project_id: str | None = None
 
 
 class _ProjectReassociateBody(BaseModel):
@@ -90,11 +90,11 @@ def create_app(
     *,
     db_path: Path,
     allow_writes: bool = False,
-    auth_token: Optional[str] = None,
+    auth_token: str | None = None,
     cookie_name: str = "bc_gui_token",
-    seed_project_id: Optional[str] = None,
-    restart_argv: Optional[list[str]] = None,
-    native_bridge: Optional["NativeBridge"] = None,
+    seed_project_id: str | None = None,
+    restart_argv: list[str] | None = None,
+    native_bridge: NativeBridge | None = None,
 ) -> FastAPI:
     """Build and return a FastAPI application backed by a SqliteStore on db_path.
 
@@ -129,7 +129,7 @@ def create_app(
         log.info("BrainCell GUI store opened: %s", db_path)
         app.state.store = store
         # Scheduled ingestion runs only while the GUI server is up (local tool).
-        sched_task: Optional[asyncio.Task] = None
+        sched_task: asyncio.Task | None = None
         if allow_writes:
             from .gui_ingest import scheduler_loop
             sched_task = asyncio.ensure_future(scheduler_loop(app.state.ingest_manager))
@@ -182,12 +182,12 @@ def create_app(
     def _store(request: Request) -> SqliteStore:
         return request.app.state.store  # type: ignore[return-value]
 
-    def _split_projects(projects: str) -> Optional[list[str]]:
+    def _split_projects(projects: str) -> list[str] | None:
         """Split a comma-separated projects query param into a list or None."""
         parts = [p.strip() for p in projects.split(",") if p.strip()]
         return parts if parts else None
 
-    def _normal_project_filter(request: Request, projects: str, operation: str) -> Optional[list[str]]:
+    def _normal_project_filter(request: Request, projects: str, operation: str) -> list[str] | None:
         """Return the connected Project filter for an ordinary GUI operation.
 
         A Memory Map owns one already-open Project store. Cross-Project reads
@@ -275,7 +275,7 @@ def create_app(
         status = await store.ingest_status(None)
         try:
             embedder = await anyio.to_thread.run_sync(embedder_status)
-        except Exception as exc:  # defensive — the probe itself never raises
+        except Exception as exc:  # noqa: BLE001  # Status must remain available when an external probe fails.
             embedder = {
                 "provider": embed_spec.PROVIDER, "model": embed_spec.MODEL,
                 "dim": embed_spec.DIM, "reachable": False,
@@ -300,7 +300,7 @@ def create_app(
                         for name, info in reg.items()
                         if info.get("registered")
                     ]
-                except Exception:  # detection must never break /api/status
+                except Exception:  # noqa: BLE001, S110  # Optional client-config detection must not break status.
                     pass
         return {
             "indexed": status.indexed,
@@ -340,7 +340,7 @@ def create_app(
                 u for u in load_path_registry().values() if u != seed_project_id
             ]
             suggest_tour = status.doc_count == 0 and not others
-        except Exception:  # best-effort signal — never break SPA bootstrap
+        except Exception:  # noqa: BLE001  # Best-effort bootstrap data must never break the native map.
             suggest_tour = False
         from .config import get_tour_seen_path
         return {
@@ -390,7 +390,7 @@ def create_app(
             reg_map = await anyio.to_thread.run_sync(
                 lambda: claude_registered_map(reg_paths)
             )
-        except Exception:  # detection must never break the map
+        except Exception:  # noqa: BLE001  # Optional client-config discovery must not break the map.
             reg_map = {}
         return sorted(
             [
@@ -431,12 +431,12 @@ def create_app(
         proj_filter = _normal_project_filter(request, projects, "Recall")
 
         qvec = None
-        warning: Optional[str] = None
+        warning: str | None = None
 
         if q.strip():
             try:
                 qvec = await embed_query_async(q)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001  # Embedder failures deliberately use keyword fallback.
                 warning = (
                     f"Embedder unavailable; using keyword/recency fallback. ({exc!r})"
                 )
@@ -494,12 +494,12 @@ def create_app(
         )
         proj_filter = _normal_project_filter(request, projects, "Search")
 
-        warning: Optional[str] = None
+        warning: str | None = None
         effective_mode = mode
 
         try:
             qvec = await embed_query_async(q)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001  # Embedder failures deliberately use keyword fallback.
             # Embedder down: fall back to keyword-only.  A zero vector is safe
             # because _vector_search is never called in keyword mode.
             qvec = np.zeros(embed_spec.DIM, dtype=np.float32)
@@ -610,7 +610,7 @@ def create_app(
         try:
             qvec = await embed_query_async(body.query)
             mode = body.rank if body.rank in {"hybrid", "semantic", "keyword"} else "hybrid"
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001  # Pool search uses keyword fallback when embeddings are unavailable.
             qvec = np.zeros(embed_spec.DIM, dtype=np.float32)
             mode = "keyword"
             warning = f"Embedder unavailable; using keyword fallback. ({exc!r})"
@@ -649,7 +649,7 @@ def create_app(
             raise HTTPException(403, str(exc)) from exc
         try:
             qvec = await embed_query_async(body.query) if body.query.strip() else None
-        except Exception:
+        except Exception:  # noqa: BLE001  # Pool recall deliberately falls back to lexical/recency results.
             qvec = None
         notes = await federated_recall(
             None, plan, qvec, min(max(body.k, 1), 100), qtext=body.query
@@ -799,11 +799,11 @@ def _resolve_gui_token() -> str:
 
 def run_gui(
     *,
-    mode: Optional[str],
+    mode: str | None,
     port: int,
     allow_writes: bool,
     path: str = ".",
-    url_extra_query: Optional[str] = None,
+    url_extra_query: str | None = None,
     restart_command: str = "gui",
 ) -> None:
     """Resolve the brain, build the app, and run the native GUI.
@@ -933,7 +933,7 @@ def _xdg_data_home() -> Path:
 _ICON_PNG_SIZES = (48, 128, 256, 512)
 
 
-def install_launcher(project_path: Optional[Path] = None) -> tuple[Path, Path]:
+def install_launcher(project_path: Path | None = None) -> tuple[Path, Path]:
     """Install the desktop icon + .desktop entry (idempotent). Returns (icon, desktop).
 
     ``project_path`` is the project folder the icon launches (default: cwd).

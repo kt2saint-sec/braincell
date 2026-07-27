@@ -26,7 +26,6 @@ import json
 import os
 import unicodedata
 from pathlib import Path
-from typing import Optional
 
 from .catalog_io import atomic_write_json, catalog_lock
 from .config import get_families_path, get_path_registry_path, get_pools_path
@@ -105,10 +104,10 @@ def reassociate_project_path(ulid: str, path: str | Path) -> tuple[Path, Path]:
         return Path(old_paths[0]), Path(key)
 
 
-def resolve_ulid_to_path(ulid: str, registry: Optional[dict[str, str]] = None) -> Optional[Path]:
+def resolve_ulid_to_path(ulid: str, registry: dict[str, str] | None = None) -> Path | None:
     """Resolve a stable ULID to its currently registered path, if any."""
     paths = [path for path, candidate in (registry or load_path_registry()).items() if candidate == ulid]
-    return Path(sorted(paths)[0]) if paths else None
+    return Path(min(paths)) if paths else None
 
 
 # ── Pools (ULID membership only) ────────────────────────────────────────────
@@ -144,7 +143,7 @@ def _save_pools_document(document: dict[str, object]) -> None:
 def _pool_records(document: dict[str, object]) -> list[dict[str, object]]:
     records = document["pools"]
     if not isinstance(records, list):  # defensive, checked by _load_pools_document
-        raise RuntimeError("Pool membership metadata has invalid records.")
+        raise RuntimeError("Pool membership metadata has invalid records.")  # noqa: TRY004  # Corrupt persisted metadata is not caller type input.
     return records  # type: ignore[return-value]
 
 
@@ -209,8 +208,8 @@ def add_to_pool(name: str, project_ids: list[str]) -> tuple[str, ...]:
             raise KeyError(f"Pool {name!r} does not exist.")
         members = record.get("members")
         if not isinstance(members, list):
-            raise RuntimeError("Pool membership metadata has invalid members.")
-        record["members"] = sorted(set(str(member) for member in members) | {project_id.strip() for project_id in project_ids})
+            raise RuntimeError("Pool membership metadata has invalid members.")  # noqa: TRY004  # Corrupt persisted metadata is not caller type input.
+        record["members"] = sorted({str(member) for member in members} | {project_id.strip() for project_id in project_ids})
         _save_pools_document(document)
         return tuple(record["members"])  # type: ignore[return-value]
 
@@ -251,8 +250,8 @@ def pools_for_project(project_id: str) -> tuple[str, ...]:
 
 
 def resolve_path_to_ulid(
-    path: str | Path, registry: Optional[dict[str, str]] = None
-) -> Optional[str]:
+    path: str | Path, registry: dict[str, str] | None = None
+) -> str | None:
     """Look up a repo path's ULID (None if not registered — lazy-link)."""
     reg = registry if registry is not None else load_path_registry()
     return reg.get(normalize_path(path))
@@ -326,7 +325,7 @@ def add_family_members(name: str, paths: list[str]) -> dict[str, list[str]]:
     return families
 
 
-def remove_family(name: str, paths: Optional[list[str]] = None) -> bool:
+def remove_family(name: str, paths: list[str] | None = None) -> bool:
     """Remove a family or specific members from it.
 
     Args:
@@ -362,8 +361,8 @@ def remove_family(name: str, paths: Optional[list[str]] = None) -> bool:
 def resolve_family_ulids(
     ulid: str,
     *,
-    families: Optional[dict[str, list[str]]] = None,
-    registry: Optional[dict[str, str]] = None,
+    families: dict[str, list[str]] | None = None,
+    registry: dict[str, str] | None = None,
 ) -> set[str]:
     """Return the set of project ULIDs in `ulid`'s family (always includes `ulid`).
 
@@ -401,8 +400,8 @@ def claude_encode(path: str | Path) -> str:
 
 
 def resolve_claude_dir_to_ulid(
-    dirname: str, registry: Optional[dict[str, str]] = None
-) -> Optional[str]:
+    dirname: str, registry: dict[str, str] | None = None
+) -> str | None:
     """Map a `~/.claude/projects/<encoded-cwd>` dirname → project ULID by encoding
     each registered abs path and matching. None if no registered path encodes to
     this dirname (lazy-link — the source project isn't registered yet)."""

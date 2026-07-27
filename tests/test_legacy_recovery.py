@@ -171,9 +171,9 @@ def test_legacy_recovery_is_not_imported_by_normal_runtime():
     import sys
 
     sys.modules.pop("braincell.legacy_recovery", None)
-    import braincell.cli  # noqa: F401
-    import braincell.gui  # noqa: F401
-    import braincell.server  # noqa: F401
+    import braincell.cli
+    import braincell.gui
+    import braincell.server  # noqa: F401  # The import itself is the isolation assertion.
 
     assert "braincell.legacy_recovery" not in sys.modules
 
@@ -221,8 +221,8 @@ def test_pooled_from_project_id_disagreement_is_ambiguous_and_unselectable(tmp_p
 
 
 def test_verification_failure_restores_existing_destination(tmp_path, monkeypatch):
-    from braincell.config import get_db_path
     from braincell import legacy_recovery
+    from braincell.config import get_db_path
     from braincell.store import SqliteStore
 
     source = _legacy_fixture(tmp_path)
@@ -238,8 +238,8 @@ def test_verification_failure_restores_existing_destination(tmp_path, monkeypatc
 
 
 def test_second_project_failure_reports_completed_and_restores_failed_destination(tmp_path, monkeypatch):
-    from braincell.config import get_db_path
     from braincell import legacy_recovery
+    from braincell.config import get_db_path
 
     source = _legacy_fixture(tmp_path)
     report = legacy_recovery.preview(source)

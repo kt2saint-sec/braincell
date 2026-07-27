@@ -17,8 +17,7 @@ def _ctx(server, store):
 
 
 def test_mcp_pool_search_and_recall_are_live_read_only(tmp_path, monkeypatch):
-    import braincell.federate as federate
-    import braincell.server as server
+    from braincell import federate, server
     from braincell.config import get_db_path
     from braincell.project_registry import add_to_pool, create_pool, register_path
     from braincell.store import SqliteStore
@@ -92,7 +91,7 @@ def test_mcp_pool_search_and_recall_are_live_read_only(tmp_path, monkeypatch):
 
 
 def test_mcp_pool_rejects_outsider_before_database_resolution(tmp_path, monkeypatch):
-    import braincell.server as server
+    from braincell import server
     from braincell.project_registry import add_to_pool, create_pool
     from braincell.store import SqliteStore
 

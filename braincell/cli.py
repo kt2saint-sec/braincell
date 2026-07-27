@@ -20,9 +20,8 @@ import asyncio
 import os
 import sqlite3 as _sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
 
 import aiosqlite
 
@@ -38,7 +37,6 @@ from .mode import resolve_mode
 from .project_registry import register_path
 from .store import EmbedderMismatchError, SqliteStore
 from .transcript_ingest import _LEDGER_FILENAME, ingest_transcripts
-
 
 # ── embed-safety helpers ──────────────────────────────────────────────────────
 
@@ -356,7 +354,7 @@ async def _try_llm_merge_async(
                 f"(tombstoned {cluster})."
             )
         return True
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001  # LLM synthesis is an optional fallback boundary.
         print(
             f"  [llm] synthesis failed ({exc!r}) — falling back to deterministic merge.",
             file=sys.stderr,
@@ -371,7 +369,7 @@ async def _consolidate_async(
     apply: bool,
     use_llm: bool,
     verbose: bool,
-    backup_path: Optional[str] = None,
+    backup_path: str | None = None,
 ) -> None:
     """Core async logic for `braincell consolidate`."""
     clusters = await store.find_note_clusters(project_id, threshold=threshold)
@@ -584,7 +582,7 @@ def cmd_contradictions(args: argparse.Namespace) -> None:
 
     judge = None
     if not args.no_llm:
-        judge = lambda a, b: ollama_judge(a, b, model=args.model)  # noqa: E731
+        judge = lambda a, b: ollama_judge(a, b, model=args.model)
     try:
         report = asyncio.run(find_contradictions(
             store,
@@ -853,7 +851,7 @@ def _vacuum_into(src: Path, dest: Path) -> Path:
     return dest
 
 
-def _auto_backup(src: Path, tag: str) -> Optional[Path]:
+def _auto_backup(src: Path, tag: str) -> Path | None:
     """Snapshot *src* before a destructive --apply. Returns the path, or None if the
     backup failed.
 
@@ -861,11 +859,11 @@ def _auto_backup(src: Path, tag: str) -> Optional[Path]:
     the caller MUST surface a None so the user knows the safety net is missing
     before the merge proceeds.
     """
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     dest = src.parent / f"braincell-pre{tag}-{timestamp}.db"
     try:
         return _vacuum_into(src, dest)
-    except Exception as exc:  # noqa: BLE001 — never block the merge on backup failure
+    except Exception as exc:  # noqa: BLE001  # Backup failure must be reported without blocking the command.
         print(f"WARNING: pre-{tag} backup failed ({exc}).", file=sys.stderr)
         return None
 
@@ -884,7 +882,7 @@ def cmd_backup(args: argparse.Namespace) -> None:
 
     try:
         src = _backup_source_path(mode, args.path)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001  # CLI converts all source-resolution failures to one user error.
         print(f"ERROR: could not resolve source brain — {exc}", file=sys.stderr)
         raise SystemExit(1)
 
@@ -899,7 +897,7 @@ def cmd_backup(args: argparse.Namespace) -> None:
     if args.out:
         dest = Path(args.out).resolve()
     else:
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         dest = src.parent / f"braincell-backup-{timestamp}.db"
 
     if args.verbose:
@@ -1108,7 +1106,7 @@ def cmd_pool_recall(args: argparse.Namespace) -> None:
     plan = plan_for_pool(args.name, connected_project_id)
     try:
         qvec = asyncio.run(embed_query_async(args.query)) if args.query.strip() else None
-    except Exception:
+    except Exception:  # noqa: BLE001  # Pool recall intentionally degrades to lexical/recency results.
         qvec = None
     notes = asyncio.run(federated_recall(None, plan, qvec, args.k, qtext=args.query))
     if args.json:
@@ -1209,7 +1207,7 @@ def cmd_start(args: argparse.Namespace) -> None:
             url_extra_query="tour=1" if pre.first_run else None,
             restart_command="start",
         )
-    except Exception as exc:  # noqa: BLE001 — Terminal=false: NEVER die silently
+    except Exception as exc:
         msg = f"BrainCell failed to start: {exc}"
         print(f"ERROR: {msg}", file=sys.stderr)
         native_shell.alert(msg)

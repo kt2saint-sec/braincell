@@ -22,7 +22,7 @@ from __future__ import annotations
 import os
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
@@ -82,7 +82,7 @@ def connected_project_id() -> str:
     return project_id
 
 
-def _pin_project(project: Optional[str]) -> str:
+def _pin_project(project: str | None) -> str:
     """Accept only the connected Project for a singular compatibility argument."""
     connected = connected_project_id()
     if project is not None and project.strip() != connected:
@@ -107,9 +107,9 @@ class SearchHit(BaseModel):
     title: str
     snippet: str
     score: float
-    cosine: Optional[float]
+    cosine: float | None
     fts_matched: bool
-    source_path: Optional[str]
+    source_path: str | None
 
 
 class MemoryNote(BaseModel):
@@ -119,10 +119,10 @@ class MemoryNote(BaseModel):
     scope: str
     kind: str
     content: str
-    tags: Optional[list[str]]
-    confidence: Optional[float]
-    source_hint: Optional[str]
-    superseded_by: Optional[int]
+    tags: list[str] | None
+    confidence: float | None
+    source_hint: str | None
+    superseded_by: int | None
     created_at: str
     # Retrieval provenance — how this note reached the result, so authority can be
     # judged rather than assumed. 'direct' = matched the query; 'resolved' = the
@@ -132,11 +132,11 @@ class MemoryNote(BaseModel):
     # transcript EXCERPT (kind='excerpt', NEGATIVE id — never a real note id)
     # backfilled when curated notes are sparse. Corpus text, not curated memory.
     retrieval_origin: str = "direct"
-    resolved_from: Optional[int] = None
+    resolved_from: int | None = None
     history: list[dict] = []
-    linked_from: Optional[int] = None
-    relation: Optional[str] = None
-    relation_weight: Optional[float] = None
+    linked_from: int | None = None
+    relation: str | None = None
+    relation_weight: float | None = None
 
 
 class ConflictHit(BaseModel):
@@ -185,11 +185,11 @@ class DocumentResult(BaseModel):
     doc_key: str
     title: str
     content_type: str
-    commit_sha: Optional[str]
+    commit_sha: str | None
     created_at: str
-    updated_at: Optional[str]
+    updated_at: str | None
     chunks: list[Any]
-    metadata: Optional[Any]
+    metadata: Any | None
 
 
 class IngestStatusResult(BaseModel):
@@ -197,8 +197,8 @@ class IngestStatusResult(BaseModel):
     indexed: bool
     doc_count: int
     chunk_count: int
-    last_ingest_ts: Optional[str]
-    head_sha: Optional[str]
+    last_ingest_ts: str | None
+    head_sha: str | None
     stale: bool
 
 
@@ -208,7 +208,7 @@ class DocumentSummary(BaseModel):
     title: str
     content_type: str
     created_at: str
-    updated_at: Optional[str]
+    updated_at: str | None
 
 
 class ProjectInfo(BaseModel):
@@ -255,7 +255,7 @@ class PoolRecallResult(BaseModel):
 async def search_hits(
     store: SqliteStore,
     query: str,
-    project: Optional[str] = None,
+    project: str | None = None,
     k: int = 10,
     rank: str = "hybrid",
 ) -> list[Hit]:
@@ -282,10 +282,10 @@ async def search_hits(
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 async def search(
     query: str,
-    project: Optional[str] = None,
+    project: str | None = None,
     k: int = 10,
     rank: str = "hybrid",
-    pool: Optional[str] = None,
+    pool: str | None = None,
     ctx: Context = None,  # type: ignore[assignment]
 ) -> list[SearchHit] | PoolSearchResult:
     """Hybrid (vector + keyword) search over ingested documents & transcripts.
@@ -456,7 +456,7 @@ async def _chunk_fallback(
             if len(kept) == deficit:
                 break
         return notes + kept
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001  # Chunk fallback is intentionally non-fatal retrieval enhancement.
         log.warning("recall chunk fallback failed (non-fatal): %s", exc)
         return notes
 
@@ -466,9 +466,9 @@ async def _chunk_fallback(
 async def recall_notes(
     store: SqliteStore,
     query: str,
-    project: Optional[str] = None,
+    project: str | None = None,
     k: int = 5,
-    min_cosine: Optional[float] = None,
+    min_cosine: float | None = None,
     dedup: bool = True,
     include_superseded: bool = False,
 ) -> list[Note]:
@@ -491,7 +491,7 @@ async def recall_notes(
     if query and query.strip():
         try:
             qvec = await embed_query_async(query)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001  # Project recall deliberately falls back when embeddings fail.
             log.warning(
                 "BRAINCELL_EMBED_UNAVAILABLE: embedding is down — recall falls back to "
                 "keyword/recency (no vector ranking). Restart when the embedder is "
@@ -522,12 +522,12 @@ async def recall_notes(
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 async def recall(
     query: str,
-    project: Optional[str] = None,
+    project: str | None = None,
     k: int = 5,
-    min_cosine: Optional[float] = None,
+    min_cosine: float | None = None,
     dedup: bool = True,
     include_superseded: bool = False,
-    pool: Optional[str] = None,
+    pool: str | None = None,
     ctx: Context = None,  # type: ignore[assignment]
 ) -> list[MemoryNote] | PoolRecallResult:
     """Recall curated memory notes (decisions, bug lessons, observations).
@@ -584,7 +584,7 @@ async def recall(
         if query and query.strip():
             try:
                 qvec = await embed_query_async(query)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001  # Pool recall deliberately falls back when embeddings fail.
                 log.warning("Pool Recall embedding unavailable; using lexical/recency: %s", exc)
         from .federate import federated_recall, plan_for_pool
 
@@ -637,9 +637,9 @@ async def recall(
 async def remember(
     text: str,
     kind: str,
-    project: Optional[str] = None,
-    tags: Optional[list[str]] = None,
-    confidence: Optional[float] = None,
+    project: str | None = None,
+    tags: list[str] | None = None,
+    confidence: float | None = None,
     ctx: Context = None,  # type: ignore[assignment]
 ) -> RememberResult:
     """Persist a curated memory note.
@@ -671,7 +671,7 @@ async def remember(
     try:
         _vecs = await embed_texts_async([text])
         vec = _vecs[0]
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001  # Remember persists FTS-only memory when embeddings fail.
         log.warning(
             "BRAINCELL_EMBED_UNAVAILABLE: embedding is down — note saved FTS-only, "
             "backfill later via `braincell reembed-notes` (see embed.py _embed_ollama). %s",
@@ -685,7 +685,7 @@ async def remember(
     conflicts = []
     try:
         conflicts = await store.find_conflicts(project, vec)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001  # A failed conflict scan must not block a memory write.
         log.warning("conflict scan failed (non-fatal, note still persisted): %s", exc)
     note_id = await store.remember(
         text=text,
@@ -713,7 +713,7 @@ async def remember(
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def forget(
     note_id: int,
-    project: Optional[str] = None,
+    project: str | None = None,
     hard: bool = False,
     ctx: Context = None,  # type: ignore[assignment]
 ) -> ForgetResult:
@@ -751,7 +751,7 @@ async def forget(
 async def supersede(
     note_id: int,
     new_content: str,
-    project: Optional[str] = None,
+    project: str | None = None,
     ctx: Context = None,  # type: ignore[assignment]
 ) -> SupersedeResult:
     """Supersede an existing memory note with updated content.
@@ -781,7 +781,7 @@ async def supersede(
     try:
         _vecs = await embed_texts_async([new_content])
         vec = _vecs[0]
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001  # Supersede persists FTS-only memory when embeddings fail.
         log.warning(
             "BRAINCELL_EMBED_UNAVAILABLE: embedding is down — supersede note saved "
             "FTS-only, backfill later via `braincell reembed-notes`. %s", exc,
@@ -796,9 +796,9 @@ async def supersede(
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 async def get_document(
     doc_key: str,
-    project: Optional[str] = None,
+    project: str | None = None,
     ctx: Context = None,  # type: ignore[assignment]
-) -> Optional[DocumentResult]:
+) -> DocumentResult | None:
     """Retrieve a full document (chunks + provenance) by its key.
 
     Args:
@@ -832,7 +832,7 @@ async def get_document(
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 async def ingest_status(
-    project: Optional[str] = None,
+    project: str | None = None,
     ctx: Context = None,  # type: ignore[assignment]
 ) -> IngestStatusResult:
     """Report whether this project has been indexed and basic counts.
@@ -859,8 +859,8 @@ async def ingest_status(
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 async def list_documents(
-    project: Optional[str] = None,
-    filter: Optional[str] = None,
+    project: str | None = None,
+    filter: str | None = None,
     limit: int = 200,
     ctx: Context = None,  # type: ignore[assignment]
 ) -> list[DocumentSummary]:
