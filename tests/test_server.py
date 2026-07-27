@@ -13,12 +13,12 @@ tool registry and the Pydantic models at import time.
 from __future__ import annotations
 
 import asyncio
+from typing import ClassVar
 
 import pytest
 from pydantic import ValidationError
 
 from braincell.server import (
-    mcp,
     DocumentResult,
     DocumentSummary,
     ForgetResult,
@@ -27,8 +27,8 @@ from braincell.server import (
     RememberResult,
     SearchHit,
     SupersedeResult,
+    mcp,
 )
-
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -331,10 +331,10 @@ class TestOutputSchema:
     """Verify all tools expose outputSchema (Pydantic return types → structured output)."""
 
     # Checked via the synchronous Tool.output_schema cached_property (no asyncio needed).
-    _READ_TOOLS = [
+    _READ_TOOLS: ClassVar[list[str]] = [
         "search", "recall", "get_document", "ingest_status", "list_documents",
     ]
-    _WRITE_TOOLS = ["remember", "forget", "supersede"]
+    _WRITE_TOOLS: ClassVar[list[str]] = ["remember", "forget", "supersede"]
 
     @pytest.mark.parametrize("tool_name", _READ_TOOLS)
     def test_read_tool_has_output_schema(self, tool_name: str):
@@ -400,9 +400,10 @@ class TestServerRememberEmbedBestEffort:
     """
 
     def test_embed_down_persists_with_embedded_false(self, tmp_path, monkeypatch):
+        from unittest.mock import MagicMock
+
         import braincell.server as srv
         from tests.conftest import make_store
-        from unittest.mock import MagicMock
 
         store = make_store(tmp_path)
 
@@ -452,25 +453,17 @@ class TestServerRememberEmbedBestEffort:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SECTION 5: G2 — recall tool has scope parameter
+# SECTION 5: Project-only Recall schema boundary
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestRecallScopeParameter:
-    """G2: the recall tool exposes a 'scope' parameter in its input schema."""
+    """Recall has no implicit cross-Project scope selector."""
 
-    def test_recall_tool_has_scope_in_input_schema(self):
-        """recall's FastMCP tool schema must list 'scope' as an input property."""
+    def test_recall_tool_excludes_retired_cross_project_inputs(self):
+        """Recall permits only its singular connected-Project compatibility input."""
         tool = _get_tool("recall")
         assert tool is not None
-        # output_schema is for the return type; the input params are on the
-        # fn's signature. Check via the tool's fn parameter list.
         import inspect
         sig = inspect.signature(tool.fn)
-        assert "scope" in sig.parameters, (
-            "recall tool must have a 'scope' parameter for G2 cross-project scoping"
-        )
-        # Default must be 'self' (safe default — no behaviour change in project mode).
-        default = sig.parameters["scope"].default
-        assert default == "self", (
-            f"scope default must be 'self', got {default!r}"
-        )
+        assert "scope" not in sig.parameters
+        assert "projects" not in sig.parameters
