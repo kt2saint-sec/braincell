@@ -1137,12 +1137,6 @@ def cmd_gui(args: argparse.Namespace) -> None:
         token_path = get_gui_token_path()
         token_path.unlink(missing_ok=True)
         print(f"GUI token rotated: {token_path} removed; a fresh token will be minted.")
-    from .legacy_service import status as legacy_service_status
-    if legacy_service_status()["active"]:
-        raise SystemExit(
-            "The retired braincell-map.service is active. Remove it first with: "
-            "braincell legacy-service remove"
-        )
     from .gui import run_gui
     run_gui(
         mode=getattr(args, "mode", None),
@@ -1176,11 +1170,6 @@ def cmd_start(args: argparse.Namespace) -> None:
         raise SystemExit(1)
     pre = launch.preflight(Path(args.path), mode=mode, port=args.port)
 
-    if pre.action == "legacy_service":
-        msg = "\n".join(pre.report_lines)
-        print(f"ERROR: {msg}", file=sys.stderr)
-        native_shell.alert(msg)
-        raise SystemExit(1)
     if pre.action == "reuse":
         print(
             f"BrainCell GUI already running on port {args.port} "
@@ -1228,17 +1217,33 @@ def cmd_start(args: argparse.Namespace) -> None:
 
 
 def main_map(argv: list[str] | None = None) -> None:
-    """Compatibility entry point for the native project Memory Map."""
+    """Compatibility entry point for the native Memory Map of one Project."""
     p = argparse.ArgumentParser(
         prog="braincell-map",
-        description="Open the BrainCell Memory Map for the current project.",
+        description="Open the native BrainCell Memory Map for one validated Project.",
     )
+    p.add_argument("path", nargs="?", default=".", help="Project path (default: cwd).")
     p.add_argument("--port", type=int, default=8765, help="TCP port (default: 8765).")
+    p.add_argument("--acknowledge-home", action="store_true")
+    p.add_argument("--acknowledge-non-git", action="store_true")
+    p.add_argument("--allow-privileged", action="store_true")
     ns = p.parse_args(argv)
+
+    from .project_target import ProjectTargetError, validate_project_target
+
+    try:
+        target = validate_project_target(
+            ns.path,
+            acknowledge_home=ns.acknowledge_home,
+            acknowledge_non_git=ns.acknowledge_non_git,
+            allow_privileged=ns.allow_privileged,
+        )
+    except ProjectTargetError as exc:
+        raise SystemExit(f"braincell-map: {exc}") from exc
 
     cmd_start(
         argparse.Namespace(
-            path=".",
+            path=str(target.path),
             port=ns.port,
         )
     )
@@ -1307,6 +1312,80 @@ def cmd_install(args: argparse.Namespace) -> None:
     restart = {"claude": "Claude Code", "codex": "Codex", "vscode": "VS Code"}[args.client]
     print("\nNext steps:")
     print(f"  1. Restart {restart} so it loads the new MCP server.")
+
+
+def cmd_setup(args: argparse.Namespace) -> None:
+    """Plan or apply first-run setup for one explicitly selected Project.
+
+    The default is a no-write plan. ``--yes`` is deliberately required to apply
+    it, which keeps package installation and an accidental ``setup .`` from
+    selecting or changing a Project silently.
+    """
+    from .config import get_db_path
+    from .project_target import ProjectTargetError, validate_project_target
+
+    try:
+        target = validate_project_target(
+            args.path,
+            acknowledge_home=args.acknowledge_home,
+            acknowledge_non_git=args.acknowledge_non_git,
+            allow_privileged=args.allow_privileged,
+            require_git=args.client == "codex",
+        )
+    except ProjectTargetError as exc:
+        raise SystemExit(f"braincell setup: {exc}") from exc
+
+    known_id = resolve_project_id_readonly(target.path)
+    db = get_db_path(known_id) if known_id else None
+    print(f"Project: {target.path}")
+    for warning in target.warnings:
+        print(f"WARNING: {warning}", file=sys.stderr)
+    print("Planned writes:")
+    print(f"  - Project registry: {'reuse ' + known_id if known_id else 'mint a Project ULID and register this path'}")
+    print(f"  - Project database: {db if db else '<XDG projects>/<new-project-id>/braincell.db'}")
+    print(f"  - {args.client} project-local MCP configuration")
+    if args.with_skills:
+        print(f"  - {args.client} project-local BrainCell skills")
+    if args.automatic_pool_recall:
+        print(f"  - Automatic Pool recall for named Pool: {args.automatic_pool_recall}")
+    if args.dry_run or not args.yes:
+        print("No changes applied. Re-run with --yes to apply this plan.")
+        return
+
+    build_args = argparse.Namespace(
+        path=str(target.path), skip_transcripts=args.skip_transcripts,
+        reembed=False, verbose=False, no_mint=False, mode=None,
+    )
+    try:
+        cmd_build(build_args)
+        cmd_install(argparse.Namespace(
+            path=str(target.path), client=args.client, scope=args.claude_scope,
+            acknowledge_home=args.acknowledge_home,
+            acknowledge_non_git=args.acknowledge_non_git,
+            allow_privileged=args.allow_privileged,
+        ))
+        if args.with_skills:
+            if args.client == "vscode":
+                raise RuntimeError("VS Code has no BrainCell project-skill format.")
+            cmd_skills(argparse.Namespace(
+                skills_action="add", path=str(target.path), client=args.client,
+                acknowledge_home=args.acknowledge_home,
+                acknowledge_non_git=args.acknowledge_non_git,
+                allow_privileged=args.allow_privileged,
+            ))
+        if args.automatic_pool_recall:
+            if args.client != "claude":
+                raise RuntimeError("Automatic Pool recall is currently available only for Claude.")
+            cmd_automatic_pool_recall(argparse.Namespace(
+                automatic_recall_action="enable", path=str(target.path),
+                scope=args.claude_scope, pool=args.automatic_pool_recall,
+                acknowledge_home=args.acknowledge_home,
+                acknowledge_non_git=args.acknowledge_non_git,
+                allow_privileged=args.allow_privileged,
+            ))
+    except (RuntimeError, ValueError) as exc:
+        raise SystemExit(f"braincell setup: {exc}") from exc
+    print("Setup complete. Restart the selected client, then use BrainCell from this Project.")
 
 
 def cmd_uninstall(args: argparse.Namespace) -> None:
@@ -1690,6 +1769,23 @@ def main(argv: list[str] | None = None) -> None:
     pi.add_argument("--allow-privileged", action="store_true",
                     help="Confirm root/sudo ownership of selected project configuration and state.")
     pi.set_defaults(func=cmd_install)
+
+    psetup = sub.add_parser(
+        "setup",
+        help="Plan or apply Project database, client connection, and optional skills setup.",
+    )
+    psetup.add_argument("path", nargs="?", default=".", help="Project path (default: cwd).")
+    psetup.add_argument("--client", choices=["claude", "codex", "vscode"], default="claude")
+    psetup.add_argument("--claude-scope", choices=["local", "project"], default="local")
+    psetup.add_argument("--with-skills", action="store_true")
+    psetup.add_argument("--automatic-pool-recall", metavar="POOL")
+    psetup.add_argument("--skip-transcripts", action="store_true")
+    psetup.add_argument("--yes", action="store_true", help="Apply the displayed plan.")
+    psetup.add_argument("--dry-run", action="store_true", help="Show the plan without writes.")
+    psetup.add_argument("--acknowledge-home", action="store_true")
+    psetup.add_argument("--acknowledge-non-git", action="store_true")
+    psetup.add_argument("--allow-privileged", action="store_true")
+    psetup.set_defaults(func=cmd_setup)
 
     pu = sub.add_parser("disconnect", aliases=["uninstall"], help="Disconnect BrainCell from one project client.")
     pu.add_argument("path", nargs="?", default=".",

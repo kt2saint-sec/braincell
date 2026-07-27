@@ -5,7 +5,7 @@ test_gui_launcher.py — Milestone A regression tests for braincell/gui.py + cli
 Covers:
   A1  native activation    — /api/activate raises the existing Qt window through
                              the authenticated native bridge.
-  A2  global-brain missing — /api/status still 200 with global_brain.exists False.
+  A2  Project-only status — /api/status never exposes shared/global memory.
   A3  one-click launcher   — install_launcher() writes icon + .desktop into XDG;
                              main_map() calls run_gui with the documented kwargs.
   A4  optional GUI token   — /api/* requires ?t= / header when auth_token is set;
@@ -64,23 +64,23 @@ class TestNativeActivationA1:
         assert bridge.calls == 1
 
 
-# ── A2: global-brain missing ──────────────────────────────────────────────────
+# ── A2: Project-only status ──────────────────────────────────────────────────
 
-class TestGlobalMissingA2:
-    def test_status_ok_when_global_absent(self, tmp_path):
+class TestProjectOnlyStatusA2:
+    def test_status_has_no_shared_memory_surface(self, tmp_path):
         with TestClient(_app(tmp_path)) as client:
             r = client.get("/api/status")
         assert r.status_code == 200
-        assert r.json()["global_brain"]["exists"] is False
+        assert "global_brain" not in r.json()
 
     def test_index_ok_when_global_absent(self, tmp_path):
         with TestClient(_app(tmp_path)) as client:
             r = client.get("/")
         assert r.status_code == 200
 
-    def test_template_has_global_cta(self):
+    def test_template_has_no_global_cta(self):
         from braincell.gui_template import INDEX_HTML
-        assert "No global brain yet" in INDEX_HTML
+        assert "No global brain yet" not in INDEX_HTML
 
 
 # ── A3: launcher ──────────────────────────────────────────────────────────────
@@ -160,7 +160,7 @@ class TestInstallLauncherA3:
             "mode": "project",
             "port": 8765,
             "allow_writes": True,
-            "path": ".",
+            "path": str(Path.cwd().resolve()),
             "url_extra_query": None,
             "restart_command": "start",
         }

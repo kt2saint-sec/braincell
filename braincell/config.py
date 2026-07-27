@@ -96,11 +96,6 @@ def get_local_state_dir(project_id: str) -> Path:
     return _xdg_data_home() / DATA_NAMESPACE / "projects" / project_id
 
 
-def get_structure_dir(project_root: Path) -> Path:
-    """Return ``~/.local/share/<namespace>/projects/<id>/structure/`` — XDG, read-only ingest vault."""
-    return get_local_state_dir(get_project_id(project_root)) / "structure"
-
-
 def get_db_path(project_id: str) -> Path:
     """Return ``~/.local/share/<namespace>/projects/<id>/braincell.db`` — XDG.
 
