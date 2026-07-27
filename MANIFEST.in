@@ -1,0 +1,9 @@
+include README.md LICENSE COMMERCIAL-LICENSE.md NOTICE pyproject.toml
+recursive-include braincell *.py py.typed
+recursive-include braincell/assets *.svg *.png *.ico
+recursive-include braincell/skills */SKILL.md
+prune tests
+prune evals
+prune docs
+prune .github
+global-exclude .env* uv.lock *.py[cod] __pycache__/*

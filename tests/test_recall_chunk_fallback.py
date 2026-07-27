@@ -23,7 +23,7 @@ import asyncio
 
 import pytest
 
-from tests.conftest import make_store, fake_vec, _insert_doc_and_chunk
+from tests.conftest import _insert_doc_and_chunk, fake_vec, make_store
 
 PROJ = "01TESTPROJECTULID0000000AA"  # 26 alnum chars — ULID-shaped
 
@@ -36,13 +36,13 @@ def _fast_embed(monkeypatch):
     async def _fake_embed(text: str):
         return fake_vec(0)
     monkeypatch.setattr("braincell.server.embed_query_async", _fake_embed)
-    monkeypatch.delenv("BRAINCELL_PROJECT_ID", raising=False)
+    monkeypatch.setenv("BRAINCELL_PROJECT_ID", PROJ)
     monkeypatch.delenv("BRAINCELL_FEDERATE", raising=False)
 
 
 def _recall(store, query, k=5, **kw):
     from braincell.server import recall_notes
-    return asyncio.run(recall_notes(store, query, k=k, **kw))
+    return asyncio.run(recall_notes(store, query, project=PROJ, k=k, **kw))
 
 
 def _seed_chunks(store, n=3):
@@ -90,7 +90,7 @@ class TestColdStartFallback:
                 kind="note", project=PROJ, embedding=fake_vec(99),
             )
             excerpts = [
-                n for n in await recall_notes(store, "halftone", k=5)
+                n for n in await recall_notes(store, "halftone", project=PROJ, k=5)
                 if n.retrieval_origin == "chunk"
             ]
             assert excerpts

@@ -11,11 +11,10 @@ See [CHANGELOG.md](CHANGELOG.md) for verified public release notes.
 
 ## Current status
 
-This release establishes project-local connections and skills, CLI Pools, and
-Project-local Automatic Pool recall for Claude. Native Memory Map Pool controls,
-database-open isolation, and preview-first legacy configuration/data migration
-are not complete yet. Do not rely on legacy automation or shared-data behavior
-as part of the project-only workflow.
+This release establishes project-local connections and skills, live named Pools,
+native Memory Map Pool controls, and preview-first recovery for retired shared
+data. Legacy automation and shared-data behavior are not part of the
+project-only workflow.
 
 ## What is isolated
 
@@ -44,9 +43,15 @@ cd braincell
 Or install with pip:
 
 ```bash
+pipx install braincell-mcp
+# or, before publication:
 python3 -m pip install "braincell-mcp @ git+https://github.com/kt2saint-sec/braincell.git"
 ollama pull qwen3-embedding:4b
 ```
+
+`pipx install braincell-mcp` will work after the package is published. Installing
+the package never selects a Project, creates a database, or changes a client
+configuration.
 
 The default embedder is local Ollama `qwen3-embedding:4b`. For hosted
 embeddings, install the `[openai]` extra and configure its documented provider
@@ -61,10 +66,19 @@ privileged/root invocation.
 
 ```bash
 cd /path/to/project
+braincell setup . --dry-run --client codex
+braincell setup . --client codex --yes
+```
+
+The first command resolves the path and displays every planned database,
+registry, client-configuration, skills, and optional Pool-recall write without
+applying it. `--yes` applies the plan. Use `--with-skills` for project-local
+skills and `--automatic-pool-recall "Pool name"` only for an existing named Pool
+with Claude. You can still run Build and Connect individually:
+
+```bash
 braincell build .
-braincell connect . --client codex
-# or: braincell connect . --client claude --scope local
-# or: braincell connect . --client vscode
+braincell connect . --client claude --scope local
 ```
 
 `braincell install` remains a compatibility alias for `braincell connect`;
@@ -146,7 +160,7 @@ Project, and ordinary Recall remains Project-only.
 
 ## Safety model
 
-- There is no normal all-Projects query.
+- There is no ordinary query that reads every Project.
 - There is no shared operational memory database.
 - Writes remain pinned to the Connected Project.
 - Pool reads are explicit; an ordinary Recall or Search never silently widens

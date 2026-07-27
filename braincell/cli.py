@@ -20,9 +20,8 @@ import asyncio
 import os
 import sqlite3 as _sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
 
 import aiosqlite
 
@@ -38,7 +37,6 @@ from .mode import resolve_mode
 from .project_registry import register_path
 from .store import EmbedderMismatchError, SqliteStore
 from .transcript_ingest import _LEDGER_FILENAME, ingest_transcripts
-
 
 # ── embed-safety helpers ──────────────────────────────────────────────────────
 
@@ -218,6 +216,27 @@ def cmd_register(args: argparse.Namespace) -> None:
     print(f"Registered {root} → {pid}")
 
 
+def cmd_project_reassociate(args: argparse.Namespace) -> None:
+    """Associate an existing stable Project ULID with its moved directory."""
+    from .project_registry import reassociate_project_path
+    from .project_target import validate_project_target
+
+    target = validate_project_target(
+        args.new_path,
+        acknowledge_home=args.acknowledge_home,
+        acknowledge_non_git=args.acknowledge_non_git,
+        allow_privileged=args.allow_privileged,
+    )
+    try:
+        old_path, new_path = reassociate_project_path(args.project_id, target.path)
+    except (KeyError, ValueError) as exc:
+        raise SystemExit(f"braincell project reassociate: {exc}") from exc
+    print(f"Reassociated Project {args.project_id}")
+    print(f"  Old path: {old_path}")
+    print(f"  New path: {new_path}")
+    print("  Project memory and Pool memberships are unchanged.")
+
+
 def cmd_serve(_args: argparse.Namespace) -> None:
     from .server import main as serve_main
     serve_main()
@@ -335,7 +354,7 @@ async def _try_llm_merge_async(
                 f"(tombstoned {cluster})."
             )
         return True
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001  # LLM synthesis is an optional fallback boundary.
         print(
             f"  [llm] synthesis failed ({exc!r}) — falling back to deterministic merge.",
             file=sys.stderr,
@@ -350,7 +369,7 @@ async def _consolidate_async(
     apply: bool,
     use_llm: bool,
     verbose: bool,
-    backup_path: Optional[str] = None,
+    backup_path: str | None = None,
 ) -> None:
     """Core async logic for `braincell consolidate`."""
     clusters = await store.find_note_clusters(project_id, threshold=threshold)
@@ -563,7 +582,8 @@ def cmd_contradictions(args: argparse.Namespace) -> None:
 
     judge = None
     if not args.no_llm:
-        judge = lambda a, b: ollama_judge(a, b, model=args.model)  # noqa: E731
+        def judge(a, b):
+            return ollama_judge(a, b, model=args.model)
     try:
         report = asyncio.run(find_contradictions(
             store,
@@ -679,14 +699,9 @@ def _note_to_dict(n) -> dict:
 
 def cmd_recall(args: argparse.Namespace) -> None:
     """Recall curated memory notes from the CLI — the SAME engine path as the
-    ``mcp__braincell__recall`` tool (server.recall_notes), so ranking/federation
-    match exactly. Read-only. Emits a human table or, with --json, machine JSON.
-
-    Brain + seed resolution mirrors `stats`/`reflect`: global mode uses the global
-    brain (no seed); project mode resolves the path → ULID read-only (never mints)
-    and exports BRAINCELL_PROJECT_ID for the resolved seed so scope='self'/'family'
-    and federation resolve consistently. `scope='family'` needs global mode OR
-    BRAINCELL_FEDERATE=on in project mode (else the engine raises, surfaced here).
+    ``mcp__braincell__recall`` tool (server.recall_notes), pinned to the Project
+    resolved from ``--path``. Read-only. Emits a human table or, with --json,
+    machine JSON. Cross-Project Recall is an explicit named-Pool operation.
     """
     from .server import recall_notes
 
@@ -708,7 +723,7 @@ def cmd_recall(args: argparse.Namespace) -> None:
     store.assert_schema_version()
     try:
         notes = asyncio.run(recall_notes(
-            store, args.query, k=args.k, scope=args.scope,
+            store, args.query, project=pid, k=args.k,
             min_cosine=args.min_cosine, dedup=not args.no_dedup,
             include_superseded=args.include_superseded,
         ))
@@ -755,14 +770,13 @@ def _hit_to_dict(h) -> dict:
 
 def cmd_search(args: argparse.Namespace) -> None:
     """Search ingested documents & transcripts from the CLI — the SAME engine path
-    as the ``mcp__braincell__search`` tool (server.search_hits), so ranking and
-    federation match exactly. Read-only.
+    as the ``mcp__braincell__search`` tool (server.search_hits), pinned to the
+    Project resolved from ``--path``. Read-only.
 
     Distinct from `recall`: `recall` returns curated memory NOTES, `search` returns
-    CHUNKS of ingested documents/transcripts. Brain + seed resolution mirrors
-    `recall` exactly (see cmd_recall). `--rank` selects the ranking strategy
-    (hybrid/semantic/keyword); `--mode` selects the project-vs-global brain, as it
-    does in every other subcommand.
+    CHUNKS of ingested documents/transcripts. `--rank` selects the ranking strategy
+    (hybrid/semantic/keyword). Cross-Project Search is an explicit named-Pool
+    operation.
     """
     from .server import search_hits
 
@@ -784,8 +798,8 @@ def cmd_search(args: argparse.Namespace) -> None:
     store.assert_schema_version()
     try:
         hits = asyncio.run(search_hits(
-            store, args.query, project=args.project, k=args.k,
-            rank=args.rank, scope=args.scope,
+            store, args.query, project=args.project or pid, k=args.k,
+            rank=args.rank,
         ))
     except ValueError as exc:
         # Engine-level rejection (e.g. scope='family' in project mode without
@@ -832,7 +846,7 @@ def _vacuum_into(src: Path, dest: Path) -> Path:
     return dest
 
 
-def _auto_backup(src: Path, tag: str) -> Optional[Path]:
+def _auto_backup(src: Path, tag: str) -> Path | None:
     """Snapshot *src* before a destructive --apply. Returns the path, or None if the
     backup failed.
 
@@ -840,11 +854,11 @@ def _auto_backup(src: Path, tag: str) -> Optional[Path]:
     the caller MUST surface a None so the user knows the safety net is missing
     before the merge proceeds.
     """
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     dest = src.parent / f"braincell-pre{tag}-{timestamp}.db"
     try:
         return _vacuum_into(src, dest)
-    except Exception as exc:  # noqa: BLE001 — never block the merge on backup failure
+    except Exception as exc:  # noqa: BLE001  # Backup failure must be reported without blocking the command.
         print(f"WARNING: pre-{tag} backup failed ({exc}).", file=sys.stderr)
         return None
 
@@ -863,7 +877,7 @@ def cmd_backup(args: argparse.Namespace) -> None:
 
     try:
         src = _backup_source_path(mode, args.path)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001  # CLI converts all source-resolution failures to one user error.
         print(f"ERROR: could not resolve source brain — {exc}", file=sys.stderr)
         raise SystemExit(1)
 
@@ -878,7 +892,7 @@ def cmd_backup(args: argparse.Namespace) -> None:
     if args.out:
         dest = Path(args.out).resolve()
     else:
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         dest = src.parent / f"braincell-backup-{timestamp}.db"
 
     if args.verbose:
@@ -1087,7 +1101,7 @@ def cmd_pool_recall(args: argparse.Namespace) -> None:
     plan = plan_for_pool(args.name, connected_project_id)
     try:
         qvec = asyncio.run(embed_query_async(args.query)) if args.query.strip() else None
-    except Exception:
+    except Exception:  # noqa: BLE001  # Pool recall intentionally degrades to lexical/recency results.
         qvec = None
     notes = asyncio.run(federated_recall(None, plan, qvec, args.k, qtext=args.query))
     if args.json:
@@ -1116,12 +1130,6 @@ def cmd_gui(args: argparse.Namespace) -> None:
         token_path = get_gui_token_path()
         token_path.unlink(missing_ok=True)
         print(f"GUI token rotated: {token_path} removed; a fresh token will be minted.")
-    from .legacy_service import status as legacy_service_status
-    if legacy_service_status()["active"]:
-        raise SystemExit(
-            "The retired braincell-map.service is active. Remove it first with: "
-            "braincell legacy-service remove"
-        )
     from .gui import run_gui
     run_gui(
         mode=getattr(args, "mode", None),
@@ -1155,11 +1163,6 @@ def cmd_start(args: argparse.Namespace) -> None:
         raise SystemExit(1)
     pre = launch.preflight(Path(args.path), mode=mode, port=args.port)
 
-    if pre.action == "legacy_service":
-        msg = "\n".join(pre.report_lines)
-        print(f"ERROR: {msg}", file=sys.stderr)
-        native_shell.alert(msg)
-        raise SystemExit(1)
     if pre.action == "reuse":
         print(
             f"BrainCell GUI already running on port {args.port} "
@@ -1199,7 +1202,7 @@ def cmd_start(args: argparse.Namespace) -> None:
             url_extra_query="tour=1" if pre.first_run else None,
             restart_command="start",
         )
-    except Exception as exc:  # noqa: BLE001 — Terminal=false: NEVER die silently
+    except Exception as exc:
         msg = f"BrainCell failed to start: {exc}"
         print(f"ERROR: {msg}", file=sys.stderr)
         native_shell.alert(msg)
@@ -1207,17 +1210,33 @@ def cmd_start(args: argparse.Namespace) -> None:
 
 
 def main_map(argv: list[str] | None = None) -> None:
-    """Compatibility entry point for the native project Memory Map."""
+    """Compatibility entry point for the native Memory Map of one Project."""
     p = argparse.ArgumentParser(
         prog="braincell-map",
-        description="Open the BrainCell Memory Map for the current project.",
+        description="Open the native BrainCell Memory Map for one validated Project.",
     )
+    p.add_argument("path", nargs="?", default=".", help="Project path (default: cwd).")
     p.add_argument("--port", type=int, default=8765, help="TCP port (default: 8765).")
+    p.add_argument("--acknowledge-home", action="store_true")
+    p.add_argument("--acknowledge-non-git", action="store_true")
+    p.add_argument("--allow-privileged", action="store_true")
     ns = p.parse_args(argv)
+
+    from .project_target import ProjectTargetError, validate_project_target
+
+    try:
+        target = validate_project_target(
+            ns.path,
+            acknowledge_home=ns.acknowledge_home,
+            acknowledge_non_git=ns.acknowledge_non_git,
+            allow_privileged=ns.allow_privileged,
+        )
+    except ProjectTargetError as exc:
+        raise SystemExit(f"braincell-map: {exc}") from exc
 
     cmd_start(
         argparse.Namespace(
-            path=".",
+            path=str(target.path),
             port=ns.port,
         )
     )
@@ -1286,6 +1305,80 @@ def cmd_install(args: argparse.Namespace) -> None:
     restart = {"claude": "Claude Code", "codex": "Codex", "vscode": "VS Code"}[args.client]
     print("\nNext steps:")
     print(f"  1. Restart {restart} so it loads the new MCP server.")
+
+
+def cmd_setup(args: argparse.Namespace) -> None:
+    """Plan or apply first-run setup for one explicitly selected Project.
+
+    The default is a no-write plan. ``--yes`` is deliberately required to apply
+    it, which keeps package installation and an accidental ``setup .`` from
+    selecting or changing a Project silently.
+    """
+    from .config import get_db_path
+    from .project_target import ProjectTargetError, validate_project_target
+
+    try:
+        target = validate_project_target(
+            args.path,
+            acknowledge_home=args.acknowledge_home,
+            acknowledge_non_git=args.acknowledge_non_git,
+            allow_privileged=args.allow_privileged,
+            require_git=args.client == "codex",
+        )
+    except ProjectTargetError as exc:
+        raise SystemExit(f"braincell setup: {exc}") from exc
+
+    known_id = resolve_project_id_readonly(target.path)
+    db = get_db_path(known_id) if known_id else None
+    print(f"Project: {target.path}")
+    for warning in target.warnings:
+        print(f"WARNING: {warning}", file=sys.stderr)
+    print("Planned writes:")
+    print(f"  - Project registry: {'reuse ' + known_id if known_id else 'mint a Project ULID and register this path'}")
+    print(f"  - Project database: {db if db else '<XDG projects>/<new-project-id>/braincell.db'}")
+    print(f"  - {args.client} project-local MCP configuration")
+    if args.with_skills:
+        print(f"  - {args.client} project-local BrainCell skills")
+    if args.automatic_pool_recall:
+        print(f"  - Automatic Pool recall for named Pool: {args.automatic_pool_recall}")
+    if args.dry_run or not args.yes:
+        print("No changes applied. Re-run with --yes to apply this plan.")
+        return
+
+    build_args = argparse.Namespace(
+        path=str(target.path), skip_transcripts=args.skip_transcripts,
+        reembed=False, verbose=False, no_mint=False, mode=None,
+    )
+    try:
+        cmd_build(build_args)
+        cmd_install(argparse.Namespace(
+            path=str(target.path), client=args.client, scope=args.claude_scope,
+            acknowledge_home=args.acknowledge_home,
+            acknowledge_non_git=args.acknowledge_non_git,
+            allow_privileged=args.allow_privileged,
+        ))
+        if args.with_skills:
+            if args.client == "vscode":
+                raise RuntimeError("VS Code has no BrainCell project-skill format.")
+            cmd_skills(argparse.Namespace(
+                skills_action="add", path=str(target.path), client=args.client,
+                acknowledge_home=args.acknowledge_home,
+                acknowledge_non_git=args.acknowledge_non_git,
+                allow_privileged=args.allow_privileged,
+            ))
+        if args.automatic_pool_recall:
+            if args.client != "claude":
+                raise RuntimeError("Automatic Pool recall is currently available only for Claude.")
+            cmd_automatic_pool_recall(argparse.Namespace(
+                automatic_recall_action="enable", path=str(target.path),
+                scope=args.claude_scope, pool=args.automatic_pool_recall,
+                acknowledge_home=args.acknowledge_home,
+                acknowledge_non_git=args.acknowledge_non_git,
+                allow_privileged=args.allow_privileged,
+            ))
+    except (RuntimeError, ValueError) as exc:
+        raise SystemExit(f"braincell setup: {exc}") from exc
+    print("Setup complete. Restart the selected client, then use BrainCell from this Project.")
 
 
 def cmd_uninstall(args: argparse.Namespace) -> None:
@@ -1415,6 +1508,31 @@ def cmd_legacy_service(args: argparse.Namespace) -> None:
         print(f"  systemctl said: {result['detail']}", file=sys.stderr)
 
 
+def cmd_legacy_recovery(args: argparse.Namespace) -> None:
+    """Preview or explicitly apply retired shared-data recovery."""
+    import json
+
+    from .legacy_recovery import LegacyRecoveryError, apply, preview
+
+    source = Path(args.source).expanduser().resolve() if args.source else None
+    try:
+        if args.legacy_recovery_action == "preview":
+            result = preview(source)
+        else:
+            result = apply(
+                source_path=source,
+                project_ids=args.project,
+                approval_digest=args.approve,
+                backup_dir=(
+                    Path(args.backup_dir).expanduser().resolve()
+                    if args.backup_dir else None
+                ),
+            )
+    except LegacyRecoveryError as exc:
+        raise SystemExit(f"braincell legacy-recovery: {exc}") from exc
+    print(json.dumps(result, indent=2, sort_keys=True))
+
+
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="braincell", description="Standalone BrainCell memory CLI.")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -1441,6 +1559,19 @@ def main(argv: list[str] | None = None) -> None:
     pr = sub.add_parser("register", help="Mint/confirm the project ULID (no ingest).")
     pr.add_argument("path", nargs="?", default=".", help="Project path (default: cwd).")
     pr.set_defaults(func=cmd_register)
+
+    pproject = sub.add_parser("project", help="Manage stable Project identity.")
+    projectsub = pproject.add_subparsers(dest="project_cmd", required=True)
+    preassociate = projectsub.add_parser(
+        "reassociate",
+        help="Associate an existing Project ULID with its moved folder.",
+    )
+    preassociate.add_argument("project_id", help="Stable Project ULID to preserve.")
+    preassociate.add_argument("new_path", help="Project's current folder.")
+    preassociate.add_argument("--acknowledge-home", action="store_true")
+    preassociate.add_argument("--acknowledge-non-git", action="store_true")
+    preassociate.add_argument("--allow-privileged", action="store_true")
+    preassociate.set_defaults(func=cmd_project_reassociate)
 
     pv = sub.add_parser("serve", help="Run the FastMCP stdio server.")
     pv.set_defaults(func=cmd_serve)
@@ -1535,11 +1666,7 @@ def main(argv: list[str] | None = None) -> None:
     prc.add_argument("query", help="Natural-language query text.")
     prc.add_argument(
         "--path", default=".",
-        help="Project path for scope/seed resolution (default: cwd; project mode).",
-    )
-    prc.add_argument(
-        "--scope", choices=["self"], default="self",
-        help="This Project only (default). Explicit Pool operations are separate commands.",
+        help="Connected Project path (default: cwd).",
     )
     prc.add_argument("-k", "--k", type=int, default=5,
                      help="Max notes to return (1-50, default 5).")
@@ -1568,24 +1695,21 @@ def main(argv: list[str] | None = None) -> None:
     pse.add_argument("query", help="Natural-language search query.")
     pse.add_argument(
         "--path", default=".",
-        help="Project path for scope/seed resolution (default: cwd; project mode).",
-    )
-    pse.add_argument(
-        "--scope", choices=["self"], default="self",
-        help="This Project only (default). Explicit Pool operations are separate commands.",
+        help="Connected Project path (default: cwd).",
     )
     pse.add_argument("-k", "--k", type=int, default=10,
                      help="Max chunks to return (1-100, default 10).")
     pse.add_argument(
         "--rank", choices=["hybrid", "semantic", "keyword"], default="hybrid",
         help=(
-            "Ranking strategy (default hybrid = RRF over vector + FTS5). NOT the "
-            "brain selector — that is --mode."
+            "Ranking strategy (default hybrid = RRF over vector + FTS5). Normal "
+            "Search reads only the connected Project; use `braincell pool search` "
+            "for an explicit named Pool."
         ),
     )
     pse.add_argument(
         "--project", default=None,
-        help="Explicit project ULID to scope to (overrides --scope).",
+        help="Compatibility Project ULID; must match the connected Project.",
     )
     pse.add_argument("--json", action="store_true",
                      help="Emit JSON for machine consumption.")
@@ -1631,6 +1755,23 @@ def main(argv: list[str] | None = None) -> None:
     pi.add_argument("--allow-privileged", action="store_true",
                     help="Confirm root/sudo ownership of selected project configuration and state.")
     pi.set_defaults(func=cmd_install)
+
+    psetup = sub.add_parser(
+        "setup",
+        help="Plan or apply Project database, client connection, and optional skills setup.",
+    )
+    psetup.add_argument("path", nargs="?", default=".", help="Project path (default: cwd).")
+    psetup.add_argument("--client", choices=["claude", "codex", "vscode"], default="claude")
+    psetup.add_argument("--claude-scope", choices=["local", "project"], default="local")
+    psetup.add_argument("--with-skills", action="store_true")
+    psetup.add_argument("--automatic-pool-recall", metavar="POOL")
+    psetup.add_argument("--skip-transcripts", action="store_true")
+    psetup.add_argument("--yes", action="store_true", help="Apply the displayed plan.")
+    psetup.add_argument("--dry-run", action="store_true", help="Show the plan without writes.")
+    psetup.add_argument("--acknowledge-home", action="store_true")
+    psetup.add_argument("--acknowledge-non-git", action="store_true")
+    psetup.add_argument("--allow-privileged", action="store_true")
+    psetup.set_defaults(func=cmd_setup)
 
     pu = sub.add_parser("disconnect", aliases=["uninstall"], help="Disconnect BrainCell from one project client.")
     pu.add_argument("path", nargs="?", default=".",
@@ -1702,6 +1843,37 @@ def main(argv: list[str] | None = None) -> None:
         help="status=inspect legacy residue; remove=disable, stop, and delete it.",
     )
     pls.set_defaults(func=cmd_legacy_service)
+
+    precovery = sub.add_parser(
+        "legacy-recovery",
+        help="Preview or apply recovery from a retired shared BrainCell database.",
+    )
+    recoverysub = precovery.add_subparsers(
+        dest="legacy_recovery_action", required=True
+    )
+    precovery_preview = recoverysub.add_parser(
+        "preview", help="Classify recoverable rows without writing anything."
+    )
+    precovery_preview.add_argument(
+        "--source", help="Legacy database path (default: discovered retired database)."
+    )
+    precovery_preview.set_defaults(func=cmd_legacy_recovery)
+    precovery_apply = recoverysub.add_parser(
+        "apply", help="Copy selected attributable Projects after exact preview approval."
+    )
+    precovery_apply.add_argument("--source")
+    precovery_apply.add_argument(
+        "--project", action="append", required=True,
+        help="Project ULID to recover; repeat for multiple Projects.",
+    )
+    precovery_apply.add_argument(
+        "--approve", required=True,
+        help="Exact approval_digest from the current preview.",
+    )
+    precovery_apply.add_argument(
+        "--backup-dir", help="Directory for the retained original backup."
+    )
+    precovery_apply.set_defaults(func=cmd_legacy_recovery)
 
     pst = sub.add_parser(
         "stats",
@@ -1803,7 +1975,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     pgui.add_argument(
         "--allow-writes", action="store_true", default=False,
-        help="Enable write endpoints (forget notes, manage families). Default: read-only.",
+        help="Enable write endpoints (forget notes, manage Pools). Default: read-only.",
     )
     pgui.add_argument(
         "--rotate-token", action="store_true", default=False,

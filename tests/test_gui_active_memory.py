@@ -30,8 +30,6 @@ two runs).
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import sqlite3
 from pathlib import Path
 from unittest.mock import patch
 
@@ -104,9 +102,9 @@ def _embedder_down():
     )
 
 
-# ── B1: read-only sibling views ───────────────────────────────────────────────
+# ── Connected-Project reads and retired selector boundaries ─────────────────
 
-class TestRoSiblingViews:
+class TestConnectedProjectViews:
     def _setup_two_brains(self, tmp_path: Path) -> None:
         _register(tmp_path, "projA", PID_A)
         _register(tmp_path, "projB", PID_B)
@@ -115,147 +113,58 @@ class TestRoSiblingViews:
         _seed_brain(PID_B, notes=["sibling-only beta note"],
                     docs=[("doc-b", "beta sibling chunk")])
 
-    def test_notes_sibling_filter_returns_siblings_real_rows(self, tmp_path):
-        """projects=<sibling> serves the SIBLING's rows, not the launch db's."""
+    def test_default_notes_and_search_use_connected_store(self, tmp_path):
+        self._setup_two_brains(tmp_path)
+        with _embedder_down(), TestClient(_launch_app(PID_A)) as client:
+            notes = client.get("/api/notes").json()["notes"]
+            hits = client.get("/api/search?q=alpha").json()["hits"]
+        assert [note["content"] for note in notes] == ["launch-only alpha note"]
+        assert [hit["doc_key"] for hit in hits] == ["doc-a"]
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            f"/api/notes?projects={PID_B}",
+            f"/api/search?q=beta&projects={PID_B}",
+            f"/api/notes?projects={PID_A},{PID_B}",
+            "/api/notes?federate=true",
+            f"/api/search?q=beta&seed={PID_B}",
+        ],
+    )
+    def test_retired_cross_project_selectors_are_rejected(self, tmp_path, url):
         self._setup_two_brains(tmp_path)
         with TestClient(_launch_app(PID_A)) as client:
-            data = client.get(f"/api/notes?projects={PID_B}").json()
-        contents = [n["content"] for n in data["notes"]]
-        assert "sibling-only beta note" in contents
-        assert "launch-only alpha note" not in contents
-
-    def test_notes_launch_filter_uses_opened_store(self, tmp_path):
-        self._setup_two_brains(tmp_path)
-        with TestClient(_launch_app(PID_A)) as client:
-            data = client.get(f"/api/notes?projects={PID_A}").json()
-        contents = [n["content"] for n in data["notes"]]
-        assert contents == ["launch-only alpha note"]
-
-    def test_search_sibling_filter_returns_siblings_chunks(self, tmp_path):
-        self._setup_two_brains(tmp_path)
-        with _embedder_down():
-            with TestClient(_launch_app(PID_A)) as client:
-                data = client.get(f"/api/search?q=beta&projects={PID_B}").json()
-        assert any(h["doc_key"] == "doc-b" for h in data["hits"])
-        assert not any(h["doc_key"] == "doc-a" for h in data["hits"])
-
-    def test_sibling_db_file_is_byte_untouched_by_views(self, tmp_path):
-        """RO open — the sibling's braincell.db must not change by a single byte."""
-        self._setup_two_brains(tmp_path)
-        db_b = _brain_db(PID_B)
-        before = hashlib.sha256(db_b.read_bytes()).hexdigest()
-        with _embedder_down():
-            with TestClient(_launch_app(PID_A)) as client:
-                client.get(f"/api/notes?projects={PID_B}")
-                client.get(f"/api/search?q=beta&projects={PID_B}")
-        after = hashlib.sha256(db_b.read_bytes()).hexdigest()
-        assert before == after, "sibling db mutated by a read-only view"
-
-    def test_ro_open_rejects_writes(self, tmp_path):
-        """A write attempt through the RO path must raise (query_only + mode=ro)."""
-        self._setup_two_brains(tmp_path)
-        from braincell.store import SqliteStore
-
-        async def _attempt():
-            store = SqliteStore(_brain_db(PID_B), read_only=True)
-            try:
-                with pytest.raises(sqlite3.OperationalError):
-                    await store.remember("write into sibling", "note", PID_B)
-            finally:
-                await store.aclose()
-
-        asyncio.run(_attempt())
-
-    def test_unregistered_ulid_404_not_built(self, tmp_path):
-        self._setup_two_brains(tmp_path)
-        with TestClient(_launch_app(PID_A)) as client:
-            r = client.get("/api/notes?projects=NOSUCHULID000")
-        assert r.status_code == 404
-        assert "not built" in r.json()["detail"]
-
-    def test_registered_but_missing_db_404_not_built(self, tmp_path):
-        self._setup_two_brains(tmp_path)
-        _register(tmp_path, "projD", PID_D)  # registered, never built
-        with _embedder_down():
-            with TestClient(_launch_app(PID_A)) as client:
-                r_notes = client.get(f"/api/notes?projects={PID_D}")
-                r_search = client.get(f"/api/search?q=x&projects={PID_D}")
-        assert r_notes.status_code == 404
-        assert "not built" in r_notes.json()["detail"]
-        assert r_search.status_code == 404
-        assert "not built" in r_search.json()["detail"]
-
-    def test_multi_ulid_filter_keeps_opened_db_behavior(self, tmp_path):
-        """A multi-ULID list filters the opened db (today's behavior, unchanged)."""
-        self._setup_two_brains(tmp_path)
-        with TestClient(_launch_app(PID_A)) as client:
-            data = client.get(f"/api/notes?projects={PID_A},{PID_B}").json()
-        contents = [n["content"] for n in data["notes"]]
-        # The opened (launch) db holds only A's rows.
-        assert contents == ["launch-only alpha note"]
-
-    def test_unseeded_app_keeps_filtering_opened_db(self, tmp_path):
-        """Without a launch seed (global-mode / test app) the filter stays in-db."""
-        from braincell.gui import create_app
-        _register(tmp_path, "projA", PID_A)
-        _register(tmp_path, "projB", PID_B)
-        # One multi-project db (the global-brain shape), served without a seed.
-        _seed_brain(PID_A, notes=["multi-db note A"])
-        db = _brain_db(PID_A)
-        from braincell.store import SqliteStore
-
-        async def _add_b():
-            store = SqliteStore(db)
-            await store.remember("multi-db note B", "note", PID_B)
-            await store.aclose()
-
-        asyncio.run(_add_b())
-        app = create_app(db_path=db, seed_project_id=None)
-        with TestClient(app) as client:
-            data = client.get(f"/api/notes?projects={PID_B}").json()
-        assert [n["content"] for n in data["notes"]] == ["multi-db note B"]
+            response = client.get(url)
+        assert response.status_code == 400
+        assert "Pool" in response.json()["detail"]
 
 
 # ── Write pinning ─────────────────────────────────────────────────────────────
 
 class TestWritePinning:
-    def test_forget_sibling_note_is_structural_noop(self, tmp_path):
-        """POST /api/forget acts on the OPENED (launch) store only.
-
-        With a sibling's (note_id, project) pair the launch db holds no such
-        row → store.forget no-ops → deleted=false, and the sibling's note (and
-        the launch note sharing the same integer id — the decoy) both survive.
-        Pinned so a future refactor cannot make cross-project forget succeed.
-        """
+    def test_forget_sibling_project_is_rejected_before_mutation(self, tmp_path):
         _register(tmp_path, "projA", PID_A)
         _register(tmp_path, "projB", PID_B)
         ids_a = _seed_brain(PID_A, notes=["launch decoy note"])
         ids_b = _seed_brain(PID_B, notes=["sibling protected note"])
-        # Fresh brains assign the same first id — exactly the decoy alignment
-        # that makes an id-only (project-ignoring) forget detectable.
         assert ids_a[0] == ids_b[0]
+        before_a = _brain_db(PID_A).read_bytes()
+        before_b = _brain_db(PID_B).read_bytes()
 
         with TestClient(_launch_app(PID_A, allow_writes=True)) as client:
             r = client.post(
                 "/api/forget", json={"note_id": ids_b[0], "project": PID_B}
             )
-            assert r.status_code == 200
-            assert r.json()["deleted"] is False
-
-            sibling = client.get(f"/api/notes?projects={PID_B}").json()
-            launch = client.get(f"/api/notes?projects={PID_A}").json()
-        assert any(
-            n["content"] == "sibling protected note" for n in sibling["notes"]
-        ), "sibling note was affected by a launch-store forget"
-        assert any(
-            n["content"] == "launch decoy note" for n in launch["notes"]
-        ), "launch decoy note (same integer id) was wrongly forgotten"
+        assert r.status_code == 409
+        assert "connected Project" in r.json()["detail"]
+        assert _brain_db(PID_A).read_bytes() == before_a
+        assert _brain_db(PID_B).read_bytes() == before_b
 
 
-# ── B2: honest sibling counts in /api/projects ────────────────────────────────
+# ── Metadata-only Project catalog ────────────────────────────────────────────
 
-class TestHonestSiblingCounts:
-    def test_sibling_rows_carry_real_counts_in_project_mode(self, tmp_path):
+class TestProjectCatalogMetadata:
+    def test_sibling_rows_do_not_read_sibling_counts(self, tmp_path):
         _register(tmp_path, "projA", PID_A)
         _register(tmp_path, "projB", PID_B)
         _seed_brain(PID_A, notes=["a note"])
@@ -268,150 +177,17 @@ class TestHonestSiblingCounts:
             data = client.get("/api/projects").json()
         by_pid = {p["project_id"]: p for p in data}
         assert by_pid[PID_A]["notes"] == 1
-        b = by_pid[PID_B]
-        assert b["docs"] == 1
-        assert b["chunks"] == 1
-        assert b["notes"] == 2
-
-    def test_corrupt_sibling_yields_zeros_not_500(self, tmp_path):
-        _register(tmp_path, "projA", PID_A)
-        _register(tmp_path, "projC", PID_C)
-        _seed_brain(PID_A, notes=["a note"])
-        db_c = _brain_db(PID_C)
-        db_c.parent.mkdir(parents=True, exist_ok=True)
-        db_c.write_bytes(b"this is not a sqlite database at all")
-        with TestClient(_launch_app(PID_A)) as client:
-            r = client.get("/api/projects")
-        assert r.status_code == 200, "a corrupt sibling must never 500 the map"
-        row = next(p for p in r.json() if p["project_id"] == PID_C)
-        assert (row["docs"], row["chunks"], row["notes"]) == (0, 0, 0)
-
-    def test_unbuilt_sibling_yields_zeros(self, tmp_path):
-        _register(tmp_path, "projA", PID_A)
-        _register(tmp_path, "projD", PID_D)  # registered, no db
-        _seed_brain(PID_A, notes=["a note"])
-        with TestClient(_launch_app(PID_A)) as client:
-            data = client.get("/api/projects").json()
-        row = next(p for p in data if p["project_id"] == PID_D)
-        assert (row["docs"], row["chunks"], row["notes"]) == (0, 0, 0)
-
-    def test_unseeded_app_does_not_enrich(self, tmp_path):
-        """Sibling enrichment is project-mode only (no seed → no RO fan-out)."""
-        from braincell.gui import create_app
-        _register(tmp_path, "projA", PID_A)
-        _register(tmp_path, "projB", PID_B)
-        _seed_brain(PID_A, notes=["a note"])
-        _seed_brain(PID_B, notes=["b note"])
-        app = create_app(db_path=_brain_db(PID_A), seed_project_id=None)
-        with TestClient(app) as client:
-            data = client.get("/api/projects").json()
-        row = next(p for p in data if p["project_id"] == PID_B)
-        assert row["notes"] == 0
+        assert (
+            by_pid[PID_B]["docs"],
+            by_pid[PID_B]["chunks"],
+            by_pid[PID_B]["notes"],
+        ) == (0, 0, 0)
 
 
-# ── B3: active-seeded federation ──────────────────────────────────────────────
+# ── Project-only bootstrap config ────────────────────────────────────────────
 
-class TestActiveSeededFederation:
-    def _setup_family(self, tmp_path: Path) -> None:
-        from braincell.project_registry import add_family_members
-        root_a = _register(tmp_path, "projA", PID_A)
-        root_b = _register(tmp_path, "projB", PID_B)
-        add_family_members("actfam", [str(root_a), str(root_b)])
-        # DIFFERENT content per member — the decoy trap: if the launch store
-        # were wrongly passed as self for a seed=B plan, target B would query
-        # A's db (which holds no B rows) and B's note would vanish from the
-        # merge, failing loudly instead of passing by coincidence.
-        _seed_brain(PID_A, notes=["family note only in launch A"],
-                    docs=[("doc-a", "alphaword launch chunk")])
-        _seed_brain(PID_B, notes=["family note only in sibling B"],
-                    docs=[("doc-b", "betaword sibling chunk")])
-
-    def test_seeded_family_notes_read_the_seed_db_as_self(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("BRAINCELL_FEDERATE", "on")
-        self._setup_family(tmp_path)
-        with TestClient(_launch_app(PID_A)) as client:
-            data = client.get(f"/api/notes?federate=true&seed={PID_B}").json()
-        contents = [n["content"] for n in data["notes"]]
-        assert "family note only in sibling B" in contents, (
-            "seed=B must read B's own db as self — its rows are missing"
-        )
-        assert "family note only in launch A" in contents, (
-            "family fan-out must still include the launch member"
-        )
-
-    def test_seeded_family_ranks_seed_first_under_active_weight(self, tmp_path, monkeypatch):
-        """RRF seed preference must apply to the ?seed= project, not the launch one."""
-        monkeypatch.setenv("BRAINCELL_FEDERATE", "on")
-        monkeypatch.setenv("BRAINCELL_RRF_WEIGHT_ACTIVE", "2.0")
-        self._setup_family(tmp_path)
-        with TestClient(_launch_app(PID_A)) as client:
-            data = client.get(f"/api/notes?federate=true&seed={PID_B}").json()
-        assert data["notes"][0]["content"] == "family note only in sibling B", (
-            "with an active-weight prior, the SEED's (B's) list must rank first"
-        )
-
-    def test_seeded_family_search_reads_the_seed_db_as_self(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("BRAINCELL_FEDERATE", "on")
-        self._setup_family(tmp_path)
-        with _embedder_down():
-            with TestClient(_launch_app(PID_A)) as client:
-                data = client.get(
-                    f"/api/search?q=betaword&federate=true&seed={PID_B}"
-                ).json()
-        assert any(h["doc_key"] == "doc-b" for h in data["hits"]), (
-            "seed=B federated search must surface B's chunk from B's own db"
-        )
-
-    def test_launch_seed_param_matches_default_behavior(self, tmp_path, monkeypatch):
-        """seed=<launch pid> is the same view as no seed at all."""
-        monkeypatch.setenv("BRAINCELL_FEDERATE", "on")
-        self._setup_family(tmp_path)
-        with TestClient(_launch_app(PID_A)) as client:
-            explicit = client.get(f"/api/notes?federate=true&seed={PID_A}").json()
-            implicit = client.get("/api/notes?federate=true").json()
-        assert explicit["notes"] == implicit["notes"]
-
-    def test_unknown_seed_404(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("BRAINCELL_FEDERATE", "on")
-        self._setup_family(tmp_path)
-        with TestClient(_launch_app(PID_A)) as client:
-            r = client.get("/api/notes?federate=true&seed=NOSUCHULID000")
-        assert r.status_code == 404
-
-    def test_registered_unbuilt_seed_404_not_built(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("BRAINCELL_FEDERATE", "on")
-        self._setup_family(tmp_path)
-        _register(tmp_path, "projD", PID_D)  # registered, never built
-        with TestClient(_launch_app(PID_A)) as client:
-            r = client.get(f"/api/notes?federate=true&seed={PID_D}")
-        assert r.status_code == 404
-        assert "not built" in r.json()["detail"]
-
-    def test_seed_without_federate_does_not_switch_view(self, tmp_path, monkeypatch):
-        """seed= is a federation re-seed only; the plain path stays the opened db."""
-        monkeypatch.setenv("BRAINCELL_FEDERATE", "on")
-        self._setup_family(tmp_path)
-        with TestClient(_launch_app(PID_A)) as client:
-            data = client.get(f"/api/notes?seed={PID_B}").json()
-        contents = [n["content"] for n in data["notes"]]
-        assert contents == ["family note only in launch A"]
-
-    def test_seed_db_untouched_by_federated_view(self, tmp_path, monkeypatch):
-        """The seed's db is opened read-only — byte-identical after the query."""
-        monkeypatch.setenv("BRAINCELL_FEDERATE", "on")
-        self._setup_family(tmp_path)
-        db_b = _brain_db(PID_B)
-        before = hashlib.sha256(db_b.read_bytes()).hexdigest()
-        with TestClient(_launch_app(PID_A)) as client:
-            client.get(f"/api/notes?federate=true&seed={PID_B}")
-        after = hashlib.sha256(db_b.read_bytes()).hexdigest()
-        assert before == after
-
-
-# ── D: /api/config launch_project_id alias ────────────────────────────────────
-
-class TestConfigLaunchProjectId:
-    def test_seeded_config_exposes_launch_alias(self, tmp_path):
+class TestConfigConnectedProject:
+    def test_config_exposes_only_connected_project_binding(self, tmp_path):
         from braincell.gui import create_app
         app = create_app(
             db_path=tmp_path / "braincell.db", seed_project_id="SEEDPID00001"
@@ -419,17 +195,9 @@ class TestConfigLaunchProjectId:
         with TestClient(app) as client:
             data = client.get("/api/config").json()
         assert data["seed_project_id"] == "SEEDPID00001"
-        assert data["launch_project_id"] == "SEEDPID00001"
-        assert data["federate_available"] is True
-
-    def test_unseeded_config_has_null_launch_alias(self, tmp_path):
-        from braincell.gui import create_app
-        app = create_app(db_path=tmp_path / "braincell.db")
-        with TestClient(app) as client:
-            data = client.get("/api/config").json()
-        assert data["seed_project_id"] is None
-        assert data["launch_project_id"] is None
-        assert data["federate_available"] is False
+        assert data["connected_project_id"] == "SEEDPID00001"
+        assert "launch_project_id" not in data
+        assert "federate_available" not in data
 
 
 # ── Invariant regression ──────────────────────────────────────────────────────

@@ -3,10 +3,8 @@
 test_search_cli.py — the `braincell search` CLI subcommand.
 
 The CLI search path is a thin wrapper over ``server.search_hits`` (the same engine
-the ``mcp__braincell__search`` tool uses), so these tests assert the plumbing —
-brain/seed resolution, --json shape, --rank selection, scope validation, and
-FEDERATE on/off parity — not the ranking itself (covered by test_store /
-test_federate).
+the ``mcp__braincell__search`` tool uses), so these tests assert connected-Project
+resolution, output, ranking selection, retired-selector rejection, and isolation.
 
 NOTE the fixture difference from test_recall_cli.py: `recall` reads curated memory
 NOTES (seeded via ``store.remember``), `search` reads ingested document CHUNKS.
@@ -27,10 +25,8 @@ import pytest
 
 from braincell.cli import main
 from braincell.config import get_db_path, get_project_id
-from braincell.project_registry import add_family_members
 from braincell.store import SqliteStore
 from tests.conftest import _insert_doc_and_chunk, fake_vec
-
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -168,7 +164,7 @@ def test_search_retired_cross_project_scope_errors(tmp_path, capsys):
         main(["search", "passage", "--path", str(root), "--scope", "family"])
     assert exc.value.code == 2
     err = capsys.readouterr().err
-    assert "invalid choice" in err.lower()
+    assert "unrecognized arguments: --scope family" in err.lower()
 
 
 def test_search_retired_scope_cannot_fan_out_when_legacy_flag_is_set(tmp_path, capsys, monkeypatch):
@@ -177,28 +173,24 @@ def test_search_retired_scope_cannot_fan_out_when_legacy_flag_is_set(tmp_path, c
     b = tmp_path / "sfamB"
     _seed_project(a, ["alpha passage in project A"])
     _seed_project(b, ["distinctivezebra passage only in project B"])
-    add_family_members("sfam", [str(a), str(b)])
-
     monkeypatch.setenv("BRAINCELL_FEDERATE", "on")
 
     with pytest.raises(SystemExit) as exc:
         main(["search", "distinctivezebra", "--path", str(a),
               "--scope", "family", "--json"])
     assert exc.value.code == 2
-    assert "invalid choice" in capsys.readouterr().err.lower()
+    assert "unrecognized arguments: --scope family" in capsys.readouterr().err.lower()
 
 
-def test_search_scope_self_excludes_siblings(tmp_path, capsys, monkeypatch):
-    """scope='self' (default) returns only the active project's chunks even when a
-    family + federation are configured (federation only triggers on scope='family')."""
+def test_search_default_is_pinned_to_connected_project(tmp_path, capsys, monkeypatch):
+    """A retired federation environment flag cannot widen default Search."""
     a = tmp_path / "sselfA"
     b = tmp_path / "sselfB"
     _seed_project(a, ["alpha own passage"])
     _seed_project(b, ["distinctivezebra sibling passage"])
-    add_family_members("sfam2", [str(a), str(b)])
     monkeypatch.setenv("BRAINCELL_FEDERATE", "on")
 
     main(["search", "distinctivezebra", "--path", str(a), "--json"])
     data = json.loads(capsys.readouterr().out)
     blob = " ".join(h["snippet"] for h in data)
-    assert "distinctivezebra" not in blob, "scope='self' leaked a sibling chunk"
+    assert "distinctivezebra" not in blob, "connected-Project Search leaked a sibling chunk"

@@ -4,7 +4,11 @@ Release-facing notes for the public BrainCell project. This file records
 verified product changes only; private engineering history and machine-specific
 details are intentionally excluded.
 
-## Unreleased — project-only architecture
+## Unreleased
+
+- No unreleased changes.
+
+## v0.4.0 - 2026-07-27
 
 ### Added
 
@@ -20,6 +24,10 @@ details are intentionally excluded.
   local scope uses `.claude/settings.local.json`; intentional shareable scope
   uses `.claude/settings.json`.
 - Native Memory Map controls for Project-local skills and Automatic Pool recall.
+- Native Memory Map Pool controls for named membership, Decouple from Pool, and
+  explicit live Search Pool / Recall from Pool operations.
+- Preview-first legacy shared-data recovery with approval digest, retained
+  backups, exact verification, and transaction rollback on failure.
 
 ### Safety and behavior changes
 
@@ -30,13 +38,13 @@ details are intentionally excluded.
 - Automatic Pool recall stores a Pool name and stable Project ULID, never an
   absolute machine path, and does nothing outside the connected Project.
 - Pool membership changes never copy or delete Project memory.
+- Normal Recall and Search remain connected-Project-only; cross-Project Recall
+  and Search require an explicit named Pool.
+- The Memory Map uses Connect BrainCell language for client setup and no longer
+  presents retired MCP-registration copy in the active UI.
 
-### Still in progress
+### Baseline evidence
 
-- Complete native Memory Map replacement of legacy Family/materialized-Pool
-  controls.
-- Preview-first recovery and migration of legacy global configuration and
-  memory data.
-- Retirement of legacy runtime readers after migration verification.
-- Native GUI acceptance coverage, performance measurements, and lifecycle
-  start/failure/restart notifications.
+- Release performance measurements are recorded as baseline observations only;
+  they are not performance guarantees. See
+  `docs/2026-07-27-v0.4.0-performance-baseline.md`.

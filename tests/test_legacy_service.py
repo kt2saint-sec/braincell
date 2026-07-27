@@ -95,17 +95,16 @@ def test_cli_remove_does_not_touch_mcp(tmp_path, monkeypatch, capsys):
     assert "removed retired GUI service" in capsys.readouterr().out
 
 
-def test_active_legacy_unit_blocks_start_preflight(tmp_path, monkeypatch):
+def test_normal_start_preflight_never_probes_legacy_service(tmp_path, monkeypatch):
     from braincell import launch, legacy_service
 
     monkeypatch.setattr(
         legacy_service,
         "status",
-        lambda: {"installed": True, "enabled": True, "active": True},
+        lambda: (_ for _ in ()).throw(AssertionError("normal preflight must not run systemctl")),
     )
     result = launch.preflight(tmp_path)
-    assert result.action == "legacy_service"
-    assert "legacy-service remove" in "\n".join(result.report_lines)
+    assert result.action == "launch"
 
 
 def test_service_install_surface_is_absent(tmp_path):

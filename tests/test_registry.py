@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """
-test_registry.py — G3: save_families, add/remove mutators, list_projects,
-list_families, and family CLI handlers.
+test_registry.py — legacy-recovery metadata, Project catalog metadata, and
+the project-only named-Pool registry/CLI contract.
 
 Isolation: the autouse ``isolate_xdg`` fixture (conftest.py) redirects
 XDG_DATA_HOME to a per-test tmp_path so families.json and path-registry.json
@@ -12,7 +12,6 @@ All tests are offline and deterministic (no Ollama, no network).
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import json
 
@@ -27,7 +26,6 @@ from braincell.project_registry import (
     remove_family,
     save_families,
 )
-
 
 # ── save_families ─────────────────────────────────────────────────────────────
 
@@ -202,174 +200,86 @@ class TestListProjectsTool:
         assert paths == sorted(paths)
 
 
-# ── list_families MCP tool ────────────────────────────────────────────────────
+# ── list_pools MCP metadata tool ─────────────────────────────────────────────
 
-class TestListFamiliesTool:
-    """list_families() resolves member ULIDs; unregistered members get no ULID."""
+class TestListPoolsTool:
+    """Pool catalog reads membership metadata only; members are stable ULIDs."""
 
-    def test_empty_families_returns_empty_list(self):
-        from braincell.server import list_families
+    def test_empty_pools_returns_empty_list(self):
+        from braincell.server import list_pools
 
-        result = asyncio.run(list_families())
-        assert result == []
+        assert asyncio.run(list_pools()) == []
 
-    def test_registered_member_resolves_ulid(self):
-        from braincell.server import list_families
+    def test_registered_and_unregistered_ulid_status(self):
+        from braincell.project_registry import add_to_pool, create_pool
+        from braincell.server import list_pools
 
-        register_path("/home/user/proj-a", "01PROJA000000000000000001A")
-        add_family_members("my-fam", ["/home/user/proj-a"])
-        result = asyncio.run(list_families())
-        assert len(result) == 1
-        fam = result[0]
-        assert fam.name == "my-fam"
-        assert "01PROJA000000000000000001A" in fam.project_ids
+        registered = "01PROJA000000000000000001A"
+        unregistered = "01MISSING0000000000000001Z"
+        register_path("/home/user/proj-a", registered)
+        create_pool("my-pool")
+        add_to_pool("my-pool", [registered, unregistered])
 
-    def test_unregistered_member_excluded_from_project_ids(self):
-        from braincell.server import list_families
-
-        register_path("/home/user/proj-a", "01PROJA000000000000000001A")
-        add_family_members("my-fam", ["/home/user/proj-a", "/home/user/unregistered"])
-        result = asyncio.run(list_families())
-        fam = result[0]
-        # Both paths appear in members
-        assert any("unregistered" in m for m in fam.members)
-        # But only the registered one contributes a ULID
-        assert fam.project_ids == ["01PROJA000000000000000001A"]
-
-    def test_families_sorted_by_name(self):
-        from braincell.server import list_families
-
-        add_family_members("z-fam", ["/tmp/z"])
-        add_family_members("a-fam", ["/tmp/a"])
-        result = asyncio.run(list_families())
-        names = [f.name for f in result]
-        assert names == sorted(names)
-
-    def test_multiple_registered_members(self):
-        from braincell.server import list_families
-
-        register_path("/home/user/p1", "01P1000000000000000000001A")
-        register_path("/home/user/p2", "01P2000000000000000000001B")
-        add_family_members("multi", ["/home/user/p1", "/home/user/p2"])
-        result = asyncio.run(list_families())
-        fam = result[0]
-        assert set(fam.project_ids) == {
-            "01P1000000000000000000001A",
-            "01P2000000000000000000001B",
+        pool = asyncio.run(list_pools())[0]
+        assert pool.name == "my-pool"
+        assert pool.member_project_ids == [unregistered, registered]
+        assert pool.member_status == {
+            registered: "registered",
+            unregistered: "unregistered",
         }
 
+    def test_pools_sorted_by_name(self):
+        from braincell.project_registry import create_pool
+        from braincell.server import list_pools
 
-# ── family CLI handlers ───────────────────────────────────────────────────────
-
-class TestFamilyCLIHandlers:
-    """Direct invocation of cmd_family_* handler functions."""
-
-    def test_add_creates_family(self):
-        from braincell.cli import cmd_family_add
-
-        args = argparse.Namespace(name="cli-fam", paths=["/home/user/x"])
-        cmd_family_add(args)
-        fams = load_families()
-        assert "cli-fam" in fams
-        assert normalize_path("/home/user/x") in fams["cli-fam"]
-
-    def test_add_idempotent(self):
-        """Running add twice for the same path doesn't duplicate members."""
-        from braincell.cli import cmd_family_add
-
-        args = argparse.Namespace(name="cli-fam", paths=["/home/user/x"])
-        cmd_family_add(args)
-        cmd_family_add(args)
-        fams = load_families()
-        assert fams["cli-fam"].count(normalize_path("/home/user/x")) == 1
-
-    def test_rm_removes_entire_family(self):
-        """cmd_family_rm with empty paths list removes the whole family."""
-        from braincell.cli import cmd_family_add, cmd_family_rm
-
-        cmd_family_add(argparse.Namespace(name="cli-fam", paths=["/home/user/x"]))
-        cmd_family_rm(argparse.Namespace(name="cli-fam", paths=[]))
-        assert "cli-fam" not in load_families()
-
-    def test_rm_removes_specific_member(self):
-        """cmd_family_rm with a path removes just that member."""
-        from braincell.cli import cmd_family_add, cmd_family_rm
-
-        cmd_family_add(argparse.Namespace(name="cli-fam", paths=["/home/user/x", "/home/user/y"]))
-        cmd_family_rm(argparse.Namespace(name="cli-fam", paths=["/home/user/x"]))
-        fams = load_families()
-        assert "cli-fam" in fams
-        assert normalize_path("/home/user/x") not in fams["cli-fam"]
-        assert normalize_path("/home/user/y") in fams["cli-fam"]
-
-    def test_ls_no_families(self, capsys):
-        """cmd_family_ls prints a helpful message when no families exist."""
-        from braincell.cli import cmd_family_ls
-
-        cmd_family_ls(argparse.Namespace())
-        out = capsys.readouterr().out
-        assert "No families" in out
-
-    def test_ls_shows_family_and_ulid(self, capsys):
-        """cmd_family_ls shows the family name and resolved ULID."""
-        from braincell.cli import cmd_family_ls
-
-        register_path("/home/user/proj-a", "01PROJA000000000000000001A")
-        add_family_members("ls-fam", ["/home/user/proj-a"])
-        cmd_family_ls(argparse.Namespace())
-        out = capsys.readouterr().out
-        assert "ls-fam" in out
-        assert "01PROJA000000000000000001A" in out
-
-    def test_ls_shows_unregistered_label(self, capsys):
-        """cmd_family_ls labels paths not in the path registry as (unregistered)."""
-        from braincell.cli import cmd_family_ls
-
-        add_family_members("ls-fam", ["/home/user/no-ulid-here"])
-        cmd_family_ls(argparse.Namespace())
-        out = capsys.readouterr().out
-        assert "unregistered" in out
+        create_pool("z-pool")
+        create_pool("a-pool")
+        assert [pool.name for pool in asyncio.run(list_pools())] == [
+            "a-pool",
+            "z-pool",
+        ]
 
 
-# ── end-to-end argparse round-trips ──────────────────────────────────────────
+# ── named-Pool CLI argparse round-trips ─────────────────────────────────────
 
-class TestFamilyCLIArgparse:
-    """Full argparse dispatch: braincell family {add,rm,ls}."""
+class TestPoolCLIArgparse:
+    def test_create_add_list_and_decouple_membership(self, capsys):
+        from braincell.cli import main
+        from braincell.project_registry import load_pools
 
-    def test_family_add_via_main(self):
+        project_a = "01PROJA000000000000000001A"
+        project_b = "01PROJB000000000000000001B"
+        main(["pool", "create", "Research"])
+        main(["pool", "add", "Research", project_a, project_b])
+        main(["pool", "list"])
+        listing = capsys.readouterr().out
+        assert "Research" in listing
+        assert project_a in listing and project_b in listing
+
+        main(["pool", "decouple", "Research", project_b])
+        assert load_pools()["Research"] == (project_a,)
+
+    def test_decouple_changes_membership_only(self, tmp_path):
+        from braincell.cli import main
+        from braincell.config import get_db_path
+        from braincell.project_registry import load_pools
+
+        project_id = "01PROJA000000000000000001A"
+        db = get_db_path(project_id)
+        db.parent.mkdir(parents=True, exist_ok=True)
+        db.write_bytes(b"project-memory-sentinel")
+
+        main(["pool", "create", "Research"])
+        main(["pool", "add", "Research", project_id])
+        before = db.read_bytes()
+        main(["pool", "decouple", "Research", project_id])
+
+        assert load_pools()["Research"] == ()
+        assert db.read_bytes() == before
+
+    def test_family_command_is_retired(self):
         from braincell.cli import main
 
-        main(["family", "add", "argparse-fam", "/some/path"])
-        fams = load_families()
-        assert "argparse-fam" in fams
-
-    def test_family_add_multiple_paths(self):
-        from braincell.cli import main
-
-        main(["family", "add", "multi-fam", "/path/a", "/path/b"])
-        fams = load_families()
-        assert len(fams["multi-fam"]) == 2
-
-    def test_family_ls_via_main(self, capsys):
-        from braincell.cli import main
-
-        add_family_members("exist-fam", ["/a/b"])
-        main(["family", "ls"])
-        out = capsys.readouterr().out
-        assert "exist-fam" in out
-
-    def test_family_rm_whole_family_via_main(self):
-        from braincell.cli import main
-
-        add_family_members("to-drop", ["/a/b"])
-        main(["family", "rm", "to-drop"])
-        assert "to-drop" not in load_families()
-
-    def test_family_rm_specific_member_via_main(self):
-        from braincell.cli import main
-
-        add_family_members("partial-drop", ["/a/b", "/c/d"])
-        main(["family", "rm", "partial-drop", "/a/b"])
-        fams = load_families()
-        assert "partial-drop" in fams
-        assert normalize_path("/a/b") not in fams["partial-drop"]
+        with pytest.raises(SystemExit) as exc:
+            main(["family", "ls"])
+        assert exc.value.code == 2

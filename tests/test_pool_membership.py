@@ -97,7 +97,7 @@ def test_pool_query_resolves_current_paths_and_skips_missing_or_corrupt_members(
 
     assert [target.project_id for target in plan.targets] == ["01CONNECTED", "01VALID"]
     assert {status.status for status in plan.member_status} >= {
-        "ready", "missing-path", "unreadable-database"
+        "ready", "missing", "corrupt"
     }
 
 

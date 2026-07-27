@@ -128,7 +128,7 @@ svg.stage:active{cursor:grabbing}
 .btn:disabled{opacity:.45;cursor:not-allowed}
 .btn:disabled:hover{background:rgba(200,207,216,.06);border-color:rgba(200,207,216,.24);transform:none}
 
-/* scope toggle — segmented control, native to the existing chrome tokens */
+/* retained segmented-control styles for compatibility-only hidden controls */
 .scope-seg{display:inline-flex;align-items:center;margin-left:10px;background:rgba(200,207,216,.06);border:1px solid rgba(200,207,216,.24);border-radius:10px;padding:2px;backdrop-filter:blur(8px);box-shadow:inset 0 1px 0 rgba(255,255,255,.08)}
 .scope-seg button{font-family:var(--disp);font-size:11.5px;font-weight:500;color:var(--silver);cursor:pointer;background:none;border:0;border-radius:8px;padding:6px 11px;transition:.16s;white-space:nowrap}
 .scope-seg button:hover:not(:disabled){color:var(--silver-h)}
@@ -412,6 +412,7 @@ svg.stage:active{cursor:grabbing}
       </div>
       <div class="dr-actions" id="dr-actions" style="display:none">
         <button class="btn" id="dr-rebuild-btn" onclick="reingestSelected()">⟳ Rebuild now</button>
+        <button class="btn" id="dr-reassociate-btn" onclick="reassociateSelected()">↪ Reassociate path</button>
         <button class="btn danger" id="dr-clear-btn" onclick="confirmClearSelected()">✕ Clear memory</button>
       </div>
       <div class="dr-sched" id="dr-sched" style="display:none">
@@ -430,7 +431,7 @@ svg.stage:active{cursor:grabbing}
       <div class="sec" style="margin-top:12px">MCP</div>
       <div class="mcp-status" id="dr-mcp-status">—</div>
       <div class="dr-actions" id="dr-mcp-actions">
-        <button class="btn" id="dr-mcp-register-btn" onclick="mcpRegisterSelected()">Register MCP</button>
+        <button class="btn" id="dr-mcp-register-btn" onclick="mcpRegisterSelected()">Connect BrainCell</button>
         <button class="btn" id="dr-mcp-deregister-btn" onclick="mcpDeregisterSelected()">Deregister MCP</button>
       </div>
       <div class="mcp-note" id="dr-mcp-note">To restart the MCP server, reconnect in your client — run <b>/mcp</b> in Claude Code. The GUI cannot restart it; it runs inside your MCP client.</div>
@@ -1208,8 +1209,8 @@ function arWatchBuild(){
 }
 function arStepInstall(){
   arStep=3;
-  openModal("Add a project — 3/4: Register MCP",
-    `Register the braincell MCP server for <b>${esc(arPath.split("/").pop())}</b>.`,
+  openModal("Add a project — 3/4: Connect BrainCell",
+    `Connect BrainCell to <b>${esc(arPath.split("/").pop())}</b>.`,
     `<div class="mo-label">MCP client</div>
      <select class="mo-input" id="ar-client">
        <option value="claude">claude</option>
@@ -1222,7 +1223,7 @@ function arStepInstall(){
      </select>
      <div id="ar-install-err" class="warn-note" style="display:none;margin-top:10px"></div>`,
     `<button class="btn" onclick="closeModal()">Cancel</button>
-     <button class="btn primary" onclick="arDoInstall()">Register MCP →</button>`);
+     <button class="btn primary" onclick="arDoInstall()">Connect BrainCell →</button>`);
 }
 async function arDoInstall(){
   const client=document.getElementById("ar-client").value;
@@ -1301,6 +1302,31 @@ function confirmClearSelected(){
     `<button class="btn" onclick="closeModal()">Cancel</button>
      <button class="btn danger" onclick="doClearSelected()">✕ Clear</button>`);
 }
+function reassociateSelected(){
+  const nd=nodes.find(n=>n.id===selected);if(!nd)return;
+  if(!requireWrites())return;
+  openModal("Reassociate Project path",
+    `Preserve <b>${esc(nd.name)}</b>'s stable ULID, memory database, and Pool memberships while recording its moved folder.<br><br>Old path: <code>${esc(nd.path||"unavailable")}</code>`,
+    `<div class="mo-label">New Project folder</div>
+     <input class="mo-input" id="rp-path" placeholder="/path/to/moved/project">
+     <label style="display:flex;gap:8px;margin-top:10px"><input type="checkbox" id="rp-nongit"> I intentionally selected a non-Git Project</label>`,
+    `<button class="btn" onclick="closeModal()">Cancel</button>
+     <button class="btn primary" onclick="doReassociateSelected()">Reassociate</button>`);
+}
+async function doReassociateSelected(){
+  const nd=nodes.find(n=>n.id===selected);if(!nd)return;
+  const path=(document.getElementById("rp-path")||{}).value||"";
+  const acknowledge_non_git=!!(document.getElementById("rp-nongit")||{}).checked;
+  try{
+    const result=await apiPost("/api/projects/reassociate",{
+      project_id:nd.id,new_path:path,acknowledge_non_git
+    });
+    closeModal();
+    toast(`Reassociated ${nd.name}: ${result.old_path} → ${result.new_path}`);
+    await loadAll();
+    const moved=nodes.find(n=>n.id===nd.id);if(moved)openDock(moved);
+  }catch(err){toast(`Reassociate failed: ${err.message}`,"err");}
+}
 async function doClearSelected(){
   const nd=nodes.find(n=>n.id===selected);if(!nd)return;
   const inclNotes=!!(document.getElementById("clr-notes")||{}).checked;
@@ -1364,6 +1390,7 @@ function openDock(nd){
 function paintInspectorRo(){
   const ro=!isLaunch();
   [["dr-rebuild-btn","Build this project's memory again now"],
+   ["dr-reassociate-btn","Record this Project's moved folder while preserving its stable identity"],
    ["dr-clear-btn","Wipe built docs & chunks — the next build re-absorbs everything fresh"]]
   .forEach(([id,tip])=>{
     const b=document.getElementById(id);
@@ -1379,7 +1406,7 @@ function paintInspectorRo(){
    Registration state is read-only DETECTION: /api/status.mcp carries per-client
    detail for the connected Project; every /api/projects entry
    carries a claude-client mcp_registered summary. The buttons reuse the existing
-   flows — Register MCP = the Add-project wizard's Register-MCP step with the
+   flows — Connect BrainCell = the Add-project wizard's connection step with the
    path prefilled; Deregister MCP = POST /api/uninstall. Both mount only under
    --allow-writes, so read-only disables (never hides) them, while the status
    line still renders. There is deliberately NO restart button: the MCP server
@@ -1399,7 +1426,7 @@ function mcpStatusText(nd){
 function paintMcpBlock(nd){
   const st=document.getElementById("dr-mcp-status");
   if(st)st.textContent=mcpStatusText(nd);   /* textContent — inert, no esc needed */
-  [["dr-mcp-register-btn","Register the braincell MCP server for this project — opens the Register-MCP step"],
+  [["dr-mcp-register-btn","Connect BrainCell for this project — opens the connection step"],
    ["dr-mcp-deregister-btn","Remove this project's braincell MCP registration from a client — the brain data is untouched"]]
   .forEach(([id,tip])=>{
     const b=document.getElementById(id);
@@ -1412,7 +1439,7 @@ function mcpRegisterSelected(){
   const nd=nodes.find(n=>n.id===selected);if(!nd)return;
   if(!requireWrites())return;
   if(!nd.path){toast("This project has no registered path","err");return;}
-  /* reuse the Add-project wizard at its Register-MCP step, path prefilled */
+  /* reuse the Add-project wizard at its connection step, path prefilled */
   arPath=nd.path;arProjectId=nd.id;arClient="claude";
   arStepInstall();
 }
@@ -1727,7 +1754,7 @@ function openCommandsModal(){
 
      <div class="mo-label">Already on the map</div>
      <div class="note"><div class="k">build / sync</div><div class="c">Build a project folder's transcripts into its brain (sync = the same incremental run) → toolbar <b>⬇ Build memory (no MCP)</b>, or a cell's <b>⟳ Rebuild now</b>.</div></div>
-     <div class="note"><div class="k">search / recall</div><div class="c">search = ranked document chunks; recall = curated memory notes → click a cell: the drawer's search box and Recent notes (scope toggle applies).</div></div>
+     <div class="note"><div class="k">search / recall</div><div class="c">search = ranked document chunks; recall = curated memory notes → the drawer reads the connected Project. Use Search Pool or Recall from Pool for explicit live cross-Project results.</div></div>
      <div class="note"><div class="k">forget</div><div class="c">Soft-delete one note → the ✕ on any note in the drawer's Recent notes (writes on).</div></div>
      <div class="note"><div class="k">Pool</div><div class="c">Create a named Pool, add Project memberships, and use Search Pool or Recall from Pool for explicit live read-only queries. Pools never copy Project memory.</div></div>
      <div class="note"><div class="k">Connect BrainCell</div><div class="c">Connect the selected project to an MCP client. Project memory stays separate; adding it to a Pool is a separate, optional action.</div></div>
@@ -1858,7 +1885,13 @@ async function cmdLivePool(kind){
   try{
     const r=await apiPost(`/api/pools/${kind}`,{pool,query,k:10,rank:"hybrid"});
     const rows=kind==="search"?(r.hits||[]):(r.notes||[]);
-    if(el){el.style.display="";el.innerHTML=rows.length?rows.map(x=>`<div class="fs-item" style="cursor:default"><span style="flex:1">${esc(x.content||x.snippet||x.title||"")}</span></div>`).join(""):`<div class="fs-empty">No Pool results.</div>`;}
+    if(el){
+      const memberStatus=(r.member_status||[]).filter(m=>m.status!=="ready");
+      const statusRows=memberStatus.map(m=>`<div class="fs-item" style="cursor:default"><span style="flex:1">Skipped ${esc(m.project_id)} — ${esc(m.status)}: ${esc(m.detail||"")}</span></div>`).join("");
+      const resultRows=rows.map(x=>`<div class="fs-item" style="cursor:default"><span style="flex:1">${esc(x.content||x.snippet||x.title||"")}</span></div>`).join("");
+      el.style.display="";
+      el.innerHTML=(resultRows||`<div class="fs-empty">No Pool results.</div>`)+statusRows;
+    }
     toast(`${kind==="search"?"Search":"Recall"} Pool returned ${rows.length} result(s)`);
   }catch(err){toast(`Pool ${kind} failed: ${err.message}`,"err");}
 }

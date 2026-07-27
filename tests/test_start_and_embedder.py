@@ -25,7 +25,6 @@ import pytest
 from braincell import embed_spec, launch
 from braincell.install import claude_registered_map, registration_status
 
-
 # ── shared stubs ──────────────────────────────────────────────────────────────
 
 def _stub_embedder(monkeypatch, ok: bool = True, detail: str = ""):
@@ -244,6 +243,7 @@ class TestPreflight:
 def test_doc_count_reads_real_store(tmp_path):
     """_doc_count counts bc_documents via a read-only sqlite3 open."""
     import asyncio
+
     from tests.conftest import _insert_doc_and_chunk, make_store
 
     store = make_store(tmp_path)
@@ -267,7 +267,7 @@ class TestCmdStart:
         monkeypatch.setattr("braincell.native_shell.alert", lambda *a, **k: True)
 
     def _args(self, path, **kw):
-        defaults = dict(path=str(path), port=8765, global_brain=False)
+        defaults = {"path": str(path), "port": 8765, "global_brain": False}
         defaults.update(kw)
         return argparse.Namespace(**defaults)
 
@@ -369,7 +369,7 @@ class TestCmdStart:
         monkeypatch.setattr("braincell.gui.run_gui", lambda **kw: None)
         cmd_start(self._args(repo))  # completes without touching get_client
 
-    def test_global_flag_targets_global_brain(self, tmp_path, monkeypatch):
+    def test_retired_global_attribute_cannot_widen_start(self, tmp_path, monkeypatch):
         from braincell.cli import cmd_start
         monkeypatch.setattr("braincell.gui._resolve_gui_token", lambda: "tok")
         monkeypatch.setattr(launch, "probe_status", lambda *a, **k: None)
@@ -379,7 +379,7 @@ class TestCmdStart:
             "braincell.gui.run_gui", lambda **kw: captured.update(kw)
         )
         cmd_start(self._args(tmp_path, global_brain=True))
-        assert captured["mode"] == "global"
+        assert captured["mode"] == "project"
         assert captured["allow_writes"] is True
 
 
@@ -503,6 +503,8 @@ class TestRegistrationStatus:
         monkeypatch.setenv("BRAINCELL_CODEX_CONFIG", str(self.codex_toml))
         self.repo = tmp_path / "repo"
         self.repo.mkdir()
+        (self.repo / ".git").mkdir()
+        self.project_codex_toml = self.repo / ".codex" / "config.toml"
 
     def _write_claude(self, cfg: dict) -> None:
         self.claude_json.write_text(json.dumps(cfg), encoding="utf-8")
@@ -510,7 +512,9 @@ class TestRegistrationStatus:
     def test_absent_files_not_registered(self):
         st = registration_status(self.repo)
         assert st["claude"] == {"registered": False}
-        assert st["codex"] == {"registered": False}
+        assert st["codex"]["project"]["registered"] is False
+        assert st["codex"]["project"]["config_path"] == str(self.project_codex_toml)
+        assert st["codex"]["legacy_global"] == {"registered": False}
         assert st["vscode"]["registered"] is None
 
     def test_claude_local_scope(self):
@@ -564,18 +568,22 @@ class TestRegistrationStatus:
         assert registration_status(self.repo)["claude"] == {"registered": None}
 
     def test_codex_registered(self):
-        self.codex_toml.write_text(
+        self.project_codex_toml.parent.mkdir()
+        self.project_codex_toml.write_text(
             '[mcp_servers.braincell]\ncommand = "/x/braincell-mcp"\n',
             encoding="utf-8",
         )
-        st = registration_status(self.repo)["codex"]
+        st = registration_status(self.repo)["codex"]["project"]
         assert st["registered"] is True
-        assert st["scope"] == "global"
         assert st["command"] == "/x/braincell-mcp"
+        assert st["conflict"] is True
 
     def test_malformed_codex_toml_is_unknown(self):
-        self.codex_toml.write_text("not [[ valid toml", encoding="utf-8")
-        assert registration_status(self.repo)["codex"] == {"registered": None}
+        self.project_codex_toml.parent.mkdir()
+        self.project_codex_toml.write_text("not [[ valid toml", encoding="utf-8")
+        status = registration_status(self.repo)["codex"]["project"]
+        assert status["registered"] is None
+        assert status["config_path"] == str(self.project_codex_toml)
 
 
 class TestClaudeRegisteredMap:

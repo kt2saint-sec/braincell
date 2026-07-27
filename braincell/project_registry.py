@@ -26,8 +26,8 @@ import json
 import os
 import unicodedata
 from pathlib import Path
-from typing import Optional
 
+from .catalog_io import atomic_write_json, catalog_lock
 from .config import get_families_path, get_path_registry_path, get_pools_path
 from .log import get as _get_log
 
@@ -59,37 +59,55 @@ def load_path_registry() -> dict[str, str]:
 
 
 def save_path_registry(registry: dict[str, str]) -> None:
-    """Persist the registry atomically (tmp + os.replace)."""
+    """Persist a complete registry under the catalog lock."""
     p = get_path_registry_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(registry, indent=2, sort_keys=True), encoding="utf-8")
-    os.replace(tmp, p)
+    with catalog_lock(p):
+        atomic_write_json(p, registry, sort_keys=True)
 
 
 def register_path(path: str | Path, ulid: str) -> None:
     """Upsert one `abs_path → ULID` mapping (no-op if already current)."""
     key = normalize_path(path)
-    registry = load_path_registry()
-    if registry.get(key) == ulid:
-        return
-    registry[key] = ulid
-    save_path_registry(registry)
+    catalog = get_path_registry_path()
+    with catalog_lock(catalog):
+        registry = load_path_registry()
+        if registry.get(key) == ulid:
+            return
+        registry[key] = ulid
+        atomic_write_json(catalog, registry, sort_keys=True)
 
 
-def reassociate_project_path(ulid: str, path: str | Path) -> None:
-    """Record a moved Project's current path without changing its stable ULID."""
+def reassociate_project_path(ulid: str, path: str | Path) -> tuple[Path, Path]:
+    """Move one stable ULID's path registration without touching memory or Pools."""
     key = normalize_path(path)
-    registry = {existing_path: existing_id for existing_path, existing_id in load_path_registry().items()
-                if existing_id != ulid}
-    registry[key] = ulid
-    save_path_registry(registry)
+    catalog = get_path_registry_path()
+    with catalog_lock(catalog):
+        registry = load_path_registry()
+        old_paths = sorted(
+            existing_path for existing_path, existing_id in registry.items()
+            if existing_id == ulid
+        )
+        if not old_paths:
+            raise KeyError(f"Project {ulid!r} is not registered.")
+        owner = registry.get(key)
+        if owner is not None and owner != ulid:
+            raise ValueError(
+                f"Destination {key} is already owned by Project {owner}."
+            )
+        updated = {
+            existing_path: existing_id
+            for existing_path, existing_id in registry.items()
+            if existing_id != ulid
+        }
+        updated[key] = ulid
+        atomic_write_json(catalog, updated, sort_keys=True)
+        return Path(old_paths[0]), Path(key)
 
 
-def resolve_ulid_to_path(ulid: str, registry: Optional[dict[str, str]] = None) -> Optional[Path]:
+def resolve_ulid_to_path(ulid: str, registry: dict[str, str] | None = None) -> Path | None:
     """Resolve a stable ULID to its currently registered path, if any."""
     paths = [path for path, candidate in (registry or load_path_registry()).items() if candidate == ulid]
-    return Path(sorted(paths)[0]) if paths else None
+    return Path(min(paths)) if paths else None
 
 
 # ── Pools (ULID membership only) ────────────────────────────────────────────
@@ -119,16 +137,13 @@ def _load_pools_document() -> dict[str, object]:
 
 def _save_pools_document(document: dict[str, object]) -> None:
     path = get_pools_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".json.tmp")
-    temporary.write_text(json.dumps(document, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    os.replace(temporary, path)
+    atomic_write_json(path, document)
 
 
 def _pool_records(document: dict[str, object]) -> list[dict[str, object]]:
     records = document["pools"]
     if not isinstance(records, list):  # defensive, checked by _load_pools_document
-        raise RuntimeError("Pool membership metadata has invalid records.")
+        raise RuntimeError("Pool membership metadata has invalid records.")  # noqa: TRY004  # Corrupt persisted metadata is not caller type input.
     return records  # type: ignore[return-value]
 
 
@@ -168,14 +183,16 @@ def _find_pool(records: list[dict[str, object]], name: str) -> dict[str, object]
 
 def create_pool(name: str) -> dict[str, tuple[str, ...]]:
     """Create an empty named Pool. Names collide by documented normalization."""
-    document = _load_pools_document()
-    records = _pool_records(document)
-    if _find_pool(records, name) is not None:
-        raise ValueError(f"A Pool named {name!r} already exists after name normalization.")
-    display = " ".join(unicodedata.normalize("NFKC", name).strip().split())
-    records.append({"name": display, "normalized_name": normalize_pool_name(name), "members": []})
-    records.sort(key=lambda item: str(item["normalized_name"]))
-    _save_pools_document(document)
+    catalog = get_pools_path()
+    with catalog_lock(catalog):
+        document = _load_pools_document()
+        records = _pool_records(document)
+        if _find_pool(records, name) is not None:
+            raise ValueError(f"A Pool named {name!r} already exists after name normalization.")
+        display = " ".join(unicodedata.normalize("NFKC", name).strip().split())
+        records.append({"name": display, "normalized_name": normalize_pool_name(name), "members": []})
+        records.sort(key=lambda item: str(item["normalized_name"]))
+        _save_pools_document(document)
     return load_pools()
 
 
@@ -183,42 +200,48 @@ def add_to_pool(name: str, project_ids: list[str]) -> tuple[str, ...]:
     """Add stable ULIDs to one Pool without duplicating memberships."""
     if not project_ids or any(not isinstance(project_id, str) or not project_id.strip() for project_id in project_ids):
         raise ValueError("Add to Pool requires at least one non-empty project ULID.")
-    document = _load_pools_document()
-    record = _find_pool(_pool_records(document), name)
-    if record is None:
-        raise KeyError(f"Pool {name!r} does not exist.")
-    members = record.get("members")
-    if not isinstance(members, list):
-        raise RuntimeError("Pool membership metadata has invalid members.")
-    record["members"] = sorted(set(str(member) for member in members) | {project_id.strip() for project_id in project_ids})
-    _save_pools_document(document)
-    return tuple(record["members"])  # type: ignore[return-value]
+    catalog = get_pools_path()
+    with catalog_lock(catalog):
+        document = _load_pools_document()
+        record = _find_pool(_pool_records(document), name)
+        if record is None:
+            raise KeyError(f"Pool {name!r} does not exist.")
+        members = record.get("members")
+        if not isinstance(members, list):
+            raise RuntimeError("Pool membership metadata has invalid members.")  # noqa: TRY004  # Corrupt persisted metadata is not caller type input.
+        record["members"] = sorted({str(member) for member in members} | {project_id.strip() for project_id in project_ids})
+        _save_pools_document(document)
+        return tuple(record["members"])  # type: ignore[return-value]
 
 
 def decouple_from_pool(name: str, project_id: str) -> bool:
     """Remove one Pool membership only; project data and other Pools are untouched."""
-    document = _load_pools_document()
-    record = _find_pool(_pool_records(document), name)
-    if record is None:
-        raise KeyError(f"Pool {name!r} does not exist.")
-    members = record.get("members")
-    if not isinstance(members, list) or project_id not in members:
-        return False
-    record["members"] = [member for member in members if member != project_id]
-    _save_pools_document(document)
-    return True
+    catalog = get_pools_path()
+    with catalog_lock(catalog):
+        document = _load_pools_document()
+        record = _find_pool(_pool_records(document), name)
+        if record is None:
+            raise KeyError(f"Pool {name!r} does not exist.")
+        members = record.get("members")
+        if not isinstance(members, list) or project_id not in members:
+            return False
+        record["members"] = [member for member in members if member != project_id]
+        _save_pools_document(document)
+        return True
 
 
 def delete_pool(name: str) -> bool:
     """Delete only the membership definition, never a Project or its memory."""
-    document = _load_pools_document()
-    records = _pool_records(document)
-    record = _find_pool(records, name)
-    if record is None:
-        return False
-    records.remove(record)
-    _save_pools_document(document)
-    return True
+    catalog = get_pools_path()
+    with catalog_lock(catalog):
+        document = _load_pools_document()
+        records = _pool_records(document)
+        record = _find_pool(records, name)
+        if record is None:
+            return False
+        records.remove(record)
+        _save_pools_document(document)
+        return True
 
 
 def pools_for_project(project_id: str) -> tuple[str, ...]:
@@ -227,8 +250,8 @@ def pools_for_project(project_id: str) -> tuple[str, ...]:
 
 
 def resolve_path_to_ulid(
-    path: str | Path, registry: Optional[dict[str, str]] = None
-) -> Optional[str]:
+    path: str | Path, registry: dict[str, str] | None = None
+) -> str | None:
     """Look up a repo path's ULID (None if not registered — lazy-link)."""
     reg = registry if registry is not None else load_path_registry()
     return reg.get(normalize_path(path))
@@ -302,7 +325,7 @@ def add_family_members(name: str, paths: list[str]) -> dict[str, list[str]]:
     return families
 
 
-def remove_family(name: str, paths: Optional[list[str]] = None) -> bool:
+def remove_family(name: str, paths: list[str] | None = None) -> bool:
     """Remove a family or specific members from it.
 
     Args:
@@ -338,8 +361,8 @@ def remove_family(name: str, paths: Optional[list[str]] = None) -> bool:
 def resolve_family_ulids(
     ulid: str,
     *,
-    families: Optional[dict[str, list[str]]] = None,
-    registry: Optional[dict[str, str]] = None,
+    families: dict[str, list[str]] | None = None,
+    registry: dict[str, str] | None = None,
 ) -> set[str]:
     """Return the set of project ULIDs in `ulid`'s family (always includes `ulid`).
 
@@ -377,8 +400,8 @@ def claude_encode(path: str | Path) -> str:
 
 
 def resolve_claude_dir_to_ulid(
-    dirname: str, registry: Optional[dict[str, str]] = None
-) -> Optional[str]:
+    dirname: str, registry: dict[str, str] | None = None
+) -> str | None:
     """Map a `~/.claude/projects/<encoded-cwd>` dirname → project ULID by encoding
     each registered abs path and matching. None if no registered path encodes to
     this dirname (lazy-link — the source project isn't registered yet)."""

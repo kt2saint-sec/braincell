@@ -21,7 +21,6 @@ the data dir and the per-project identity filename derive from it.
 
 import os
 from pathlib import Path
-from typing import Optional
 
 # ── Data-dir namespace (single source of truth) ───────────────────────────────
 # Default ``braincell``; a standalone consumer overrides it for an isolated store
@@ -79,7 +78,7 @@ def get_project_id(project_root: Path, *, create: bool = True) -> str:
     return new_id
 
 
-def resolve_project_id_readonly(project_root: Path) -> Optional[str]:
+def resolve_project_id_readonly(project_root: Path) -> str | None:
     """Return the project ULID if the path is registered, else None — NEVER mints.
     For label-only callers that must not write into a target folder."""
     try:
@@ -94,11 +93,6 @@ def resolve_project_id_readonly(project_root: Path) -> Optional[str]:
 def get_local_state_dir(project_id: str) -> Path:
     """Return ``~/.local/share/<namespace>/projects/<id>/`` — never committed."""
     return _xdg_data_home() / DATA_NAMESPACE / "projects" / project_id
-
-
-def get_structure_dir(project_root: Path) -> Path:
-    """Return ``~/.local/share/<namespace>/projects/<id>/structure/`` — XDG, read-only ingest vault."""
-    return get_local_state_dir(get_project_id(project_root)) / "structure"
 
 
 def get_db_path(project_id: str) -> Path:

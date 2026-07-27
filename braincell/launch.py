@@ -23,17 +23,15 @@ import sqlite3
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
-from .config import get_db_path, get_global_db_path, resolve_project_id_readonly
+from .config import get_db_path, resolve_project_id_readonly
 from .embed import embedder_status
 from .install import registration_status
 from .project_registry import load_path_registry
 
-
 # ── Single-instance probe ─────────────────────────────────────────────────────
 
-def probe_status(port: int, token: str, timeout: float = 1.0) -> Optional[dict]:
+def probe_status(port: int, token: str, timeout: float = 1.0) -> dict | None:
     """GET /api/status on 127.0.0.1:<port> with the persisted GUI token.
 
     Returns the parsed status dict on a 200 JSON-object response; None on ANY
@@ -50,7 +48,7 @@ def probe_status(port: int, token: str, timeout: float = 1.0) -> Optional[dict]:
             if getattr(resp, "status", None) != 200:
                 return None
             data = json.loads(resp.read().decode("utf-8"))
-    except Exception:  # noqa: BLE001 — any failure = not a matching braincell GUI
+    except Exception:  # noqa: BLE001  # Any probe failure means no reusable local GUI exists.
         return None
     return data if isinstance(data, dict) else None
 
@@ -69,7 +67,7 @@ def activate_existing(port: int, token: str, timeout: float = 2.0) -> bool:
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return getattr(resp, "status", None) == 200
-    except Exception:  # noqa: BLE001 — caller turns failure into a visible error
+    except Exception:  # noqa: BLE001  # Activation failure is reported as a false result to the caller.
         return False
 
 
@@ -82,12 +80,12 @@ class Preflight:
     action: str                          # "launch" | "reuse" | "conflict"
     first_run: bool = False
     report_lines: list[str] = field(default_factory=list)
-    activation_token: Optional[str] = None  # set when action == "reuse"
-    conflict_db: Optional[str] = None    # the running server's db (conflict)
-    expected_db: Optional[str] = None    # our target db path; None = unbuilt
+    activation_token: str | None = None  # set when action == "reuse"
+    conflict_db: str | None = None    # the running server's db (conflict)
+    expected_db: str | None = None    # our target db path; None = unbuilt
 
 
-def _doc_count(db: Path) -> Optional[int]:
+def _doc_count(db: Path) -> int | None:
     """COUNT(*) of bc_documents via a read-only stdlib sqlite3 open.
 
     Cheap enough for preflight (no SqliteStore / aiosqlite spin-up). None on
@@ -100,7 +98,7 @@ def _doc_count(db: Path) -> Optional[int]:
             return int(row[0]) if row else None
         finally:
             conn.close()
-    except Exception:  # noqa: BLE001 — report-only helper, never blocks startup
+    except Exception:  # noqa: BLE001  # Preflight reports unknown document count instead of blocking launch.
         return None
 
 
@@ -115,30 +113,12 @@ def preflight(
     failing sub-check becomes a report line, not an abort.
     """
     from .gui import _resolve_gui_token  # lazy: gui.py pulls in fastapi
-
     from .mode import resolve_mode
 
     mode = resolve_mode(mode)
     resolved = Path(path).resolve()
-    if mode == "global":
-        pid: Optional[str] = None
-        db: Optional[Path] = get_global_db_path()
-    else:
-        pid = resolve_project_id_readonly(resolved)
-        db = get_db_path(pid) if pid else None
-
-    from .legacy_service import status as legacy_service_status
-
-    legacy = legacy_service_status()
-    if legacy["active"]:
-        return Preflight(
-            action="legacy_service",
-            report_lines=[
-                "The retired braincell-map.service is still active.",
-                "Remove it with: braincell legacy-service remove",
-            ],
-            expected_db=str(db) if db else None,
-        )
+    pid = resolve_project_id_readonly(resolved)
+    db: Path | None = get_db_path(pid) if pid else None
 
     # Probe BEFORE binding: a 200 with our db_path = this brain's GUI is
     # already up → activate its native window instead of binding a second server.
@@ -168,55 +148,41 @@ def preflight(
             lines.append(f"✓ Embedder ready: {emb['model']} ({emb['provider']})")
         else:
             lines.append(f"✗ Embedder not ready: {emb.get('detail') or 'unknown'}")
-    except Exception as exc:  # noqa: BLE001 — print-and-continue
+    except Exception as exc:  # noqa: BLE001  # External embedder status is informational preflight data.
         lines.append(f"✗ Embedder check failed: {exc!r}")
-    if legacy["installed"] or legacy["enabled"]:
-        lines.append(
-            "⚠ Retired GUI service residue found; clean it with "
-            "`braincell legacy-service remove`."
-        )
-
-    doc_count: Optional[int] = None
-    if mode == "global":
-        built = db is not None and db.exists()
-        lines.append(f"Global brain: {db}" + ("" if built else " (not built yet)"))
-        if built:
-            doc_count = _doc_count(db)
+    doc_count: int | None = None
+    lines.append(f"Project folder: {resolved}")
+    lines.append(
+        f"  id: {pid}" if pid else "  id: (new — registered at launch)"
+    )
+    if db is not None and db.exists():
+        doc_count = _doc_count(db)
+        docs = "?" if doc_count is None else str(doc_count)
+        lines.append(f"  brain: {db} ({docs} docs)")
     else:
-        lines.append(f"Project folder: {resolved}")
-        lines.append(
-            f"  id: {pid}" if pid else "  id: (new — registered at launch)"
-        )
-        if db is not None and db.exists():
-            doc_count = _doc_count(db)
-            docs = "?" if doc_count is None else str(doc_count)
-            lines.append(f"  brain: {db} ({docs} docs)")
+        lines.append("  brain: not built yet — use Build in the map")
+    # MCP registration — read-only report. NEVER auto-register (client
+    # config mutation stays an explicit user action).
+    try:
+        reg = registration_status(resolved)
+        registered = [
+            f"{name} ({info.get('scope')})"
+            for name, info in reg.items() if info.get("registered")
+        ]
+        if registered:
+            lines.append(f"  MCP: registered — {', '.join(registered)}")
         else:
-            lines.append("  brain: not built yet — use Build in the map")
-        # MCP registration — read-only report. NEVER auto-register (client
-        # config mutation stays an explicit user action, like the hook).
-        try:
-            reg = registration_status(resolved)
-            registered = [
-                f"{name} ({info.get('scope')})"
-                for name, info in reg.items() if info.get("registered")
-            ]
-            if registered:
-                lines.append(f"  MCP: registered — {', '.join(registered)}")
-            else:
-                lines.append(
-                    "  MCP: not registered — the map's Register MCP button "
-                    "(or `braincell install`) wires it"
-                )
-        except Exception as exc:  # noqa: BLE001 — print-and-continue
-            lines.append(f"  MCP: status unknown ({exc!r})")
+            lines.append(
+                "  MCP: not registered — the map's Connect BrainCell control "
+                "(or `braincell connect`) wires it"
+            )
+    except Exception as exc:  # noqa: BLE001  # Client-config status is informational preflight data.
+        lines.append(f"  MCP: status unknown ({exc!r})")
 
     # First run = nothing to show yet: unregistered project / missing db, or an
     # empty brain with no OTHER registered project on this machine (the seed
     # itself is minted at launch, so it never counts against "first run").
-    if mode != "global" and pid is None:
-        first_run = True
-    elif db is None or not db.exists():
+    if pid is None or db is None or not db.exists():
         first_run = True
     else:
         others = [u for u in load_path_registry().values() if u != pid]

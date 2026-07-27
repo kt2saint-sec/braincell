@@ -1,24 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""
-test_gui_commands_modal.py — ★ Commands modal behavior in the real engine
-(2026-07-25 audit: every card must handle its empty state and report honestly).
-
-The modal is CLIENT-rendered (openCommandsModal builds its HTML from the SPA's
-`families`/`nodes` state), so served-HTML string assertions cannot see any of
-this — these tests drive the real INDEX_HTML in offscreen QtWebEngine
-(subprocess-isolated, same harness as test_gui_hittest) and assert DOM state
-and toast text.
-
-Pinned defects (both proven to fail on pre-fix code):
-  1. POOL family <select> with 0 families rendered as a tiny EMPTY unlabeled
-     box (owner screenshot). It must be disabled with an explanatory
-     placeholder + title; Run stays guarded (never posts a blank family).
-  2. cmdPool's prune toast read a top-level `res.pruned` that /api/pool never
-     returns -> always "pruned 0". It must sum the real per-project
-     notes_pruned/docs_pruned fields.
-
-Requires the optional ``native`` extra (PySide6); skipped when absent.
-"""
+"""Native ★ Commands-modal coverage for explicit named-Pool operations."""
 
 from __future__ import annotations
 
@@ -31,7 +12,8 @@ import pytest
 
 pytest.importorskip(
     "PySide6.QtWebEngineWidgets",
-    reason="engine tests need QtWebEngine (pip install 'braincell-mcp[native]')",
+    reason="engine tests need QtWebEngine",
+    exc_type=ImportError,
 )
 
 _RUNNER = textwrap.dedent("""
@@ -47,48 +29,41 @@ _RUNNER = textwrap.dedent("""
       const out = {};
       if (typeof hideOverlay === 'function') hideOverlay();
 
-      // ── 1. POOL empty state: 0 families (file:// harness has no API) ──
-      families = [];
-      openCommandsModal();
-      let sel = document.getElementById('cmd-pool-fam');
-      out.empty_state = {
-        disabled: !!(sel && sel.disabled),
-        option_text: sel && sel.options.length ? sel.options[0].textContent : '',
-        title: sel ? (sel.title || '') : null,
-        run_posts: null,
-      };
-      // Run with the empty select must NOT hit the network.
-      let posted = [];
-      const realPost = window.apiPost;
-      window.apiPost = async (p, b) => { posted.push([p, b]); return {pooled: [], skipped: []}; };
+      nodes = [{id: '01PROJECTA', name: 'A', path: '/tmp/a'}];
+      selected = '01PROJECTA';
+      seedProjectId = '01PROJECTA';
       status.allow_writes = true;
-      await cmdPool();
-      out.empty_state.run_posts = posted.length;   // must be 0 (guard toast instead)
-      closeModal();
-
-      // ── 2. Prune toast honesty: canned response with real pruned counts ──
-      families = [{name: 'famX', members: []}];
       openCommandsModal();
-      sel = document.getElementById('cmd-pool-fam');
-      out.with_families = {
-        disabled: !!sel.disabled,
-        options: [...sel.options].map(o => o.value),
+      out.controls = {
+        name: !!document.getElementById('cmd-pool-name'),
+        query: !!document.getElementById('cmd-pool-query'),
+        results: !!document.getElementById('cmd-pool-results'),
+        retired_family: !!document.getElementById('cmd-pool-fam'),
+        retired_prune: !!document.getElementById('cmd-pool-prune'),
       };
+
+      const posted = [];
+      const realPost = window.apiPost;
       window.apiPost = async (p, b) => {
         posted.push([p, b]);
-        return {pooled: [
-          {project_id: 'x', notes_copied: 2, notes_pruned: 2, docs_pruned: 1},
-        ], skipped: []};
+        if (p.endsWith('/search')) return {hits: [{snippet: 'search hit'}], member_status: []};
+        if (p.endsWith('/recall')) return {notes: [{content: 'recalled note'}], member_status: []};
+        return {ok: true, pools: []};
       };
-      sel.value = 'famX';
-      document.getElementById('cmd-pool-prune').checked = true;
-      await cmdPool();          // prune -> inline confirm strip
-      cmdConfirmGo();           // proceed
-      await new Promise(r => setTimeout(r, 300));
-      const toasts = [...document.querySelectorAll('.toast')].map(t => t.textContent);
-      out.prune_toast = toasts.length ? toasts[toasts.length - 1] : '';
-      const poolPosts = posted.filter(p => p[0] === '/api/pool');
-      out.pool_body = poolPosts.length ? poolPosts[poolPosts.length - 1][1] : null;
+
+      await cmdPoolMembership('create');
+      out.blank_posts = posted.length;
+      document.getElementById('cmd-pool-name').value = 'Research';
+      document.getElementById('cmd-pool-query').value = 'query';
+      await cmdPoolMembership('create');
+      await cmdPoolMembership('add');
+      await cmdLivePool('search');
+      await cmdLivePool('recall');
+      await cmdPoolMembership('decouple');
+      cmdConfirmGo();
+      await new Promise(r => setTimeout(r, 100));
+      out.posted = posted;
+      out.results = document.getElementById('cmd-pool-results').textContent;
       window.apiPost = realPost;
       return JSON.stringify(out);
     })()
@@ -123,6 +98,7 @@ _RUNNER = textwrap.dedent("""
 @pytest.fixture(scope="module")
 def modal_state(tmp_path_factory):
     import os
+
     from braincell.gui_template import INDEX_HTML
 
     tmp = tmp_path_factory.mktemp("cmdmodal")
@@ -135,44 +111,56 @@ def modal_state(tmp_path_factory):
         capture_output=True, text=True, timeout=180,
         env={**os.environ, "QT_QPA_PLATFORM": "offscreen",
              "QTWEBENGINE_CHROMIUM_FLAGS": "--no-sandbox"},
+        check=False,
     )
     assert proc.returncode == 0, f"engine runner failed:\n{proc.stderr[-2000:]}"
     return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
-class TestPoolFamilySelect:
-    def test_zero_families_renders_disabled_explained_select(self, modal_state):
-        """No families => the select must be disabled with an explanatory
-        placeholder + title, never a tiny empty unlabeled box."""
-        st = modal_state["empty_state"]
-        assert st["disabled"] is True, "empty family select must be disabled"
-        assert "no families yet" in st["option_text"], (
-            f"placeholder must explain the empty state, got {st['option_text']!r}"
-        )
-        assert "New family" in (st["title"] or ""), (
-            "select title must point at the ＋ New family flow"
-        )
+class TestNamedPoolCommands:
+    def test_named_pool_controls_render_without_retired_materialization(self, modal_state):
+        assert modal_state["controls"] == {
+            "name": True,
+            "query": True,
+            "results": True,
+            "retired_family": False,
+            "retired_prune": False,
+        }
 
-    def test_run_with_empty_select_never_posts(self, modal_state):
-        """The guard must keep Run from POSTing a blank family."""
-        assert modal_state["empty_state"]["run_posts"] == 0
+    def test_blank_pool_name_never_posts(self, modal_state):
+        assert modal_state["blank_posts"] == 0
 
-    def test_families_populate_and_enable_the_select(self, modal_state):
-        st = modal_state["with_families"]
-        assert st["disabled"] is False
-        assert st["options"] == ["famX"]
+    def test_membership_actions_use_stable_project_ulid(self, modal_state):
+        posts = [entry for entry in modal_state["posted"] if entry[0] == "/api/pools"]
+        assert posts == [
+            ["/api/pools", {"action": "create", "name": "Research"}],
+            [
+                "/api/pools",
+                {
+                    "action": "add",
+                    "name": "Research",
+                    "project_ids": ["01PROJECTA"],
+                },
+            ],
+            [
+                "/api/pools",
+                {
+                    "action": "decouple",
+                    "name": "Research",
+                    "project_id": "01PROJECTA",
+                },
+            ],
+        ]
 
-
-class TestPoolPruneToast:
-    def test_toast_reports_real_pruned_counts(self, modal_state):
-        """/api/pool has no top-level `pruned`; the toast must sum the real
-        per-project notes_pruned/docs_pruned (2+1=3 in the canned response) —
-        pre-fix it always said 'pruned 0'."""
-        assert "pruned 3" in modal_state["prune_toast"], (
-            f"toast must report the real pruned total, got: "
-            f"{modal_state['prune_toast']!r}"
-        )
-
-    def test_pool_body_shape(self, modal_state):
-        body = modal_state["pool_body"]
-        assert body == {"family": "famX", "all_projects": False, "prune": True}
+    def test_live_queries_use_explicit_named_pool_routes(self, modal_state):
+        posts = modal_state["posted"]
+        assert [entry[0] for entry in posts] == [
+            "/api/pools",
+            "/api/pools",
+            "/api/pools/search",
+            "/api/pools/recall",
+            "/api/pools",
+        ]
+        assert posts[2][1]["pool"] == "Research"
+        assert posts[3][1]["pool"] == "Research"
+        assert "recalled note" in modal_state["results"]

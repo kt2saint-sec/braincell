@@ -4,17 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "braincell-mcp"
-version = "0.3.0"
+version = "0.4.0"
 description = "Local-first persistent-memory MCP server. Per-project brain with hybrid vector + FTS5 search, recall, remember, forget, and supersede over a single SQLite file."
 readme = "README.md"
 requires-python = ">=3.11"
 # Dual-licensed: AGPL-3.0-or-later (LICENSE) + a separate commercial license
 # (COMMERCIAL-LICENSE.md) for proprietary/closed-source use.
-license = { file = "LICENSE" }
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE", "COMMERCIAL-LICENSE.md"]
 authors = [{ name = "Karl Toussaint", email = "kt2saint.create@gmail.com" }]
 keywords = ["mcp", "memory", "embeddings", "sqlite", "claude", "rag"]
 classifiers = [
-    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
     "Programming Language :: Python :: 3",
     "Topic :: Software Development :: Libraries",
 ]
@@ -50,7 +50,7 @@ openai = ["openai>=1.40.0,<3"]   # hosted embed provider (text-embedding-3-*)
 # base dependencies. Existing `[gui]` and `[native]` install commands remain valid.
 native = []
 gui = []
-dev = ["pytest>=8.0.0,<9", "ruff>=0.6.0,<1"]
+dev = ["pytest>=8.0.0,<9", "ruff==0.16.0"]
 
 [project.scripts]
 braincell-mcp = "braincell.server:main"
@@ -81,11 +81,12 @@ extend-exclude = ["evals/task-ab/tasks/*/repo"]
 
 [tool.pytest.ini_options]
 # Starlette 1.3+ TestClient prefers the Pydantic-maintained `httpx2`; with plain
-# `httpx` installed it emits a one-shot StarletteDeprecationWarning at import.
+# `httpx` installed it emits a one-shot StarletteDeprecationWarning (a
+# UserWarning subclass) at import.
 # It rides in only via fastapi.testclient.TestClient (GUI/federation tests) — no
 # braincell runtime code touches it. We do NOT adopt httpx2 yet (supply-chain
 # cooldown: released 2026-07-23, unvetted), so silence the noise here instead.
 # Remove this filter if/when httpx2 is vetted and adopted as a test dependency.
 filterwarnings = [
-    "ignore::starlette.exceptions.StarletteDeprecationWarning",
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated.*:starlette.exceptions.StarletteDeprecationWarning",
 ]

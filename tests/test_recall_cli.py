@@ -3,9 +3,8 @@
 test_recall_cli.py — the `braincell recall` CLI subcommand (A1).
 
 The CLI recall path is a thin wrapper over ``server.recall_notes`` (the same engine
-the ``mcp__braincell__recall`` tool uses), so these tests assert the plumbing —
-brain/seed resolution, --json shape, scope validation, and FEDERATE on/off parity —
-not the ranking itself (covered by test_store / test_federate).
+the ``mcp__braincell__recall`` tool uses), so these tests assert connected-Project
+resolution, output, retired-selector rejection, and Project isolation.
 
 No live Ollama: ``server.embed_query_async`` is monkeypatched to a deterministic
 fake vector, and notes are seeded with distinctive keywords so FTS retrieval is
@@ -21,10 +20,8 @@ import pytest
 
 from braincell.cli import main
 from braincell.config import get_db_path, get_project_id
-from braincell.project_registry import add_family_members
 from braincell.store import SqliteStore
 from tests.conftest import fake_vec
-
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -117,7 +114,7 @@ def test_recall_retired_cross_project_scope_errors(tmp_path, capsys):
         main(["recall", "note", "--path", str(root), "--scope", "family"])
     assert exc.value.code == 2
     err = capsys.readouterr().err
-    assert "invalid choice" in err.lower()
+    assert "unrecognized arguments: --scope family" in err.lower()
 
 
 def test_recall_retired_scope_cannot_fan_out_when_legacy_flag_is_set(tmp_path, capsys, monkeypatch):
@@ -126,27 +123,23 @@ def test_recall_retired_scope_cannot_fan_out_when_legacy_flag_is_set(tmp_path, c
     b = tmp_path / "famB"
     _seed_project(a, ["alpha note in project A"])
     _seed_project(b, ["distinctivezebra note only in project B"])
-    add_family_members("fam", [str(a), str(b)])
-
     monkeypatch.setenv("BRAINCELL_FEDERATE", "on")
     with pytest.raises(SystemExit) as exc:
         main(["recall", "distinctivezebra", "--path", str(a),
               "--scope", "family", "--json"])
     assert exc.value.code == 2
-    assert "invalid choice" in capsys.readouterr().err.lower()
+    assert "unrecognized arguments: --scope family" in capsys.readouterr().err.lower()
 
 
-def test_recall_scope_self_excludes_siblings(tmp_path, capsys, monkeypatch):
-    """scope='self' (default) returns only the active project's notes even when a
-    family + federation are configured (federation only triggers on scope='family')."""
+def test_recall_default_is_pinned_to_connected_project(tmp_path, capsys, monkeypatch):
+    """A retired federation environment flag cannot widen default Recall."""
     a = tmp_path / "selfA"
     b = tmp_path / "selfB"
     _seed_project(a, ["alpha own note"])
     _seed_project(b, ["distinctivezebra sibling note"])
-    add_family_members("fam2", [str(a), str(b)])
     monkeypatch.setenv("BRAINCELL_FEDERATE", "on")
 
     main(["recall", "distinctivezebra", "--path", str(a), "--json"])
     data = json.loads(capsys.readouterr().out)
     contents = " ".join(n["content"] for n in data)
-    assert "distinctivezebra" not in contents, "scope='self' leaked a sibling note"
+    assert "distinctivezebra" not in contents, "connected-Project Recall leaked a sibling note"

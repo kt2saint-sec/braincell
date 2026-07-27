@@ -5,8 +5,9 @@ server.py — BrainCell standalone FastMCP-stdio server.
 
 Run directly: `braincell-mcp` (console script) or `python -m braincell.server`.
 
-Tools are registered with short names (search, recall, remember, get_document,
-ingest_status, list_documents, list_projects, list_families).
+Tools are registered with short names (search, recall, remember, forget,
+supersede, get_document, ingest_status, list_documents, list_projects,
+list_pools).
 FastMCP exposes them as `mcp__braincell__<name>`
 because the server key is "braincell" — no double-prefix.  JSON-schema-validated
 at boundary.  All SQL parameterized; no raw-SQL / admin tool exposed.
@@ -21,21 +22,16 @@ from __future__ import annotations
 import os
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel
 
-from .log import get as _get_log
 from .embed import embed_query_async, embed_texts_async
-from .mode import resolve_mode
-from .project_registry import (
-    load_families,
-    load_path_registry,
-    normalize_path,
-)
-from .store import open_store, Hit, Note, SqliteStore
+from .log import get as _get_log
+from .project_registry import load_path_registry, load_pools, resolve_pool
+from .store import Hit, Note, SqliteStore, open_store
 
 log = _get_log("braincell.server")
 
@@ -70,134 +66,36 @@ def _store(ctx: Context) -> SqliteStore:  # type: ignore[type-arg]
     return state.store
 
 
-def _resolve_scope(project: Optional[str], scope: str):
-    """Resolve the project filter for a search or recall.
+def connected_project_id() -> str:
+    """Return this MCP process's required Project ULID or fail closed.
 
-    The MCP connection owns one Project database. ``scope='self'`` is the only
-    normal-runtime scope; a future explicit named-Pool MCP action must opt in to
-    cross-Project reads rather than rely on a hidden fan-out flag.
+    A server process is connected to exactly one Project.  Registry metadata is
+    deliberately separate from this boundary and is never used to choose a
+    database for a normal MCP tool call.
     """
-    if project is not None:
-        return project
-    if scope == "self":
-        pid = os.environ.get("BRAINCELL_PROJECT_ID") or None
-        return pid
-    if scope in ("family", "all"):
+    project_id = os.environ.get("BRAINCELL_PROJECT_ID", "").strip()
+    if not project_id:
         raise ValueError(
-            f"scope={scope!r} is retired. Normal Recall and Search use only the "
-            "connected project; use an explicit named Pool action for cross-project reads."
+            "BrainCell MCP requires BRAINCELL_PROJECT_ID for a connected Project. "
+            "Run `braincell connect <project>` before starting the client."
         )
-    raise ValueError(
-        f"scope={scope!r} is not valid. Use 'self' (default)."
-    )
+    return project_id
 
 
-def _resolve_filter(
-    projects: Optional[list[str]],
-    project: Optional[str],
-    scope: str,
-) -> Any:
-    """Resolve the project filter with G5 multi-project precedence.
-
-    Precedence (applied in order):
-
-    - Explicit ``projects`` list (non-None, non-empty) → that list IS the filter.
-      In project mode, only a single-entry list whose sole entry matches the
-      configured ``BRAINCELL_PROJECT_ID`` (the "self" project) is permitted.
-      Any other list — multi-entry OR a single non-self entry — raises
-      ``ValueError`` (cross-project selection requires global mode).
-      In global mode, the list is passed straight through.
-    - Falls through to ``_resolve_scope(project, scope)`` when ``projects`` is
-      ``None`` or an empty list.
-
-    Args:
-        projects: Caller-supplied list of project ULIDs, or ``None``/empty list
-                  to delegate to scope resolution.  Each entry must be a
-                  non-empty string; the list is capped at 200 entries.
-        project:  Single explicit project ULID (overrides ``scope``); forwarded
-                  to ``_resolve_scope`` when ``projects`` is absent/empty.
-        scope:    Scope string (``'self'``/``'family'``/``'all'``); forwarded to
-                  ``_resolve_scope`` when ``projects`` is absent/empty.
-
-    Returns:
-        A ULID string, a list of ULID strings, or ``None`` — exactly the shapes
-        ``store.search`` and ``store.recall`` accept as their project filter.
-
-    Raises:
-        ValueError: For invalid entries, oversized list, or cross-project
-                    selection in project mode.
-    """
-    if projects:  # non-None and non-empty → G5 path
-        if len(projects) > 200:
-            raise ValueError(
-                f"projects list must not exceed 200 entries (got {len(projects)})."
-            )
-        for p in projects:
-            if not p or not p.strip():
-                raise ValueError(
-                    "projects entries must be non-empty strings; found an empty or "
-                    "whitespace-only entry."
-                )
-        if resolve_mode() != "global":
-            self_pid = os.environ.get("BRAINCELL_PROJECT_ID", "")
-            if not (len(projects) == 1 and projects[0] == self_pid):
-                raise ValueError(
-                    "projects=[...] spanning multiple or non-self projects requires "
-                    "global mode. Set BRAINCELL_MODE=global and open a global brain, "
-                    "or use scope='self' (the default) for this project's brain."
-                )
-        return projects
-    return _resolve_scope(project, scope)
+def _pin_project(project: str | None) -> str:
+    """Accept only the connected Project for a singular compatibility argument."""
+    connected = connected_project_id()
+    if project is not None and project.strip() != connected:
+        raise ValueError(
+            f"This BrainCell MCP process is connected to Project {connected}. "
+            "A different project cannot be selected; use an explicit named Pool "
+            "for live cross-Project Search or Recall."
+        )
+    return connected
 
 
-def _pin_write_project(project: Optional[str]) -> str:
-    """Resolve the project a WRITE (remember/forget/supersede) attributes to.
-
-    Per-project v1 pins to BRAINCELL_PROJECT_ID: a caller may omit `project` (we
-    use the configured one) or pass the matching ULID, but a DIFFERENT project is
-    rejected — never silently swapped (F12). Falls back to the explicit `project`
-    when no server project is configured (tests/direct runs).
-    """
-    configured = os.environ.get("BRAINCELL_PROJECT_ID")
-    if configured:
-        if project and project.strip() and project.strip() != configured:
-            raise ValueError(
-                f"This braincell instance is scoped to project {configured}. "
-                f"Refusing to operate on a note attributed to {project!r}. Omit the "
-                f"`project` argument, or pass the matching ULID."
-            )
-        return configured
-    if not project or not project.strip():
-        raise ValueError("project must be provided when BRAINCELL_PROJECT_ID is unset.")
-    return project.strip()
-
-
-def _pin_read_project(project: Optional[str]) -> Optional[str]:
-    """Pin a read-only lookup to the self project in global mode.
-
-    In global mode a missing ``project`` argument would otherwise aggregate
-    across ALL projects in the shared DB — a cross-project leak.  This helper
-    defaults ``project`` to ``BRAINCELL_PROJECT_ID`` when the server runs in
-    global mode so ``get_document`` / ``list_documents`` / ``ingest_status``
-    stay scoped to the configured 'self' project unless the caller passes an
-    explicit project ULID.
-
-    In project mode behaviour is unchanged — the per-project DB only holds one
-    project's rows anyway, so no extra filter is injected.
-
-    Args:
-        project: The caller-supplied project ULID, or None when omitted.
-
-    Returns:
-        The explicit project (unchanged if given), ``BRAINCELL_PROJECT_ID`` in
-        global mode when project is None (may itself be None if the env var is
-        unset), or None in project mode when project is None.
-    """
-    if project is not None:
-        return project
-    if resolve_mode() == "global":
-        return os.environ.get("BRAINCELL_PROJECT_ID") or None
-    return None
+# Kept as a private compatibility alias for callers that used the old helper.
+_pin_write_project = _pin_project
 
 
 # ── Structured-output models ─────────────────────────────────────────────────
@@ -209,9 +107,9 @@ class SearchHit(BaseModel):
     title: str
     snippet: str
     score: float
-    cosine: Optional[float]
+    cosine: float | None
     fts_matched: bool
-    source_path: Optional[str]
+    source_path: str | None
 
 
 class MemoryNote(BaseModel):
@@ -221,10 +119,10 @@ class MemoryNote(BaseModel):
     scope: str
     kind: str
     content: str
-    tags: Optional[list[str]]
-    confidence: Optional[float]
-    source_hint: Optional[str]
-    superseded_by: Optional[int]
+    tags: list[str] | None
+    confidence: float | None
+    source_hint: str | None
+    superseded_by: int | None
     created_at: str
     # Retrieval provenance — how this note reached the result, so authority can be
     # judged rather than assumed. 'direct' = matched the query; 'resolved' = the
@@ -234,11 +132,11 @@ class MemoryNote(BaseModel):
     # transcript EXCERPT (kind='excerpt', NEGATIVE id — never a real note id)
     # backfilled when curated notes are sparse. Corpus text, not curated memory.
     retrieval_origin: str = "direct"
-    resolved_from: Optional[int] = None
+    resolved_from: int | None = None
     history: list[dict] = []
-    linked_from: Optional[int] = None
-    relation: Optional[str] = None
-    relation_weight: Optional[float] = None
+    linked_from: int | None = None
+    relation: str | None = None
+    relation_weight: float | None = None
 
 
 class ConflictHit(BaseModel):
@@ -287,11 +185,11 @@ class DocumentResult(BaseModel):
     doc_key: str
     title: str
     content_type: str
-    commit_sha: Optional[str]
+    commit_sha: str | None
     created_at: str
-    updated_at: Optional[str]
+    updated_at: str | None
     chunks: list[Any]
-    metadata: Optional[Any]
+    metadata: Any | None
 
 
 class IngestStatusResult(BaseModel):
@@ -299,8 +197,8 @@ class IngestStatusResult(BaseModel):
     indexed: bool
     doc_count: int
     chunk_count: int
-    last_ingest_ts: Optional[str]
-    head_sha: Optional[str]
+    last_ingest_ts: str | None
+    head_sha: str | None
     stale: bool
 
 
@@ -310,20 +208,46 @@ class DocumentSummary(BaseModel):
     title: str
     content_type: str
     created_at: str
-    updated_at: Optional[str]
+    updated_at: str | None
 
 
 class ProjectInfo(BaseModel):
-    """One registered project from the path registry."""
+    """Registered Project identity metadata; never includes database data."""
+
     project_id: str
     path: str
 
 
-class FamilyInfo(BaseModel):
-    """One project family from families.json."""
+class PoolInfo(BaseModel):
+    """Named Pool membership metadata; never opens a member database."""
+
     name: str
-    members: list[str]      # all member abs paths (registered or not)
-    project_ids: list[str]  # ULIDs of registered members only (lazy-link)
+    member_project_ids: list[str]
+    member_status: dict[str, str]
+
+
+class PoolMemberResult(BaseModel):
+    """One named-Pool member's live query status."""
+
+    project_id: str
+    status: str
+    detail: str
+
+
+class PoolSearchResult(BaseModel):
+    """Explicit named-Pool Search response."""
+
+    pool: str
+    results: list[SearchHit]
+    members: list[PoolMemberResult]
+
+
+class PoolRecallResult(BaseModel):
+    """Explicit named-Pool Recall response."""
+
+    pool: str
+    results: list[MemoryNote]
+    members: list[PoolMemberResult]
 
 
 # ── Search core (shared by the MCP `search` tool + the CLI `braincell search`) ─
@@ -331,11 +255,9 @@ class FamilyInfo(BaseModel):
 async def search_hits(
     store: SqliteStore,
     query: str,
-    project: Optional[str] = None,
+    project: str | None = None,
     k: int = 10,
     rank: str = "hybrid",
-    scope: str = "self",
-    projects: Optional[list[str]] = None,
 ) -> list[Hit]:
     """Core chunk-search orchestration shared by the MCP tool and the CLI.
 
@@ -352,8 +274,7 @@ async def search_hits(
         raise ValueError("k must be between 1 and 100.")
 
     qvec = await embed_query_async(query)
-    proj_filter = _resolve_filter(projects, project, scope)
-    return await store.search(qvec, query, proj_filter, k, rank)
+    return await store.search(qvec, query, _pin_project(project), k, rank)
 
 
 # ── Tool: search ─────────────────────────────────────────────────────────────
@@ -361,34 +282,23 @@ async def search_hits(
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 async def search(
     query: str,
-    project: Optional[str] = None,
+    project: str | None = None,
     k: int = 10,
     rank: str = "hybrid",
-    scope: str = "self",
-    projects: Optional[list[str]] = None,
+    pool: str | None = None,
     ctx: Context = None,  # type: ignore[assignment]
-) -> list[SearchHit]:
+) -> list[SearchHit] | PoolSearchResult:
     """Hybrid (vector + keyword) search over ingested documents & transcripts.
 
     Args:
         query:    Natural-language search query.
-        project:  Explicit project ULID to scope to (overrides ``scope``);
-                  None → use scope.  Ignored when ``projects`` is provided.
+        project:  Compatibility Project ULID. If supplied, it must equal the
+                  connected Project and cannot select another database.
         k:        Maximum results to return (default 10).
         rank:     'hybrid' (default) | 'semantic' | 'keyword' — the ranking
-                  strategy. (Named ``mode`` in earlier releases; the
-                  CLI's ``--mode`` selects the project/global brain instead.)
-        scope:    'self' (default — this project only). Cross-project scopes
-                  ('family'/'all') require global mode.  Ignored when
-                  ``projects`` is provided.
-        projects: Optional explicit list of project ULIDs to search across.
-                  Takes precedence over both ``project`` and ``scope``.  In
-                  global mode, multiple ULIDs pool results from all listed
-                  projects; in project mode only a single-entry list matching
-                  the self project is permitted (raises otherwise).  Entries
-                  must be non-empty strings; list capped at 200 entries.
-                  ``None`` or ``[]`` falls through to ``project``/``scope``
-                  resolution.
+                  strategy. The normal query is always pinned to the connected
+                  Project; ``pool`` is the only cross-Project query path.
+        pool:     Optional named Pool for an explicit live cross-Project query.
 
     Returns:
         Ranked list of SearchHit (chunk_id, doc_key, title, snippet, score, cosine,
@@ -401,11 +311,28 @@ async def search(
         and `fts_matched` flags chunks that also matched full-text search. Judge a hit's
         relevance by `cosine` + `fts_matched`, not by `score`.
     """
-    hits = await search_hits(
-        _store(ctx), query, project=project, k=k, rank=rank, scope=scope,
-        projects=projects,
-    )
-    return [
+    plan = None
+    if pool is not None:
+        if project is not None:
+            raise ValueError("pool cannot be combined with the project compatibility argument.")
+        connected_project = connected_project_id()
+        store = _store(ctx)
+        from .federate import federated_search, plan_for_pool
+
+        plan = plan_for_pool(pool, connected_project)
+        if rank not in ("hybrid", "semantic", "keyword"):
+            raise ValueError(f"Invalid rank '{rank}'. Must be hybrid|semantic|keyword.")
+        if k < 1 or k > 100:
+            raise ValueError("k must be between 1 and 100.")
+        qvec = await embed_query_async(query)
+        hits = await federated_search(store, plan, qvec, query, k, rank)
+    else:
+        _pin_project(project)
+        store = _store(ctx)
+        hits = await search_hits(
+            store, query, project=project, k=k, rank=rank,
+        )
+    results = [
         SearchHit(
             chunk_id=h.chunk_id,
             doc_key=h.doc_key,
@@ -418,6 +345,14 @@ async def search(
         )
         for h in hits
     ]
+    if plan is None:
+        return results
+    display_name, _members = resolve_pool(pool)
+    return PoolSearchResult(
+        pool=display_name,
+        results=results,
+        members=[PoolMemberResult(**vars(member)) for member in plan.member_status],
+    )
 
 
 # ── Chunk fallback (cold-start recall degradation) ───────────────────────────
@@ -521,7 +456,7 @@ async def _chunk_fallback(
             if len(kept) == deficit:
                 break
         return notes + kept
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001  # Chunk fallback is intentionally non-fatal retrieval enhancement.
         log.warning("recall chunk fallback failed (non-fatal): %s", exc)
         return notes
 
@@ -531,12 +466,10 @@ async def _chunk_fallback(
 async def recall_notes(
     store: SqliteStore,
     query: str,
-    project: Optional[str] = None,
+    project: str | None = None,
     k: int = 5,
-    min_cosine: Optional[float] = None,
+    min_cosine: float | None = None,
     dedup: bool = True,
-    scope: str = "self",
-    projects: Optional[list[str]] = None,
     include_superseded: bool = False,
 ) -> list[Note]:
     """Core recall orchestration shared by the MCP tool and the CLI.
@@ -558,13 +491,13 @@ async def recall_notes(
     if query and query.strip():
         try:
             qvec = await embed_query_async(query)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001  # Project recall deliberately falls back when embeddings fail.
             log.warning(
                 "BRAINCELL_EMBED_UNAVAILABLE: embedding is down — recall falls back to "
                 "keyword/recency (no vector ranking). Restart when the embedder is "
                 "reachable to restore semantic recall. %s", exc,
             )
-    proj_filter = _resolve_filter(projects, project, scope)
+    proj_filter = _pin_project(project)
     notes = await store.recall(
         qvec, proj_filter, k, qtext=query, min_cosine=min_cosine, dedup=dedup,
         include_superseded=include_superseded,
@@ -589,23 +522,22 @@ async def recall_notes(
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 async def recall(
     query: str,
-    project: Optional[str] = None,
+    project: str | None = None,
     k: int = 5,
-    min_cosine: Optional[float] = None,
+    min_cosine: float | None = None,
     dedup: bool = True,
-    scope: str = "self",
-    projects: Optional[list[str]] = None,
     include_superseded: bool = False,
+    pool: str | None = None,
     ctx: Context = None,  # type: ignore[assignment]
-) -> list[MemoryNote]:
+) -> list[MemoryNote] | PoolRecallResult:
     """Recall curated memory notes (decisions, bug lessons, observations).
 
     Args:
         query:      Natural-language query. When non-empty and embedding is
                     available, uses hybrid recall (vector cosine + FTS5 RRF-fused).
                     Falls back to keyword/recency when embedding is unavailable.
-        project:    Explicit project ULID to scope notes (overrides ``scope``).
-                    Ignored when ``projects`` is provided.
+        project:    Compatibility Project ULID. If supplied, it must equal the
+                    connected Project and cannot select another database.
         k:          Maximum notes to return (default 5).
         min_cosine: Optional cosine similarity floor [0, 1]. When set, notes whose
                     stored-vector cosine to the query falls below this threshold are
@@ -617,19 +549,7 @@ async def recall(
                     fused-score order: keeps the higher-ranked note, drops later dups.
                     Notes with no embedding (FTS-only) are never dropped by dedup.
                     Only active in the hybrid path (qvec is not None).
-        scope:      'self' (default — this project's notes only). In global mode,
-                    'family' (this project's family) and 'all' (every project in
-                    the global brain) are also supported.  Cross-project scopes
-                    require BRAINCELL_MODE=global; using them in project mode raises
-                    an error.  Ignored when ``projects`` is provided.
-        projects:   Optional explicit list of project ULIDs to recall across.
-                    Takes precedence over both ``project`` and ``scope``.  In
-                    global mode, multiple ULIDs pool notes from all listed
-                    projects; in project mode only a single-entry list matching
-                    the self project is permitted (raises otherwise).  Entries
-                    must be non-empty strings; list capped at 200 entries.
-                    ``None`` or ``[]`` falls through to ``project``/``scope``
-                    resolution.
+        pool:       Optional named Pool for an explicit live cross-Project query.
         include_superseded:
                     False (default) returns CURRENT truth: a note that has been
                     superseded never comes back as the answer — if the query matches
@@ -650,12 +570,37 @@ async def recall(
         negative ids to forget/supersede. Disable via
         BRAINCELL_RECALL_CHUNK_FALLBACK=off.
     """
-    notes = await recall_notes(
-        _store(ctx), query, project=project, k=k, min_cosine=min_cosine,
-        dedup=dedup, scope=scope, projects=projects,
-        include_superseded=include_superseded,
-    )
-    return [
+    plan = None
+    if pool is not None:
+        if project is not None:
+            raise ValueError("pool cannot be combined with the project compatibility argument.")
+        connected_project = connected_project_id()
+        store = _store(ctx)
+        if k < 1 or k > 50:
+            raise ValueError("k must be between 1 and 50.")
+        if min_cosine is not None and not (0.0 <= min_cosine <= 1.0):
+            raise ValueError("min_cosine must be between 0.0 and 1.0.")
+        qvec = None
+        if query and query.strip():
+            try:
+                qvec = await embed_query_async(query)
+            except Exception as exc:  # noqa: BLE001  # Pool recall deliberately falls back when embeddings fail.
+                log.warning("Pool Recall embedding unavailable; using lexical/recency: %s", exc)
+        from .federate import federated_recall, plan_for_pool
+
+        plan = plan_for_pool(pool, connected_project)
+        notes = await federated_recall(
+            store, plan, qvec, k, qtext=query, min_cosine=min_cosine,
+            dedup=dedup, include_superseded=include_superseded,
+        )
+    else:
+        _pin_project(project)
+        store = _store(ctx)
+        notes = await recall_notes(
+            store, query, project=project, k=k, min_cosine=min_cosine,
+            include_superseded=include_superseded,
+        )
+    results = [
         MemoryNote(
             id=n.id,
             project_id=n.project_id,
@@ -676,6 +621,14 @@ async def recall(
         )
         for n in notes
     ]
+    if plan is None:
+        return results
+    display_name, _members = resolve_pool(pool)
+    return PoolRecallResult(
+        pool=display_name,
+        results=results,
+        members=[PoolMemberResult(**vars(member)) for member in plan.member_status],
+    )
 
 
 # ── Tool: remember ───────────────────────────────────────────────────────────
@@ -684,9 +637,9 @@ async def recall(
 async def remember(
     text: str,
     kind: str,
-    project: Optional[str] = None,
-    tags: Optional[list[str]] = None,
-    confidence: Optional[float] = None,
+    project: str | None = None,
+    tags: list[str] | None = None,
+    confidence: float | None = None,
     ctx: Context = None,  # type: ignore[assignment]
 ) -> RememberResult:
     """Persist a curated memory note.
@@ -696,10 +649,8 @@ async def remember(
     Args:
         text:       The note content.
         kind:       'decision' | 'bug_lesson' | 'note' | 'observation'.
-        project:    Project ULID. Optional — defaults to this server's project.
-                    If given, it MUST match the server's project (this instance
-                    serves exactly one brain); a mismatch is rejected, never
-                    silently re-filed.
+        project:    Compatibility Project ULID. If supplied, it must equal the
+                    connected Project; it never selects another database.
         tags:       Optional JSON array of string tags.
         confidence: Optional float 0.0–1.0 confidence score.
 
@@ -710,6 +661,7 @@ async def remember(
         them, and if this note REPLACES one, call supersede on the old id so
         recall returns one truth instead of two competing ones.
     """
+    project = _pin_write_project(project)
     if not text or not text.strip():
         raise ValueError("text must not be empty.")
     if confidence is not None and not (0.0 <= confidence <= 1.0):
@@ -719,14 +671,13 @@ async def remember(
     try:
         _vecs = await embed_texts_async([text])
         vec = _vecs[0]
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001  # Remember persists FTS-only memory when embeddings fail.
         log.warning(
             "BRAINCELL_EMBED_UNAVAILABLE: embedding is down — note saved FTS-only, "
             "backfill later via `braincell reembed-notes` (see embed.py _embed_ollama). %s",
             exc,
         )
 
-    project = _pin_write_project(project)
     store = _store(ctx)
     # Contradiction guard — scan BEFORE the insert so the new note never
     # matches itself. Warn-only: the note persists regardless; a failure to scan
@@ -734,7 +685,7 @@ async def remember(
     conflicts = []
     try:
         conflicts = await store.find_conflicts(project, vec)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001  # A failed conflict scan must not block a memory write.
         log.warning("conflict scan failed (non-fatal, note still persisted): %s", exc)
     note_id = await store.remember(
         text=text,
@@ -762,7 +713,7 @@ async def remember(
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def forget(
     note_id: int,
-    project: Optional[str] = None,
+    project: str | None = None,
     hard: bool = False,
     ctx: Context = None,  # type: ignore[assignment]
 ) -> ForgetResult:
@@ -782,8 +733,7 @@ async def forget(
 
     Args:
         note_id: Integer ID of the note to retract (from recall results).
-        project: Project ULID (defaults to this server's project; a mismatch is
-                 rejected).
+        project: Compatibility Project ULID; any different Project is rejected.
         hard:    When true, permanently delete instead of soft-tombstoning.
 
     Returns:
@@ -801,7 +751,7 @@ async def forget(
 async def supersede(
     note_id: int,
     new_content: str,
-    project: Optional[str] = None,
+    project: str | None = None,
     ctx: Context = None,  # type: ignore[assignment]
 ) -> SupersedeResult:
     """Supersede an existing memory note with updated content.
@@ -818,12 +768,12 @@ async def supersede(
     Args:
         note_id:     ID of the note to supersede.
         new_content: The replacement content.
-        project:     Project ULID (defaults to this server's project; a mismatch
-                     is rejected).
+        project:     Compatibility Project ULID; any different Project is rejected.
 
     Returns:
         {"new_id": <int>, "superseded": <int>} on success.
     """
+    project = _pin_write_project(project)
     if not new_content or not new_content.strip():
         raise ValueError("new_content must not be empty.")
 
@@ -831,13 +781,12 @@ async def supersede(
     try:
         _vecs = await embed_texts_async([new_content])
         vec = _vecs[0]
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001  # Supersede persists FTS-only memory when embeddings fail.
         log.warning(
             "BRAINCELL_EMBED_UNAVAILABLE: embedding is down — supersede note saved "
             "FTS-only, backfill later via `braincell reembed-notes`. %s", exc,
         )
 
-    project = _pin_write_project(project)
     new_id = await _store(ctx).supersede(note_id, new_content, project, embedding=vec)
     return SupersedeResult(new_id=new_id, superseded=note_id, embedded=vec is not None)
 
@@ -847,14 +796,14 @@ async def supersede(
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 async def get_document(
     doc_key: str,
-    project: Optional[str] = None,
+    project: str | None = None,
     ctx: Context = None,  # type: ignore[assignment]
-) -> Optional[DocumentResult]:
+) -> DocumentResult | None:
     """Retrieve a full document (chunks + provenance) by its key.
 
     Args:
         doc_key: The document key (e.g. a transcript session id or doc name).
-        project: Project ULID for scoped lookup.
+        project: Compatibility Project ULID; any different Project is rejected.
 
     Returns:
         Document dict or null if not found.
@@ -862,7 +811,8 @@ async def get_document(
     if not doc_key or not doc_key.strip():
         raise ValueError("doc_key must not be empty.")
 
-    doc = await _store(ctx).get_document(doc_key.strip(), _pin_read_project(project))
+    pinned_project = _pin_project(project)
+    doc = await _store(ctx).get_document(doc_key.strip(), pinned_project)
     if doc is None:
         return None
     return DocumentResult(
@@ -882,18 +832,19 @@ async def get_document(
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 async def ingest_status(
-    project: Optional[str] = None,
+    project: str | None = None,
     ctx: Context = None,  # type: ignore[assignment]
 ) -> IngestStatusResult:
     """Report whether this project has been indexed and basic counts.
 
     Args:
-        project: Project ULID (or None for aggregate across all projects).
+        project: Compatibility Project ULID; any different Project is rejected.
 
     Returns:
         {indexed, doc_count, chunk_count, last_ingest_ts, head_sha, stale}.
     """
-    status = await _store(ctx).ingest_status(_pin_read_project(project))
+    pinned_project = _pin_project(project)
+    status = await _store(ctx).ingest_status(pinned_project)
     return IngestStatusResult(
         indexed=status.indexed,
         doc_count=status.doc_count,
@@ -908,15 +859,15 @@ async def ingest_status(
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 async def list_documents(
-    project: Optional[str] = None,
-    filter: Optional[str] = None,
+    project: str | None = None,
+    filter: str | None = None,
     limit: int = 200,
     ctx: Context = None,  # type: ignore[assignment]
 ) -> list[DocumentSummary]:
     """List ingested documents & transcripts with name/title/content_type summary.
 
     Args:
-        project: Project ULID to scope the listing.
+        project: Compatibility Project ULID; any different Project is rejected.
         filter:  Optional substring filter on doc_key or title (case-insensitive).
         limit:   Maximum rows to return (default 200, hard cap 200).
 
@@ -925,62 +876,55 @@ async def list_documents(
     """
     if limit < 1 or limit > 200:
         raise ValueError("limit must be between 1 and 200.")
-    rows = await _store(ctx).list_documents(_pin_read_project(project), filter, limit)
+    pinned_project = _pin_project(project)
+    rows = await _store(ctx).list_documents(pinned_project, filter, limit)
     return [DocumentSummary(**r) for r in rows]
 
 
-# ── Tool: list_projects ──────────────────────────────────────────────────────
+# ── Metadata-only catalog tools ───────────────────────────────────────────────
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 async def list_projects() -> list[ProjectInfo]:
-    """List all registered projects from the path registry.
-
-    Reads the workspace-level ``path-registry.json`` (no store required).
-
-    Returns:
-        List of ``{project_id, path}`` sorted by path, one entry per registered
-        project. Empty list when no projects are registered.
-    """
-    registry = load_path_registry()
+    """List registered Project ULIDs and paths without opening any Project database."""
+    connected_project_id()
     return [
-        ProjectInfo(project_id=ulid, path=path)
-        for path, ulid in sorted(registry.items())
+        ProjectInfo(project_id=project_id, path=path)
+        for path, project_id in sorted(load_path_registry().items())
     ]
 
 
-# ── Tool: list_families ───────────────────────────────────────────────────────
-
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-async def list_families() -> list[FamilyInfo]:
-    """List all project families and resolve member ULIDs.
-
-    Reads ``families.json`` and cross-references the path registry. Unregistered
-    member paths (no ULID yet) are included in ``members`` but contribute nothing
-    to ``project_ids`` (lazy-link — a member can be declared before it is
-    ingested). Families are returned sorted by name.
-
-    Returns:
-        List of ``{name, members, project_ids}`` — one entry per defined family.
-        ``members`` contains all declared paths; ``project_ids`` contains only
-        the ULIDs of currently-registered members.
-    """
-    families = load_families()
-    registry = load_path_registry()
-    result: list[FamilyInfo] = []
-    for fname, members in sorted(families.items()):
-        pids = [
-            registry[normalize_path(m)]
-            for m in members
-            if normalize_path(m) in registry
-        ]
-        result.append(FamilyInfo(name=fname, members=members, project_ids=pids))
-    return result
+async def list_pools() -> list[PoolInfo]:
+    """List named Pool memberships without opening member databases or reading memory."""
+    connected_project_id()
+    registered = set(load_path_registry().values())
+    return [
+        PoolInfo(
+            name=name,
+            member_project_ids=list(member_ids),
+            member_status={
+                project_id: "registered" if project_id in registered else "unregistered"
+                for project_id in member_ids
+            },
+        )
+        for name, member_ids in sorted(load_pools().items())
+    ]
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:
     """Run the FastMCP server on stdio (standard transport for `claude mcp add`)."""
+    import sys
+
+    if any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
+        print(
+            "usage: braincell-mcp\n\n"
+            "Run the BrainCell MCP stdio server for the connected Project.\n"
+            "The client registration supplies BRAINCELL_STORE=sqlite and "
+            "BRAINCELL_PROJECT_ID."
+        )
+        return
     mcp.run()
 
 
