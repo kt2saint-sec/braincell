@@ -106,5 +106,6 @@ cat <<EOF
 
 Next:
   cd /path/to/your/project
-  $VENV_DIR/bin/braincell start
+  $VENV_DIR/bin/braincell setup . --dry-run --client <client>
+  $VENV_DIR/bin/braincell setup . --client <client> --yes
 EOF

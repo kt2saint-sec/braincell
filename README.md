@@ -34,28 +34,38 @@ are detected for explicit cleanup; BrainCell never silently removes them.
 
 ## Install
 
+After PyPI publication, use `pipx` for a production install:
+
+```bash
+pipx install braincell-mcp
+ollama pull qwen3-embedding:4b
+```
+
+The default embedder is local Ollama `qwen3-embedding:4b`. For hosted
+embeddings, install the optional OpenAI extra instead and configure its
+documented provider environment:
+
+```bash
+pipx install "braincell-mcp[openai]"
+```
+
+For source/developer installation from a checkout:
+
 ```bash
 git clone https://github.com/kt2saint-sec/braincell.git
 cd braincell
 ./scripts/install.sh
 ```
 
-Or install with pip:
+Before publication, install directly from source:
 
 ```bash
-pipx install braincell-mcp
-# or, before publication:
 python3 -m pip install "braincell-mcp @ git+https://github.com/kt2saint-sec/braincell.git"
-ollama pull qwen3-embedding:4b
 ```
 
-`pipx install braincell-mcp` will work after the package is published. Installing
-the package never selects a Project, creates a database, or changes a client
-configuration.
-
-The default embedder is local Ollama `qwen3-embedding:4b`. For hosted
-embeddings, install the `[openai]` extra and configure its documented provider
-environment. The commands are `braincell`, `braincell-mcp`, and
+Installing the package never selects a Project, creates a database, or changes a
+client configuration. After any install, connect one selected Project with the
+dry-run/apply flow below. The commands are `braincell`, `braincell-mcp`, and
 `braincell-map`.
 
 ## Connect one Project
