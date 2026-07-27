@@ -72,6 +72,24 @@ def _legacy_fixture(tmp_path):
     return source
 
 
+def _wal_writer(path):
+    connection = sqlite3.connect(path)
+    connection.execute("PRAGMA journal_mode=WAL")
+    connection.execute("PRAGMA wal_autocheckpoint=0")
+    return connection
+
+
+def _database_rows(path):
+    with sqlite3.connect(path) as connection:
+        return {
+            "documents": connection.execute("SELECT project_id,doc_key,content_hash FROM bc_documents ORDER BY id").fetchall(),
+            "notes": connection.execute("SELECT project_id,content,note_uid FROM memory_notes ORDER BY id").fetchall(),
+            "foreign_keys": connection.execute("PRAGMA foreign_key_check").fetchall(),
+            "chunks_fts": connection.execute("INSERT INTO bc_chunks_fts(bc_chunks_fts) VALUES('integrity-check')").fetchall(),
+            "notes_fts": connection.execute("INSERT INTO memory_fts(memory_fts) VALUES('integrity-check')").fetchall(),
+        }
+
+
 def test_preview_classifies_provenance_attribution_and_ambiguity(tmp_path):
     from braincell.legacy_recovery import preview
 
@@ -265,9 +283,92 @@ def test_verification_checks_foreign_keys_and_fts_for_selected_rows(tmp_path):
     source = _legacy_fixture(tmp_path)
     report = legacy_recovery.preview(source)
     legacy_recovery.apply(source_path=source, project_ids=["01ATTRIBUTABLE"], approval_digest=report["approval_digest"])
-    with legacy_recovery._read_only(source) as connection:
+    with legacy_recovery._read_only(source, purpose="test") as connection:
         manifest, _ = legacy_recovery._manifest(connection, {"01ATTRIBUTABLE", "01POOLED"})
         verification = legacy_recovery._verify(connection, get_db_path("01ATTRIBUTABLE"), "01ATTRIBUTABLE", manifest["01ATTRIBUTABLE"])
     assert verification["ok"] is True
     assert verification["foreign_key_violations"] == 0
     assert verification["fts"] == {"bc_chunks_fts": "ok", "memory_fts": "ok"}
+
+
+def test_preview_reads_committed_wal_rows_without_changing_database_artifacts(tmp_path):
+    from braincell.legacy_recovery import preview
+
+    source = _legacy_fixture(tmp_path)
+    writer = _wal_writer(source)
+    writer.execute("UPDATE bc_documents SET pooled_from='01POOLED' WHERE project_id='01ATTRIBUTABLE'")
+    writer.commit()
+    before = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in (source, source.with_name("legacy.db-wal"))}
+    report = preview(source)
+    after = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in (source, source.with_name("legacy.db-wal"))}
+    writer.close()
+
+    assert report["classifications"]["ambiguous_pooled_from_conflict"]["01POOLED"] == 1
+    assert after == before
+
+
+def test_preview_detects_destination_conflict_in_committed_wal(tmp_path):
+    from braincell.config import get_db_path
+    from braincell.legacy_recovery import preview
+    from braincell.store import SqliteStore
+
+    source = _legacy_fixture(tmp_path)
+    destination = get_db_path("01ATTRIBUTABLE")
+    destination.parent.mkdir(parents=True)
+    SqliteStore(destination).assert_schema_version()
+    writer = _wal_writer(destination)
+    writer.execute(
+        "INSERT INTO bc_documents(project_id,doc_key,title,content_hash) VALUES (?,?,?,?)",
+        ("01ATTRIBUTABLE", "a-doc", "different", b"different"),
+    )
+    writer.commit()
+    report = preview(source)
+    writer.close()
+
+    assert report["projects"]["01ATTRIBUTABLE"]["conflicts"] == [{"kind": "document", "key": "a-doc"}]
+
+
+def test_wal_destination_backup_and_failed_recovery_restore_committed_data(tmp_path, monkeypatch):
+    from braincell import legacy_recovery
+    from braincell.config import get_db_path
+    from braincell.store import SqliteStore
+
+    source = _legacy_fixture(tmp_path)
+    destination = get_db_path("01ATTRIBUTABLE")
+    destination.parent.mkdir(parents=True)
+    SqliteStore(destination).assert_schema_version()
+    writer = _wal_writer(destination)
+    writer.execute(
+        "INSERT INTO memory_notes(project_id,scope,kind,content,note_uid) VALUES (?,?,?,?,?)",
+        ("01ATTRIBUTABLE", "project", "note", "WAL-only retained note", "wal-retained"),
+    )
+    writer.commit()
+    before = _database_rows(destination)
+    report = legacy_recovery.preview(source)
+    monkeypatch.setattr(legacy_recovery, "_verify", lambda *_args: {"ok": False, "failures": ["forced"]})
+    with pytest.raises(legacy_recovery.LegacyRecoveryError, match="restored"):
+        legacy_recovery.apply(source_path=source, project_ids=["01ATTRIBUTABLE"], approval_digest=report["approval_digest"], backup_dir=tmp_path / "backups")
+    writer.close()
+
+    assert _database_rows(destination) == before
+    backups = list((tmp_path / "backups").glob("*.destination-backup-*.db"))
+    assert len(backups) == 1
+    assert _database_rows(backups[0])["notes"] == before["notes"]
+
+
+def test_apply_refuses_destination_with_active_wal_writer(tmp_path):
+    from braincell import legacy_recovery
+    from braincell.config import get_db_path
+    from braincell.store import SqliteStore
+
+    source = _legacy_fixture(tmp_path)
+    destination = get_db_path("01ATTRIBUTABLE")
+    destination.parent.mkdir(parents=True)
+    SqliteStore(destination).assert_schema_version()
+    writer = _wal_writer(destination)
+    writer.execute("BEGIN IMMEDIATE")
+    report = legacy_recovery.preview(source)
+    with pytest.raises(legacy_recovery.LegacyRecoveryError, match="active writer"):
+        legacy_recovery.apply(source_path=source, project_ids=["01ATTRIBUTABLE"], approval_digest=report["approval_digest"])
+    writer.rollback()
+    writer.close()

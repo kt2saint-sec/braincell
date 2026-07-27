@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import sqlite3
+from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -55,15 +56,58 @@ def discover_legacy_configuration() -> LegacyDiscovery:
                            os.environ.get("BRAINCELL_MODE", "").strip().lower() == "global")
 
 
-def _read_only(path: Path) -> sqlite3.Connection:
-    """Open an existing database without creating files, journals, or locks for writes."""
-    # immutable=1 avoids SQLite creating WAL shared-memory sidecars while merely
-    # inspecting an archived source or an existing destination in preview.
-    connection = sqlite3.connect(f"file:{path.resolve().as_posix()}?mode=ro&immutable=1", uri=True)
+def _wal_path(path: Path) -> Path:
+    return path.with_name(f"{path.name}-wal")
+
+
+def _shm_path(path: Path) -> Path:
+    return path.with_name(f"{path.name}-shm")
+
+
+def _read_only(path: Path, *, purpose: str) -> sqlite3.Connection:
+    """Open a stable read-only snapshot without hiding committed WAL frames.
+
+    SQLite needs an existing WAL shared-memory index to read a WAL database
+    without writing one.  Refuse rather than create that sidecar during preview,
+    or silently omit the WAL by using ``immutable=1``.
+    """
+    wal, shm = _wal_path(path), _shm_path(path)
+    if wal.exists() and not shm.exists():
+        raise LegacyRecoveryError(
+            f"{purpose} cannot safely read {path}: committed WAL data exists but "
+            "the WAL shared-memory index is unavailable. Close/checkpoint the "
+            "writer, then retry recovery."
+        )
+    query = "mode=ro&cache=private" if wal.exists() else "mode=ro&immutable=1"
+    connection = sqlite3.connect(
+        f"file:{path.resolve().as_posix()}?{query}", uri=True, timeout=0
+    )
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA query_only=ON")
     connection.execute("PRAGMA foreign_keys=ON")
     return connection
+
+
+@contextmanager
+def _exclusive_destination(path: Path):
+    """Hold SQLite's writer lock while a destination is backed up or changed."""
+    connection = sqlite3.connect(path, timeout=0, isolation_level=None)
+    connection.row_factory = sqlite3.Row
+    try:
+        connection.execute("PRAGMA busy_timeout=0")
+        connection.execute("PRAGMA foreign_keys=ON")
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+        except sqlite3.OperationalError as exc:
+            raise LegacyRecoveryError(
+                f"Destination {path} has an active writer. Stop BrainCell or the "
+                "other writer before applying recovery."
+            ) from exc
+        yield connection
+    finally:
+        if connection.in_transaction:
+            connection.rollback()
+        connection.close()
 
 
 def _tables(connection: sqlite3.Connection) -> set[str]:
@@ -121,7 +165,7 @@ def _destination_conflicts(source: sqlite3.Connection, destination: Path, projec
     if not destination.is_file():
         return []
     conflicts: list[dict[str, Any]] = []
-    with _read_only(destination) as dest:
+    with _read_only(destination, purpose="Preview") as dest:
         for row in source.execute(f"SELECT doc_key, content_hash FROM bc_documents WHERE id IN ({_placeholders(selected_docs)})", selected_docs):
             existing = dest.execute("SELECT content_hash FROM bc_documents WHERE project_id=? AND doc_key=?", (project_id, row["doc_key"])).fetchone()
             if existing is not None and existing[0] != row["content_hash"]:
@@ -140,7 +184,7 @@ def preview(source_path: Path | None = None) -> dict[str, Any]:
     source = Path(source_path or discovery.database).expanduser().resolve()
     if not source.is_file():
         raise LegacyRecoveryError(f"Legacy database does not exist: {source}")
-    with _read_only(source) as connection:
+    with _read_only(source, purpose="Preview") as connection:
         version = _schema_version(connection)
         manifest, categories = _manifest(connection, set(load_path_registry().values()))
         projects = {}
@@ -161,7 +205,7 @@ def _backup_database(source: Path, kind: str, backup_dir: Path | None = None) ->
     while destination.exists():
         destination = directory / f"{source.stem}.{kind}-backup-{timestamp}-{serial}.db"
         serial += 1
-    with _read_only(source) as original, sqlite3.connect(destination) as backup:
+    with _read_only(source, purpose="Backup") as original, sqlite3.connect(destination) as backup:
         original.backup(backup)
     return destination
 
@@ -184,73 +228,76 @@ def _note_uid(note: sqlite3.Row) -> str:
     return "legacy-" + hashlib.sha256(json.dumps(payload, sort_keys=True, default=str, separators=(",", ":")).encode()).hexdigest()
 
 
-def _copy_project(source: sqlite3.Connection, destination: Path, project_id: str, selected: dict[str, list[int]]) -> dict[str, int]:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    store = SqliteStore(destination)
-    store.assert_schema_version()
-    store.close()
+def _copy_project(
+    source: sqlite3.Connection,
+    dest: sqlite3.Connection,
+    project_id: str,
+    selected: dict[str, list[int]],
+) -> dict[str, int]:
+    """Copy one selected manifest inside the caller's destination transaction."""
     copied = {"documents": 0, "chunks": 0, "notes": 0, "links": 0}
-    with sqlite3.connect(destination) as dest:
-        dest.row_factory = sqlite3.Row
-        dest.execute("PRAGMA foreign_keys=ON")
-        try:
-            dest.execute("BEGIN IMMEDIATE")
-            document_map: dict[int, int] = {}
-            for document in source.execute(f"SELECT * FROM bc_documents WHERE id IN ({_placeholders(selected['documents'])}) ORDER BY id", selected["documents"]):
-                existing = dest.execute("SELECT id, content_hash FROM bc_documents WHERE project_id=? AND doc_key=?", (project_id, document["doc_key"])).fetchone()
-                if existing is not None:
-                    if existing["content_hash"] != document["content_hash"]:
-                        raise LegacyRecoveryError(f"Destination conflict for document {document['doc_key']!r}.")
-                    document_map[int(document["id"])] = int(existing["id"])
-                    continue
-                cursor = dest.execute("INSERT INTO bc_documents (project_id,doc_key,title,content_hash,content_type,commit_sha,run_id,created_at,updated_at,metadata,pooled_from) VALUES (?,?,?,?,?,?,?,?,?,?,NULL)", (project_id, document["doc_key"], document["title"], document["content_hash"], document["content_type"], _value(document, "commit_sha"), _value(document, "run_id"), document["created_at"], _value(document, "updated_at"), _value(document, "metadata")))
-                document_map[int(document["id"])] = int(cursor.lastrowid)
-                copied["documents"] += 1
-            for source_document_id, destination_document_id in document_map.items():
-                for chunk in source.execute("SELECT * FROM bc_chunks WHERE document_id=? ORDER BY chunk_index", (source_document_id,)):
-                    existing = dest.execute("SELECT id FROM bc_chunks WHERE document_id=? AND chunk_index=?", (destination_document_id, chunk["chunk_index"])).fetchone()
-                    if existing is None:
-                        dest.execute("INSERT INTO bc_chunks (document_id,chunk_index,chunk_text,chunk_hash,embedding,run_id) VALUES (?,?,?,?,?,?)", (destination_document_id, chunk["chunk_index"], chunk["chunk_text"], chunk["chunk_hash"], chunk["embedding"], _value(chunk, "run_id")))
-                        copied["chunks"] += 1
-            note_map: dict[int, int] = {}
-            replacements: list[tuple[int, int | None]] = []
-            for note in source.execute(f"SELECT * FROM memory_notes WHERE id IN ({_placeholders(selected['notes'])}) ORDER BY id", selected["notes"]):
-                uid = _note_uid(note)
-                existing = dest.execute("SELECT id, content FROM memory_notes WHERE note_uid=?", (uid,)).fetchone()
-                if existing is not None:
-                    if existing["content"] != note["content"]:
-                        raise LegacyRecoveryError(f"Destination conflict for note {uid!r}.")
-                    destination_id = int(existing["id"])
-                else:
-                    cursor = dest.execute("INSERT INTO memory_notes (project_id,scope,kind,content,tags,confidence,source_hint,superseded_by,created_at,embedding,deleted_at,note_uid,revision,pooled_from,status) VALUES (?,?,?,?,?,?,?,NULL,?,?,?,?,?,NULL,?)", (project_id, note["scope"], note["kind"], note["content"], _value(note, "tags"), _value(note, "confidence"), _value(note, "source_hint"), note["created_at"], _value(note, "embedding"), _value(note, "deleted_at"), uid, _value(note, "revision", 1), _value(note, "status", "active")))
-                    destination_id = int(cursor.lastrowid)
-                    copied["notes"] += 1
-                note_map[int(note["id"])] = destination_id
-                replacements.append((destination_id, _value(note, "superseded_by")))
-            for destination_id, source_replacement in replacements:
-                dest.execute("UPDATE memory_notes SET superseded_by=? WHERE id=?", (note_map.get(source_replacement) if source_replacement is not None else None, destination_id))
-            if "bc_note_links" in _tables(source):
-                for link in source.execute("SELECT * FROM bc_note_links"):
-                    src_id, dst_id = note_map.get(link["src_id"]), note_map.get(link["dst_id"])
-                    if src_id is not None and dst_id is not None:
-                        cursor = dest.execute("INSERT OR IGNORE INTO bc_note_links (src_id,dst_id,kind,weight,created_at) VALUES (?,?,?,?,?)", (src_id, dst_id, link["kind"], link["weight"], link["created_at"]))
-                        copied["links"] += max(cursor.rowcount, 0)
-            for table in ("bc_chunks_fts", "memory_fts"):
-                dest.execute(f"INSERT INTO {table}({table}) VALUES('rebuild')")
-            dest.commit()
-        except Exception:
-            dest.rollback()
-            raise
+    document_map: dict[int, int] = {}
+    for document in source.execute(f"SELECT * FROM bc_documents WHERE id IN ({_placeholders(selected['documents'])}) ORDER BY id", selected["documents"]):
+        existing = dest.execute("SELECT id, content_hash FROM bc_documents WHERE project_id=? AND doc_key=?", (project_id, document["doc_key"])).fetchone()
+        if existing is not None:
+            if existing["content_hash"] != document["content_hash"]:
+                raise LegacyRecoveryError(f"Destination conflict for document {document['doc_key']!r}.")
+            document_map[int(document["id"])] = int(existing["id"])
+            continue
+        cursor = dest.execute("INSERT INTO bc_documents (project_id,doc_key,title,content_hash,content_type,commit_sha,run_id,created_at,updated_at,metadata,pooled_from) VALUES (?,?,?,?,?,?,?,?,?,?,NULL)", (project_id, document["doc_key"], document["title"], document["content_hash"], document["content_type"], _value(document, "commit_sha"), _value(document, "run_id"), document["created_at"], _value(document, "updated_at"), _value(document, "metadata")))
+        document_map[int(document["id"])] = int(cursor.lastrowid)
+        copied["documents"] += 1
+    for source_document_id, destination_document_id in document_map.items():
+        for chunk in source.execute("SELECT * FROM bc_chunks WHERE document_id=? ORDER BY chunk_index", (source_document_id,)):
+            existing = dest.execute("SELECT id FROM bc_chunks WHERE document_id=? AND chunk_index=?", (destination_document_id, chunk["chunk_index"])).fetchone()
+            if existing is None:
+                dest.execute("INSERT INTO bc_chunks (document_id,chunk_index,chunk_text,chunk_hash,embedding,run_id) VALUES (?,?,?,?,?,?)", (destination_document_id, chunk["chunk_index"], chunk["chunk_text"], chunk["chunk_hash"], chunk["embedding"], _value(chunk, "run_id")))
+                copied["chunks"] += 1
+    note_map: dict[int, int] = {}
+    replacements: list[tuple[int, int | None]] = []
+    for note in source.execute(f"SELECT * FROM memory_notes WHERE id IN ({_placeholders(selected['notes'])}) ORDER BY id", selected["notes"]):
+        uid = _note_uid(note)
+        existing = dest.execute("SELECT id, content FROM memory_notes WHERE note_uid=?", (uid,)).fetchone()
+        if existing is not None:
+            if existing["content"] != note["content"]:
+                raise LegacyRecoveryError(f"Destination conflict for note {uid!r}.")
+            destination_id = int(existing["id"])
+        else:
+            cursor = dest.execute("INSERT INTO memory_notes (project_id,scope,kind,content,tags,confidence,source_hint,superseded_by,created_at,embedding,deleted_at,note_uid,revision,pooled_from,status) VALUES (?,?,?,?,?,?,?,NULL,?,?,?,?,?,NULL,?)", (project_id, note["scope"], note["kind"], note["content"], _value(note, "tags"), _value(note, "confidence"), _value(note, "source_hint"), note["created_at"], _value(note, "embedding"), _value(note, "deleted_at"), uid, _value(note, "revision", 1), _value(note, "status", "active")))
+            destination_id = int(cursor.lastrowid)
+            copied["notes"] += 1
+        note_map[int(note["id"])] = destination_id
+        replacements.append((destination_id, _value(note, "superseded_by")))
+    for destination_id, source_replacement in replacements:
+        dest.execute("UPDATE memory_notes SET superseded_by=? WHERE id=?", (note_map.get(source_replacement) if source_replacement is not None else None, destination_id))
+    if "bc_note_links" in _tables(source):
+        for link in source.execute("SELECT * FROM bc_note_links"):
+            src_id, dst_id = note_map.get(link["src_id"]), note_map.get(link["dst_id"])
+            if src_id is not None and dst_id is not None:
+                cursor = dest.execute("INSERT OR IGNORE INTO bc_note_links (src_id,dst_id,kind,weight,created_at) VALUES (?,?,?,?,?)", (src_id, dst_id, link["kind"], link["weight"], link["created_at"]))
+                copied["links"] += max(cursor.rowcount, 0)
+    for table in ("bc_chunks_fts", "memory_fts"):
+        dest.execute(f"INSERT INTO {table}({table}) VALUES('rebuild')")
     return copied
 
 
-def _verify(source: sqlite3.Connection, destination: Path, project_id: str, selected: dict[str, list[int]]) -> dict[str, Any]:
+def _verify(
+    source: sqlite3.Connection,
+    destination: Path | sqlite3.Connection,
+    project_id: str,
+    selected: dict[str, list[int]],
+) -> dict[str, Any]:
     """Compare every selected entity and its indexes, not aggregate destination counts."""
     failures: list[str] = []
     # This runs only after apply has copied rows. FTS5's integrity command is an
     # INSERT-form pragma, so it cannot run through preview's strict read-only
     # connection; it does not alter indexed content.
-    with sqlite3.connect(destination) as dest:
+    destination_context = (
+        nullcontext(destination)
+        if isinstance(destination, sqlite3.Connection)
+        else sqlite3.connect(destination)
+    )
+    with destination_context as dest:
         dest.row_factory = sqlite3.Row
         dest.execute("PRAGMA foreign_keys=ON")
         source_docs = list(source.execute(f"SELECT * FROM bc_documents WHERE id IN ({_placeholders(selected['documents'])})", selected["documents"]))
@@ -311,13 +358,22 @@ def _verify(source: sqlite3.Connection, destination: Path, project_id: str, sele
     return {"ok": not failures, "documents_verified": len(document_map), "chunks_verified": chunk_count, "notes_verified": len(note_map), "links_verified": len(expected_links), "foreign_key_violations": len(foreign_keys), "fts": fts, "failures": failures}
 
 
-def _restore_destination(destination: Path, existed: bool, backup: Path | None) -> None:
+def _prepare_destination(destination: Path) -> bool:
+    """Refuse incompatible existing databases before taking the writer lock."""
+    existed = destination.is_file()
     if existed:
-        assert backup is not None
-        with _read_only(backup) as saved, sqlite3.connect(destination) as restored:
-            saved.backup(restored)
-    elif destination.exists():
-        destination.unlink()
+        with _read_only(destination, purpose="Apply") as connection:
+            if _schema_version(connection) != MEMORY_SCHEMA_VERSION:
+                raise LegacyRecoveryError(
+                    f"Destination {destination} is not at supported schema "
+                    f"v{MEMORY_SCHEMA_VERSION}; upgrade it before recovery."
+                )
+        return True
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    store = SqliteStore(destination)
+    store.assert_schema_version()
+    store.close()
+    return False
 
 
 def apply(*, source_path: Path | None, project_ids: list[str], approval_digest: str, backup_dir: Path | None = None) -> dict[str, Any]:
@@ -336,19 +392,41 @@ def apply(*, source_path: Path | None, project_ids: list[str], approval_digest: 
     source = Path(report["source"])
     source_backup = create_backup(source, backup_dir)
     results: dict[str, Any] = {}
-    with _read_only(source) as connection:
+    with _read_only(source, purpose="Apply") as connection:
+        connection.execute("BEGIN")
         manifest, _ = _manifest(connection, set(load_path_registry().values()))
         for project_id in selected:
             destination = get_db_path(project_id)
-            existed = destination.is_file()
-            destination_backup = _backup_database(destination, "destination", backup_dir) if existed else None
+            existed = _prepare_destination(destination)
+            destination_backup = None
             try:
-                copied = _copy_project(connection, destination, project_id, manifest[project_id])
-                verification = _verify(connection, destination, project_id, manifest[project_id])
-                if not verification["ok"]:
-                    raise LegacyRecoveryError(f"Post-copy verification failed for {project_id}: {verification}")
+                with _exclusive_destination(destination) as destination_connection:
+                    if existed:
+                        destination_backup = _backup_database(
+                            destination, "destination", backup_dir
+                        )
+                    copied = _copy_project(
+                        connection, destination_connection, project_id, manifest[project_id]
+                    )
+                    verification = _verify(
+                        connection, destination_connection, project_id, manifest[project_id]
+                    )
+                    if not verification["ok"]:
+                        raise LegacyRecoveryError(
+                            f"Post-copy verification failed for {project_id}: {verification}"
+                        )
+                    destination_connection.commit()
             except Exception as exc:
-                _restore_destination(destination, existed, destination_backup)
-                raise LegacyRecoveryError(f"Recovery failed for {project_id}; its destination was restored. {exc}", completed_projects=results) from exc
+                # The guarded transaction is never committed before exact
+                # verification, so its rollback restores the affected database.
+                if not existed:
+                    for artifact in (destination, _wal_path(destination), _shm_path(destination)):
+                        if artifact.exists():
+                            artifact.unlink()
+                raise LegacyRecoveryError(
+                    f"Recovery failed for {project_id}; its destination was restored "
+                    f"from its guarded transaction. {exc}",
+                    completed_projects=results,
+                ) from exc
             results[project_id] = {"destination": str(destination), "destination_backup": str(destination_backup) if destination_backup else None, "destination_existed": existed, "copied": copied, "verification": verification}
     return {"source": str(source), "backup": str(source_backup), "backup_retained": True, "projects": results}
