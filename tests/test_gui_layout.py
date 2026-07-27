@@ -159,6 +159,14 @@ class TestPass2Commands:
             "Conflict rows must explain the never-clobber outcome"
         )
 
+    def test_automatic_pool_recall_card_is_project_explicit(self, tmp_path):
+        html = _page(tmp_path)
+        assert "/api/automatic-pool-recall" in html
+        assert "Automatic Pool recall" in html
+        assert "Disabled by default" in html
+        assert 'id="cmd-auto-pool"' in html
+        assert 'id="cmd-auto-scope"' in html
+
     def test_restart_card_wired_and_scoped_to_gui(self, tmp_path):
         html = _page(tmp_path)
         assert "cmdRestart" in html, "Missing the cmdRestart handler"

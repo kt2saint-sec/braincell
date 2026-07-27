@@ -62,6 +62,18 @@ class SkillsBody(BaseModel):
     allow_privileged: bool = False
 
 
+class AutomaticPoolRecallBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    action: Literal["enable", "disable", "status"]
+    scope: Literal["local", "project"] = "local"
+    pool: Optional[str] = None
+    acknowledge_home: bool = False
+    acknowledge_non_git: bool = False
+    allow_privileged: bool = False
+
+
 class RestartBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -184,6 +196,44 @@ def mount_install_api(app: FastAPI, *, restart_argv: Optional[list[str]] = None)
                 for name, status, path in results
             ]
         }
+
+    @app.post("/api/automatic-pool-recall")
+    async def api_automatic_pool_recall(
+        body: AutomaticPoolRecallBody,
+    ) -> dict:  # type: ignore[type-arg]
+        """Manage only the selected Project's Claude hook configuration."""
+        from .automatic_pool_recall import (
+            disable_automatic_pool_recall,
+            enable_automatic_pool_recall,
+            status_automatic_pool_recall,
+        )
+        from .project_target import ProjectTargetError, validate_project_target
+        import anyio
+
+        try:
+            target = validate_project_target(
+                body.path,
+                acknowledge_home=body.acknowledge_home,
+                acknowledge_non_git=body.acknowledge_non_git,
+                allow_privileged=body.allow_privileged,
+            )
+            if body.action == "enable":
+                result = await anyio.to_thread.run_sync(
+                    lambda: enable_automatic_pool_recall(
+                        target.path, scope=body.scope, pool_name=body.pool
+                    )
+                )
+            elif body.action == "disable":
+                result = await anyio.to_thread.run_sync(
+                    lambda: disable_automatic_pool_recall(target.path, scope=body.scope)
+                )
+            else:
+                result = await anyio.to_thread.run_sync(
+                    lambda: status_automatic_pool_recall(target.path, scope=body.scope)
+                )
+        except (ProjectTargetError, RuntimeError, ValueError, KeyError) as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return {"project": str(target.path), "action": body.action, **result}
 
     @app.post("/api/restart")
     async def api_restart(request: Request, body: RestartBody) -> dict:  # type: ignore[type-arg]

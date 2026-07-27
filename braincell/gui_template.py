@@ -1828,6 +1828,21 @@ function openCommandsModal(){
        </div>
        <div class="fs-list" id="cmd-skills-list" style="max-height:120px;margin-top:6px;display:none"></div></div>
 
+     <div class="note"><div class="k">Automatic Pool recall</div>
+       <div class="c">Optional Claude hook for the Viewed project. Disabled by default. It queries
+       one explicit Pool and does nothing outside this connected Project.</div>
+       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">
+         <input class="mo-input" id="cmd-auto-pool" placeholder="Pool name" style="width:150px">
+         <select class="mo-input" id="cmd-auto-scope" style="width:auto;padding:4px 8px">
+           <option value="local">Private local</option>
+           <option value="project">Shareable project</option>
+         </select>
+         <button class="btn"${wdis()} onclick="cmdAutomaticPoolRecall('enable')">Enable</button>
+         <button class="btn"${wdis()} onclick="cmdAutomaticPoolRecall('status')">Status</button>
+         <button class="btn"${wdis()} onclick="cmdAutomaticPoolRecall('disable')">Disable</button>
+       </div>
+       <div id="cmd-auto-result" style="font-size:11.5px;color:var(--mut);margin-top:6px"></div></div>
+
      <div class="note"><div class="k">memory log / undo</div>
        <div class="c">Recorded merge operations (consolidate/reflect applies). Undo restores each
        note's exact pre-merge state; notes changed since are skipped, never clobbered.</div>
@@ -2014,6 +2029,22 @@ async function cmdSkills(action){
     const verb=action==="remove"?"removed":"added";
     toast(conflicts?`Skills ${verb} with ${conflicts} conflict(s) — see the list`:`Skills ${verb} (${rows.length})`);
   }catch(err){toast(`Skills failed: ${err.message}`,"err");}
+}
+async function cmdAutomaticPoolRecall(action){
+  if(!requireWrites())return;
+  const nd=nodes.find(n=>n.id===selected);
+  if(!nd||!nd.path){toast("Select a Viewed project first","err");return;}
+  const scope=((document.getElementById("cmd-auto-scope")||{}).value||"local");
+  const pool=((document.getElementById("cmd-auto-pool")||{}).value||"").trim();
+  const body={path:nd.path,scope,action};
+  if(action==="enable"&&pool)body.pool=pool;
+  try{
+    const r=await apiPost("/api/automatic-pool-recall",body);
+    const state=r.enabled?"Enabled":"Disabled";
+    const result=document.getElementById("cmd-auto-result");
+    if(result)result.textContent=`${state}${r.pool?` · Pool: ${r.pool}`:""} · ${r.settings_path||""}`;
+    toast(`Automatic Pool recall: ${state}`);
+  }catch(err){toast(`Automatic Pool recall failed: ${err.message}`,"err");}
 }
 function cmdRestart(){
   if(!requireWrites())return;

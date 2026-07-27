@@ -340,6 +340,72 @@ class TestSkillsEndpoint:
             ).status_code == 401
 
 
+# ── /api/automatic-pool-recall ───────────────────────────────────────────────
+
+class TestAutomaticPoolRecallEndpoint:
+    @staticmethod
+    def _project(tmp_path):
+        from braincell.project_registry import add_to_pool, create_pool, register_path
+
+        project = tmp_path / "auto-recall-project"
+        project.mkdir()
+        (project / ".git").mkdir()
+        register_path(project, "01AUTORECALL")
+        create_pool("Focused")
+        add_to_pool("Focused", ["01AUTORECALL"])
+        return project
+
+    def test_enable_status_disable_roundtrip(self, tmp_path):
+        project = self._project(tmp_path)
+        with TestClient(_app(tmp_path)) as client:
+            enabled = client.post(
+                "/api/automatic-pool-recall",
+                json={
+                    "path": str(project),
+                    "action": "enable",
+                    "scope": "local",
+                    "pool": "Focused",
+                },
+            )
+            status = client.post(
+                "/api/automatic-pool-recall",
+                json={"path": str(project), "action": "status", "scope": "local"},
+            )
+            disabled = client.post(
+                "/api/automatic-pool-recall",
+                json={"path": str(project), "action": "disable", "scope": "local"},
+            )
+
+        assert enabled.status_code == 200
+        assert enabled.json()["enabled"] is True
+        assert status.json()["pool"] == "Focused"
+        assert disabled.json()["enabled"] is False
+        assert str(project) in enabled.json()["settings_path"]
+
+    def test_absent_in_read_only_mode(self, tmp_path):
+        project = self._project(tmp_path)
+        with TestClient(_app(tmp_path, allow_writes=False)) as client:
+            response = client.post(
+                "/api/automatic-pool-recall",
+                json={"path": str(project), "action": "status"},
+            )
+        assert response.status_code in (404, 405)
+
+    def test_rejects_browser_supplied_command(self, tmp_path):
+        project = self._project(tmp_path)
+        with TestClient(_app(tmp_path)) as client:
+            response = client.post(
+                "/api/automatic-pool-recall",
+                json={
+                    "path": str(project),
+                    "action": "enable",
+                    "pool": "Focused",
+                    "command": "evil",
+                },
+            )
+        assert response.status_code == 422
+
+
 # ── /api/status mcp+embedder, /api/config suggest_tour, /api/projects badge ───
 
 def _stub_embedder_route(monkeypatch, ok: bool = True):
