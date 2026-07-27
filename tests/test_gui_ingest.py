@@ -216,13 +216,14 @@ class TestIngestBuildFlags:
         argline = next(ln for ln in job["log"] if ln.startswith("ARGS::"))
         return argline[len("ARGS::"):], job
 
-    def test_global_and_reembed_appended(self, tmp_path, monkeypatch):
-        args, job = self._run_with(
-            tmp_path, monkeypatch, {"mode": "global", "reembed": True}
-        )
-        assert args == "--mode global --reembed"
-        assert job["mode"] == "global"
-        assert job["reembed"] is True
+    def test_retired_global_mode_is_rejected(self, tmp_path):
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        with TestClient(_app(tmp_path)) as client:
+            response = client.post(
+                "/api/ingest", json={"path": str(proj), "mode": "global", "reembed": True}
+            )
+        assert response.status_code == 422
 
     def test_default_appends_nothing(self, tmp_path, monkeypatch):
         args, job = self._run_with(tmp_path, monkeypatch, {})

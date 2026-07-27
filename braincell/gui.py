@@ -8,7 +8,7 @@ braincell.store, braincell.project_registry, braincell.embed, braincell.config,
 and braincell.mode — ZERO new memory logic.
 
 Usage:
-    braincell gui [path] [--mode project|global] [--port 8765] [--allow-writes]
+    braincell gui [path] [--port 8765] [--allow-writes]
 
 create_app() is a pure factory (no host/port knowledge) so tests can drive it
 with fastapi.testclient.TestClient without starting a real server.
@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Optional
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from . import embed_spec
 from .embed import embed_query_async, embedder_status
@@ -33,11 +33,13 @@ from .install import claude_registered_map, registration_status
 from .log import get as _get_log
 from .mode import resolve_mode
 from .project_registry import (
-    add_family_members,
-    load_families,
+    add_to_pool,
+    create_pool,
+    decouple_from_pool,
+    delete_pool,
+    load_pools,
     load_path_registry,
-    normalize_path,
-    remove_family,
+    pools_for_project,
 )
 from .store import EmbedderMismatchError, SqliteStore
 
@@ -53,16 +55,22 @@ class _ForgetBody(BaseModel):
     project: str
 
 
-class _FamilyBody(BaseModel):
-    action: str                  # "add" or "rm"
+class _LivePoolQueryBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pool: str
+    query: str = ""
+    k: int = 10
+    rank: str = "hybrid"
+
+
+class _PoolMembershipBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: str
     name: str
-    paths: Optional[list[str]] = None  # None / [] → remove entire family (rm)
-
-
-class _PoolBody(BaseModel):
-    family: Optional[str] = None
-    all_projects: bool = False
-    prune: bool = False
+    project_ids: Optional[list[str]] = None
+    project_id: Optional[str] = None
 
 
 # ── App factory ───────────────────────────────────────────────────────────────
@@ -86,7 +94,7 @@ def create_app(
     Args:
         db_path:      Absolute path to the braincell.db file to open.
         allow_writes: When False (default), write endpoints are not registered
-                      and POST /api/forget and POST /api/family return 404.
+                      and write-only Pool membership endpoints return 404.
                       When True, the write endpoints are mounted.
         auth_token:   When set (A4), all ``/api/*`` requests must present a
                       matching ``t`` query param or ``X-BrainCell-Token`` header
@@ -129,6 +137,7 @@ def create_app(
             log.info("BrainCell GUI store closed")
 
     app = FastAPI(title="BrainCell GUI", lifespan=_lifespan)
+    app.state.seed_project_id = seed_project_id
 
     # ── A4: optional shared-secret guard on all /api/* routes ─────────────────
     if auth_token:
@@ -167,75 +176,31 @@ def create_app(
         parts = [p.strip() for p in projects.split(",") if p.strip()]
         return parts if parts else None
 
-    def _open_for_view(
-        request: Request, proj_filter: Optional[list[str]]
-    ) -> tuple[SqliteStore, bool]:
-        """Resolve which store serves this read → ``(store, close_after)``.
+    def _normal_project_filter(request: Request, projects: str, operation: str) -> Optional[list[str]]:
+        """Return the connected Project filter for an ordinary GUI operation.
 
-        The opened (launch) store, close_after=False, when: no filter; no launch
-        seed (global-mode launch — the global db carries every project, the
-        in-db ``projects=`` filter is correct); a multi-ULID filter (today's
-        filter-the-opened-db behavior — the map never sends one); or the filter
-        names the launch project itself.
-
-        A single OTHER registered ULID in project mode → that sibling's own db,
-        opened READ-ONLY (federation's recipe: ``mode=ro`` + ``query_only`` —
-        the sibling is never written), close_after=True so the caller closes it
-        per-request in a try/finally.  Unregistered, or registered with no db
-        file yet → 404 whose detail says "not built" (the SPA maps it to the
-        build-me empty state).
+        A Memory Map owns one already-open Project store. Cross-Project reads
+        are available only through the explicit named-Pool endpoints below.
         """
-        store = _store(request)
-        if not proj_filter or seed_project_id is None or len(proj_filter) != 1:
-            return store, False
-        pid = proj_filter[0]
-        if pid == seed_project_id:
-            return store, False
-        from .config import get_db_path
-        if pid not in set(load_path_registry().values()):
+        selected = _split_projects(projects)
+        connected = getattr(request.app.state, "seed_project_id", None)
+        if connected is None:  # isolated unit-test factory compatibility
+            return selected
+        if selected and selected != [connected]:
             raise HTTPException(
-                404, f"Project {pid!r} not built — not a registered project."
+                400,
+                f"{operation} reads only the connected Project. Use an explicit named Pool for cross-project reads.",
             )
-        db = get_db_path(pid)
-        if not db.exists():
-            raise HTTPException(
-                404, f"Project {pid!r} not built — no per-project brain exists yet."
-            )
-        return SqliteStore(db, read_only=True), True
+        return [connected]
 
-    def _resolve_seed_param(seed: str) -> Optional[str]:
-        """Validate an optional ``?seed=`` ULID against the path registry."""
-        seed = seed.strip()
-        if not seed:
-            return None
-        if seed != seed_project_id and seed not in set(load_path_registry().values()):
+    def _reject_retired_cross_project_query(
+        *, federate: bool, seed: str, operation: str
+    ) -> None:
+        if federate or seed.strip():
             raise HTTPException(
-                404, f"Unknown seed project {seed!r} — not in the registry."
+                400,
+                f"{operation} is project-only. Use Search Pool or Recall from Pool with an explicit Pool name.",
             )
-        return seed
-
-    def _open_seed_store(
-        request: Request, view_seed: str
-    ) -> tuple[SqliteStore, bool]:
-        """Self-store for a federated query seeded at ``view_seed``.
-
-        ``federated_recall``/``federated_search`` treat the target whose
-        ``project_id == plan.seed_pid`` as *self* and query the PASSED store —
-        so a non-launch seed must come with an RO-opened store of the seed's
-        OWN db (reads only — safe), or the merge would silently read the launch
-        db as the seed member.  close_after=True for that RO store; the launch
-        seed reuses the opened store (close_after=False).
-        """
-        if view_seed == seed_project_id:
-            return _store(request), False
-        from .config import get_db_path
-        db = get_db_path(view_seed)
-        if not db.exists():
-            raise HTTPException(
-                404,
-                f"Project {view_seed!r} not built — no per-project brain exists yet.",
-            )
-        return SqliteStore(db, read_only=True), True
 
     # ── Read endpoints ────────────────────────────────────────────────────────
 
@@ -295,10 +260,8 @@ def create_app(
         unreadable client config yields a failure-shaped field, never a 5xx.
         """
         import anyio
-        from .config import get_global_db_path
         store = _store(request)
         status = await store.ingest_status(None)
-        global_db = get_global_db_path()
         try:
             embedder = await anyio.to_thread.run_sync(embedder_status)
         except Exception as exc:  # defensive — the probe itself never raises
@@ -308,8 +271,7 @@ def create_app(
                 "model_present": False, "ok": False,
                 "detail": f"Embedder check failed: {exc!r}",
             }
-        # MCP registration for the seed project. Global-mode launches have no
-        # single project to check → path None, no clients (shape stays stable).
+        # MCP registration for the connected Project.
         mcp: dict = {"path": None, "clients": []}
         if seed_project_id is not None:
             registry = load_path_registry()
@@ -339,10 +301,6 @@ def create_app(
             "mode": resolve_mode(),
             "db_path": str(db_path),
             "allow_writes": allow_writes,
-            "global_brain": {
-                "exists": global_db.exists(),
-                "path": str(global_db),
-            },
             "embedder": embedder,
             "mcp": mcp,
         }
@@ -356,17 +314,7 @@ def create_app(
 
     @app.get("/api/config")
     async def api_config(request: Request) -> dict:  # type: ignore[type-arg]
-        """SPA bootstrap config for the scope toggle.
-
-        Exposes the launch *seed* project (if this GUI was started in project
-        mode) so the SPA can enable the per-project + family scope views. Without
-        a seed (global-mode launch) both are meaningless: ``federate_available``
-        is False and the SPA keeps the scope on the namespace-wide "All" view.
-
-        ``launch_project_id`` is the NAMINGS.md-canon alias of
-        ``seed_project_id`` (the project the GUI was launched on — the one that
-        owns the opened, write-capable store); ``seed_project_id`` is kept for
-        compat.
+        """SPA bootstrap config for the connected Project.
 
         ``suggest_tour`` is the server-side first-run signal (same predicate as
         `braincell start`'s ``tour=1`` handoff): an empty launch brain and no
@@ -386,8 +334,7 @@ def create_app(
         from .config import get_tour_seen_path
         return {
             "seed_project_id": seed_project_id,
-            "launch_project_id": seed_project_id,
-            "federate_available": seed_project_id is not None,
+            "connected_project_id": seed_project_id,
             "mode": resolve_mode(),
             "suggest_tour": suggest_tour,
             # Server-persisted first-run signal (POST /api/tour-seen sets it).
@@ -412,13 +359,11 @@ def create_app(
 
     @app.get("/api/projects")
     async def api_projects(request: Request) -> list:  # type: ignore[type-arg]
-        """All registered projects sorted by path, enriched with doc/chunk/note counts.
+        """Registered Project metadata with counts from the connected store only.
 
-        Project-mode launches (a seed is set) enrich each SIBLING row from the
-        sibling's own db, opened READ-ONLY per request — the opened store holds
-        only the launch project, so its counts for siblings would always read
-        zero.  A missing / corrupt sibling contributes zeros, never a 500
-        (per-member isolation, mirroring ``resolve_federation_targets``).
+        The path registry may list known Projects for intentional Pool
+        membership management, but this normal map route never opens a sibling
+        database.
 
         ``mcp_registered`` is the Claude-client registration summary per path,
         computed from ONE ``~/.claude.json`` read for all cells
@@ -436,24 +381,6 @@ def create_app(
             )
         except Exception:  # detection must never break the map
             reg_map = {}
-        if seed_project_id is not None:
-            from .config import get_db_path
-            for ulid in set(registry.values()):
-                if ulid == seed_project_id:
-                    continue
-                db = get_db_path(ulid)
-                if not db.exists():
-                    continue  # not built yet — honest zeros
-                try:
-                    sibling = SqliteStore(db, read_only=True)
-                    try:
-                        counts[ulid] = (await sibling.project_counts()).get(ulid, {})
-                    finally:
-                        await sibling.aclose()
-                except Exception as exc:  # corrupt sibling → zeros, never a 500
-                    log.warning(
-                        "projects: sibling %s counts skipped (%r)", ulid, exc
-                    )
         return sorted(
             [
                 {
@@ -469,25 +396,6 @@ def create_app(
             key=lambda x: x["path"],
         )
 
-    @app.get("/api/families")
-    async def api_families() -> list:  # type: ignore[type-arg]
-        """All project families with per-member ULID resolution."""
-        families = load_families()
-        registry = load_path_registry()
-        result = []
-        for fname, members in sorted(families.items()):
-            result.append({
-                "name": fname,
-                "members": [
-                    {
-                        "path": m,
-                        "project_id": registry.get(normalize_path(m)),
-                    }
-                    for m in members
-                ],
-            })
-        return result
-
     @app.get("/api/notes")
     async def api_notes(
         request: Request,
@@ -497,20 +405,19 @@ def create_app(
         federate: bool = False,
         seed: str = "",
     ) -> dict:  # type: ignore[type-arg]
-        """Recall memory notes (recency/keyword when q empty; best-effort embed when q set).
+        """Recall memory notes from the connected Project only.
 
         The embedder is never required: if it is unavailable the endpoint falls
         back to keyword/recency recall and includes a ``warning`` field.  It
         never returns 5xx because Ollama is down.
 
-        ``projects=<single-other-registered-ulid>`` in project mode serves the
-        SIBLING's real rows from its own db, opened read-only per request
-        (``_open_for_view``).  ``seed=<ulid>`` (optional, registry-validated)
-        re-seeds the federated family branch at the ACTIVE project instead of
-        the launch project; ignored on the non-federated path.
+        A named Pool is the only cross-Project recall surface. Legacy selector
+        flags are rejected rather than inferred.
         """
-        proj_filter = _split_projects(projects)
-        view_seed = _resolve_seed_param(seed)
+        _reject_retired_cross_project_query(
+            federate=federate, seed=seed, operation="Recall"
+        )
+        proj_filter = _normal_project_filter(request, projects, "Recall")
 
         qvec = None
         warning: Optional[str] = None
@@ -523,34 +430,9 @@ def create_app(
                     f"Embedder unavailable; using keyword/recency fallback. ({exc!r})"
                 )
 
-        # Opt-in federated family recall: when the toggle is on, the flag is set,
-        # and a seed is known (the launch project, or an explicit ?seed= active
-        # project), fan out across that seed's family instead of querying only
-        # the opened store.
-        # The Memory Map is a HISTORY viewer, not an answer engine: it shows what a
-        # project believed as well as what it believes now, so it opts into the
-        # historical set and renders supersession as state rather than hiding it.
-        from .federate import federated_recall, federation_enabled, plan_for_seed
-        effective_seed = view_seed or seed_project_id
-        if federate and federation_enabled() and effective_seed:
-            plan = plan_for_seed(effective_seed)
-            self_store, close_self = _open_seed_store(request, effective_seed)
-            try:
-                notes = await federated_recall(
-                    self_store, plan, qvec, k, qtext=q, include_superseded=True,
-                )
-            finally:
-                if close_self:
-                    await self_store.aclose()
-        else:
-            view_store, close_view = _open_for_view(request, proj_filter)
-            try:
-                notes = await view_store.recall(
-                    qvec, proj_filter, k, qtext=q, include_superseded=True,
-                )
-            finally:
-                if close_view:
-                    await view_store.aclose()
+        notes = await _store(request).recall(
+            qvec, proj_filter, k, qtext=q, include_superseded=True,
+        )
         return {
             "notes": [
                 {
@@ -588,17 +470,18 @@ def create_app(
         keyword mode and includes a ``warning`` field in the 200 response rather
         than raising a 5xx.
 
-        ``projects=`` / ``seed=`` follow the same active-project contract as
-        ``/api/notes``: a single OTHER registered ULID serves the sibling's own
-        db read-only, and ``seed=<ulid>`` re-seeds the federated family branch.
+        A named Pool is the only cross-Project search surface. Legacy selector
+        flags are rejected rather than inferred.
         """
         if mode not in ("hybrid", "semantic", "keyword"):
             raise HTTPException(status_code=400, detail=f"Invalid mode {mode!r}.")
         if k < 1 or k > 100:
             raise HTTPException(status_code=400, detail="k must be 1–100.")
 
-        proj_filter = _split_projects(projects)
-        view_seed = _resolve_seed_param(seed)
+        _reject_retired_cross_project_query(
+            federate=federate, seed=seed, operation="Search"
+        )
+        proj_filter = _normal_project_filter(request, projects, "Search")
 
         warning: Optional[str] = None
         effective_mode = mode
@@ -614,27 +497,9 @@ def create_app(
                 f"Embedder unavailable; using keyword fallback. ({exc!r})"
             )
 
-        from .federate import federated_search, federation_enabled, plan_for_seed
-        effective_seed = view_seed or seed_project_id
-        if federate and federation_enabled() and effective_seed:
-            plan = plan_for_seed(effective_seed)
-            self_store, close_self = _open_seed_store(request, effective_seed)
-            try:
-                hits = await federated_search(
-                    self_store, plan, qvec, q, k, effective_mode
-                )
-            finally:
-                if close_self:
-                    await self_store.aclose()
-        else:
-            view_store, close_view = _open_for_view(request, proj_filter)
-            try:
-                hits = await view_store.search(
-                    qvec, q, proj_filter, k, effective_mode
-                )
-            finally:
-                if close_view:
-                    await view_store.aclose()
+        hits = await _store(request).search(
+            qvec, q, proj_filter, k, effective_mode
+        )
         return {
             "hits": [
                 {
@@ -671,7 +536,7 @@ def create_app(
         data = await store.tail_since(
             note_after=after_note,
             doc_after=after_doc,
-            projects=_split_projects(projects),
+            projects=_normal_project_filter(request, projects, "Feed"),
             limit=k,
         )
         job = None
@@ -689,70 +554,145 @@ def create_app(
             }
         return {**data, "job": job}
 
+    @app.get("/api/pools")
+    async def api_pools(request: Request) -> dict:  # type: ignore[type-arg]
+        """Return passive Pool membership metadata, never memory rows."""
+        pools = load_pools()
+        connected = getattr(request.app.state, "seed_project_id", None)
+        return {
+            "pools": [
+                {
+                    "name": name,
+                    "project_ids": list(members),
+                    "connected": bool(connected and name in pools_for_project(connected)),
+                }
+                for name, members in pools.items()
+            ],
+            "connected_project_id": connected,
+        }
+
+    def _connected_pool_project(request: Request) -> str:
+        project_id = getattr(request.app.state, "seed_project_id", None)
+        if not project_id:
+            raise HTTPException(409, "Pool actions require a connected Project session.")
+        return project_id
+
+    def _member_statuses(plan) -> list[dict[str, str]]:  # type: ignore[no-untyped-def]
+        return [
+            {"project_id": item.project_id, "status": item.status, "detail": item.detail}
+            for item in plan.member_status
+        ]
+
+    @app.post("/api/pools/search")
+    async def api_pool_search(
+        request: Request, body: _LivePoolQueryBody
+    ) -> dict:  # type: ignore[type-arg]
+        """Search exactly one named Pool through read-only member stores."""
+        from .federate import federated_search, plan_for_pool
+
+        connected = _connected_pool_project(request)
+        try:
+            plan = plan_for_pool(body.pool, connected)
+        except (KeyError, ValueError) as exc:
+            raise HTTPException(403, str(exc)) from exc
+        k = min(max(body.k, 1), 100)
+        try:
+            qvec = await embed_query_async(body.query)
+            mode = body.rank if body.rank in {"hybrid", "semantic", "keyword"} else "hybrid"
+        except Exception as exc:
+            qvec = np.zeros(embed_spec.DIM, dtype=np.float32)
+            mode = "keyword"
+            warning = f"Embedder unavailable; using keyword fallback. ({exc!r})"
+        else:
+            warning = None
+        hits = await federated_search(None, plan, qvec, body.query, k, mode)
+        return {
+            "pool": body.pool,
+            "connected_project_id": connected,
+            "warning": warning,
+            "member_status": _member_statuses(plan),
+            "hits": [
+                {
+                    "chunk_id": hit.chunk_id,
+                    "doc_key": hit.doc_key,
+                    "title": hit.title,
+                    "snippet": hit.snippet,
+                    "score": round(hit.score, 6),
+                    "source_path": hit.source_path,
+                }
+                for hit in hits
+            ],
+        }
+
+    @app.post("/api/pools/recall")
+    async def api_pool_recall(
+        request: Request, body: _LivePoolQueryBody
+    ) -> dict:  # type: ignore[type-arg]
+        """Recall exactly one named Pool through read-only member stores."""
+        from .federate import federated_recall, plan_for_pool
+
+        connected = _connected_pool_project(request)
+        try:
+            plan = plan_for_pool(body.pool, connected)
+        except (KeyError, ValueError) as exc:
+            raise HTTPException(403, str(exc)) from exc
+        try:
+            qvec = await embed_query_async(body.query) if body.query.strip() else None
+        except Exception:
+            qvec = None
+        notes = await federated_recall(
+            None, plan, qvec, min(max(body.k, 1), 100), qtext=body.query
+        )
+        return {
+            "pool": body.pool,
+            "connected_project_id": connected,
+            "member_status": _member_statuses(plan),
+            "notes": [
+                {"id": note.id, "project_id": note.project_id, "kind": note.kind, "content": note.content}
+                for note in notes
+            ],
+        }
+
     # ── Write endpoints (only mounted when allow_writes=True) ─────────────────
 
     if allow_writes:
 
+        @app.post("/api/pools")
+        async def api_pool_membership(
+            request: Request, body: _PoolMembershipBody
+        ) -> dict:  # type: ignore[type-arg]
+            """Change Pool membership metadata only; never open a memory database."""
+            _connected_pool_project(request)
+            try:
+                if body.action == "create":
+                    pools = create_pool(body.name)
+                elif body.action == "add":
+                    if not body.project_ids:
+                        raise HTTPException(400, "Add to Pool requires project_ids.")
+                    add_to_pool(body.name, body.project_ids)
+                    pools = load_pools()
+                elif body.action == "decouple":
+                    if not body.project_id:
+                        raise HTTPException(400, "Decouple from Pool requires project_id.")
+                    decouple_from_pool(body.name, body.project_id)
+                    pools = load_pools()
+                elif body.action == "delete":
+                    delete_pool(body.name)
+                    pools = load_pools()
+                else:
+                    raise HTTPException(400, "Use create, add, decouple, or delete.")
+            except (KeyError, ValueError, RuntimeError) as exc:
+                raise HTTPException(409, str(exc)) from exc
+            return {"ok": True, "pools": pools}
+
         @app.post("/api/forget")
         async def api_forget(request: Request, body: _ForgetBody) -> dict:  # type: ignore[type-arg]
-            """Soft-delete a memory note by id + project."""
-            store = _store(request)
-            deleted = await store.forget(body.note_id, body.project)
+            """Soft-delete a memory note in the connected Project only."""
+            connected = getattr(request.app.state, "seed_project_id", None)
+            if connected is not None and body.project != connected:
+                raise HTTPException(409, "Forget writes only to the connected Project.")
+            deleted = await _store(request).forget(body.note_id, body.project)
             return {"deleted": deleted}
-
-        @app.post("/api/family")
-        async def api_family(body: _FamilyBody) -> dict:  # type: ignore[type-arg]
-            """Add members to or remove a project family."""
-            if body.action == "add":
-                paths = body.paths or []
-                if not paths:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="paths must be non-empty for action='add'.",
-                    )
-                add_family_members(body.name, paths)
-                return {"ok": True, "action": "add", "name": body.name}
-            elif body.action == "rm":
-                # paths=None or [] → remove entire family
-                paths_arg = body.paths if body.paths else None
-                changed = remove_family(body.name, paths_arg)
-                return {"ok": changed, "action": "rm", "name": body.name}
-            else:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Unknown action {body.action!r}. Use 'add' or 'rm'.",
-                )
-
-        @app.post("/api/pool")
-        async def api_pool(body: _PoolBody) -> dict:  # type: ignore[type-arg]
-            """Pool per-project brains (a family, or all) into the global brain (no re-embed)."""
-            from .config import get_global_db_path
-            from .pool import PoolError, pool_into_global, resolve_pool_sources
-            global_db = get_global_db_path()
-            if not global_db.exists():
-                raise HTTPException(
-                    409, "No global brain yet. Run `braincell build --mode global` first."
-                )
-            if not body.family and not body.all_projects:
-                raise HTTPException(
-                    400, "Provide a family name or set all_projects=true."
-                )
-            try:
-                sources, skipped = resolve_pool_sources(
-                    family=body.family, include_all=body.all_projects
-                )
-            except KeyError:
-                raise HTTPException(404, f"Family {body.family!r} not found.")
-            if not sources:
-                return {"pooled": [], "skipped": skipped}
-            try:
-                import anyio
-                stats = await anyio.to_thread.run_sync(
-                    lambda: pool_into_global(sources, global_db, prune=body.prune)
-                )
-            except PoolError as e:
-                raise HTTPException(409, str(e))
-            return {"pooled": [s.__dict__ for s in stats], "skipped": skipped}
 
         # Ingestion management (folder navigation / build jobs / clear / schedules).
         from .gui_ingest import IngestManager, mount_ingest_api
@@ -761,6 +701,7 @@ def create_app(
             app,
             db_path=db_path,
             manager=app.state.ingest_manager,
+            connected_project_id=seed_project_id or "",
             pick_folder=(native_bridge.pick_folder if native_bridge is not None else None),
         )
 
@@ -772,7 +713,12 @@ def create_app(
         # backup/memory log+undo) — the GUI counterparts of the remaining CLI.
         from .gui_ops import OpsJobManager, mount_ops_api
         app.state.ops_manager = OpsJobManager()
-        mount_ops_api(app, db_path=db_path, manager=app.state.ops_manager)
+        mount_ops_api(
+            app,
+            db_path=db_path,
+            manager=app.state.ops_manager,
+            connected_project_id=seed_project_id or "",
+        )
 
     return app
 
@@ -827,9 +773,9 @@ def run_gui(
     QtWebEngine renderer and the application API.
 
     Args:
-        mode:         ``project`` or None. Global memory views are retired.
+        mode:         ``project`` or None. Other modes are rejected.
         port:         TCP port to listen on (e.g. 8765).
-        allow_writes: Mount write endpoints (POST /api/forget, /api/family, /api/pool).
+        allow_writes: Mount connected-Project write endpoints and Pool membership controls.
         path:         Project root for project-mode db resolution (default cwd).
         url_extra_query: Extra query string appended to the window URL only
                       (e.g. ``"tour=1"`` — `braincell start`'s first-run
@@ -907,7 +853,7 @@ _DESKTOP_ENTRY_TEMPLATE = """\
 [Desktop Entry]
 Type=Application
 Name=BrainCell Map
-Comment=Local memory map — projects, pools, and the global brain
+Comment=Local Memory Map for one connected Project and its explicit Pools
 Exec={exec}
 Icon=braincell
 Terminal=false
@@ -954,9 +900,8 @@ def install_launcher(project_path: Optional[Path] = None) -> tuple[Path, Path]:
     ``project_path`` is the project folder the icon launches (default: cwd).
     The Exec line is ``braincell start "<project_path>"`` — the full one-command
     launcher (single-instance reuse, preflight, per-project GUI). It was
-    ``braincell-map`` (the global-only viewer) before 2026-07-25; that opened an
-    EMPTY map on machines with only per-project brains, which read as "the icon
-    doesn't launch the GUI".
+    Older launcher entries opened an empty map rather than the selected Project,
+    which made the launcher look broken on machines with Project memory.
 
     Icons go into the XDG *hicolor* theme tree — the location GNOME/KDE actually
     resolve ``Icon=braincell`` from:

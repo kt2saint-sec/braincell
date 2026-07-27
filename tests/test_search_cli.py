@@ -159,9 +159,8 @@ def test_search_k_out_of_range_errors_cleanly(tmp_path, capsys):
     assert "braincell search:" in capsys.readouterr().err
 
 
-def test_search_family_project_mode_without_federate_errors(tmp_path, capsys):
-    """scope='family' in project mode WITHOUT BRAINCELL_FEDERATE=on must be
-    rejected cleanly (SystemExit 2, stderr message) — parity with the MCP tool."""
+def test_search_retired_cross_project_scope_errors(tmp_path, capsys):
+    """Ordinary Search refuses the retired cross-Project scope."""
     root = tmp_path / "repoSF"
     _seed_project(root, ["local passage"])
 
@@ -169,12 +168,11 @@ def test_search_family_project_mode_without_federate_errors(tmp_path, capsys):
         main(["search", "passage", "--path", str(root), "--scope", "family"])
     assert exc.value.code == 2
     err = capsys.readouterr().err
-    assert "global mode" in err or "federate" in err.lower()
+    assert "invalid choice" in err.lower()
 
 
-def test_search_family_federated_fans_out(tmp_path, capsys, monkeypatch):
-    """scope='family' + BRAINCELL_FEDERATE=on fans out across family members and
-    surfaces a SIBLING's chunk (retrieved via its distinctive keyword)."""
+def test_search_retired_scope_cannot_fan_out_when_legacy_flag_is_set(tmp_path, capsys, monkeypatch):
+    """A legacy environment flag cannot make ordinary Search open a sibling DB."""
     a = tmp_path / "sfamA"
     b = tmp_path / "sfamB"
     _seed_project(a, ["alpha passage in project A"])
@@ -183,11 +181,11 @@ def test_search_family_federated_fans_out(tmp_path, capsys, monkeypatch):
 
     monkeypatch.setenv("BRAINCELL_FEDERATE", "on")
 
-    main(["search", "distinctivezebra", "--path", str(a),
-          "--scope", "family", "--json"])
-    data = json.loads(capsys.readouterr().out)
-    blob = " ".join(h["snippet"] for h in data)
-    assert "distinctivezebra" in blob, "federated family search did not surface B's chunk"
+    with pytest.raises(SystemExit) as exc:
+        main(["search", "distinctivezebra", "--path", str(a),
+              "--scope", "family", "--json"])
+    assert exc.value.code == 2
+    assert "invalid choice" in capsys.readouterr().err.lower()
 
 
 def test_search_scope_self_excludes_siblings(tmp_path, capsys, monkeypatch):

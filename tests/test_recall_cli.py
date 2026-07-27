@@ -108,9 +108,8 @@ def test_recall_unregistered_path_errors(tmp_path, capsys):
     assert "run `braincell build` first" in capsys.readouterr().err
 
 
-def test_recall_family_project_mode_without_federate_errors(tmp_path, capsys):
-    """scope='family' in project mode WITHOUT BRAINCELL_FEDERATE=on must be
-    rejected cleanly (SystemExit, stderr message) — parity with the MCP tool."""
+def test_recall_retired_cross_project_scope_errors(tmp_path, capsys):
+    """Ordinary Recall refuses the retired cross-Project scope."""
     root = tmp_path / "repoF"
     _seed_project(root, ["local note"])
 
@@ -118,12 +117,11 @@ def test_recall_family_project_mode_without_federate_errors(tmp_path, capsys):
         main(["recall", "note", "--path", str(root), "--scope", "family"])
     assert exc.value.code == 2
     err = capsys.readouterr().err
-    assert "global mode" in err or "federate" in err.lower()
+    assert "invalid choice" in err.lower()
 
 
-def test_recall_family_federated_fans_out(tmp_path, capsys, monkeypatch):
-    """scope='family' + BRAINCELL_FEDERATE=on fans out across family members and
-    surfaces a SIBLING's note (retrieved via its distinctive keyword)."""
+def test_recall_retired_scope_cannot_fan_out_when_legacy_flag_is_set(tmp_path, capsys, monkeypatch):
+    """A legacy environment flag cannot make ordinary Recall open a sibling DB."""
     a = tmp_path / "famA"
     b = tmp_path / "famB"
     _seed_project(a, ["alpha note in project A"])
@@ -131,14 +129,11 @@ def test_recall_family_federated_fans_out(tmp_path, capsys, monkeypatch):
     add_family_members("fam", [str(a), str(b)])
 
     monkeypatch.setenv("BRAINCELL_FEDERATE", "on")
-    # seed PID is set by cmd_recall from --path; nothing else needed.
-
-    main(["recall", "distinctivezebra", "--path", str(a),
-          "--scope", "family", "--json"])
-    out = capsys.readouterr().out
-    data = json.loads(out)
-    contents = " ".join(n["content"] for n in data)
-    assert "distinctivezebra" in contents, "federated family recall did not surface B's note"
+    with pytest.raises(SystemExit) as exc:
+        main(["recall", "distinctivezebra", "--path", str(a),
+              "--scope", "family", "--json"])
+    assert exc.value.code == 2
+    assert "invalid choice" in capsys.readouterr().err.lower()
 
 
 def test_recall_scope_self_excludes_siblings(tmp_path, capsys, monkeypatch):

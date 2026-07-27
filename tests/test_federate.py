@@ -117,7 +117,8 @@ class TestBuildPlanGating:
         monkeypatch.setenv("BRAINCELL_FEDERATE", "on")
         monkeypatch.setenv("BRAINCELL_MODE", "global")
         monkeypatch.setenv("BRAINCELL_PROJECT_ID", "01SEED0000000000000000001A")
-        assert build_federation_plan(None, "family", None) is None
+        with pytest.raises(ValueError, match="retired"):
+            build_federation_plan(None, "family", None)
 
     def test_pid_unset_raises(self, monkeypatch):
         monkeypatch.setenv("BRAINCELL_FEDERATE", "on")
@@ -583,7 +584,7 @@ class TestFederatedSearch:
 # ── GUI federation toggle ──────────────────────────────────────────────────────
 
 class TestGuiFederation:
-    def test_notes_federate_toggle(self, tmp_path, monkeypatch):
+    def test_notes_federate_toggle_is_rejected_in_favor_of_named_pools(self, tmp_path, monkeypatch):
         from fastapi.testclient import TestClient
 
         from braincell.gui import create_app
@@ -600,12 +601,12 @@ class TestGuiFederation:
 
         app = create_app(db_path=get_db_path(pid_a), seed_project_id=pid_a)
         with TestClient(app) as client:
-            fed = client.get("/api/notes?q=caching&federate=true").json()
+            fed = client.get("/api/notes?q=caching&federate=true")
             solo = client.get("/api/notes?q=caching").json()
 
-        fed_contents = {n["content"] for n in fed["notes"]}
         solo_contents = {n["content"] for n in solo["notes"]}
-        assert {"alpha lesson caching", "beta lesson caching"} <= fed_contents
+        assert fed.status_code == 400
+        assert "Pool" in fed.json()["detail"]
         assert "beta lesson caching" not in solo_contents, "no federation → seed only"
 
     def test_plan_for_seed_bypasses_env(self, tmp_path):

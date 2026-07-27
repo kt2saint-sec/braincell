@@ -116,6 +116,9 @@ def preflight(
     """
     from .gui import _resolve_gui_token  # lazy: gui.py pulls in fastapi
 
+    from .mode import resolve_mode
+
+    mode = resolve_mode(mode)
     resolved = Path(path).resolve()
     if mode == "global":
         pid: Optional[str] = None

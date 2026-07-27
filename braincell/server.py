@@ -73,39 +73,14 @@ def _store(ctx: Context) -> SqliteStore:  # type: ignore[type-arg]
 def _resolve_scope(project: Optional[str], scope: str):
     """Resolve the project filter for a search or recall.
 
-    Resolution rules (applied in order):
-
-    - Explicit ``project`` → returns that single project; overrides ``scope``
-      in both project mode and global mode.
-    - scope ``"self"`` (default) → the configured project
-      (``BRAINCELL_PROJECT_ID``).  Falls back to None when unset (e.g. tests /
-      direct runs without a project context).
-    - scope ``"family"`` or ``"all"`` in PROJECT mode → raises ``ValueError``
-      (fail loud; cross-project scopes require global mode).
-    - scope ``"all"`` in GLOBAL mode → returns None (no project filter; the
-      entire global DB is searched).
-    - scope ``"family"`` in GLOBAL mode → resolves the family of the
-      ``BRAINCELL_PROJECT_ID`` seed via ``resolve_family_ulids`` and returns a
-      sorted list of ULIDs.  Raises ``ValueError`` when
-      ``BRAINCELL_PROJECT_ID`` is unset (family needs a reference project).
+    The MCP connection owns one Project database. ``scope='self'`` is the only
+    normal-runtime scope; a future explicit named-Pool MCP action must opt in to
+    cross-Project reads rather than rely on a hidden fan-out flag.
     """
     if project is not None:
         return project
     if scope == "self":
         pid = os.environ.get("BRAINCELL_PROJECT_ID") or None
-        # In GLOBAL mode a None 'self' filter would match EVERY project in the
-        # shared brain (a cross-project leak) — mirror _pin_read_project,
-        # which already guards get_document/list_documents/ingest_status, for the
-        # search/recall path. Fail loud instead of silently widening 'self' to
-        # 'all'. In PROJECT mode the DB holds one project, so None is safe (and an
-        # unset PID is the normal test / direct-run case).
-        if pid is None and resolve_mode() == "global":
-            raise ValueError(
-                "scope='self' requires BRAINCELL_PROJECT_ID in global mode — "
-                "without a reference project 'self' would match every project in "
-                "the global brain. Set BRAINCELL_PROJECT_ID, or pass scope='all' "
-                "to search the whole brain deliberately."
-            )
         return pid
     if scope in ("family", "all"):
         raise ValueError(
@@ -113,7 +88,7 @@ def _resolve_scope(project: Optional[str], scope: str):
             "connected project; use an explicit named Pool action for cross-project reads."
         )
     raise ValueError(
-        f"scope={scope!r} is not valid. Use 'self' (default), 'family', or 'all'."
+        f"scope={scope!r} is not valid. Use 'self' (default)."
     )
 
 
@@ -364,19 +339,12 @@ async def search_hits(
 ) -> list[Hit]:
     """Core chunk-search orchestration shared by the MCP tool and the CLI.
 
-    Embeds the query, applies opt-in federated family fan-out (BRAINCELL_FEDERATE)
-    when it applies, else a normal single-store search with the resolved project
-    filter. Returns raw store ``Hit`` objects (ranking + federation already
-    applied); the caller adapts them (the MCP tool → ``SearchHit`` DTOs, the CLI →
-    JSON / a table). Mirrors ``recall_notes`` below.
+    Embeds the query and searches the connected Project store. Returns raw store
+    ``Hit`` objects; the caller adapts them (the MCP tool → ``SearchHit`` DTOs,
+    the CLI → JSON / a table). Mirrors ``recall_notes`` below.
 
-    Validation, federation gating, and filter resolution are identical to the
-    pre-extraction tool body, so both callers get byte-identical ranking.
-
-    ``rank`` is this layer's name for the ranking strategy. The ``Store`` protocol
-    still calls the same argument ``mode`` — renaming stopped at the user-facing
-    boundary so the CLI could keep ``--mode`` for project/global brain selection
-    (it means that in all six other subcommands) without two meanings for one flag.
+    ``rank`` is this layer's name for the ranking strategy; the ``Store`` protocol
+    calls the equivalent argument ``mode``.
     """
     if rank not in ("hybrid", "semantic", "keyword"):
         raise ValueError(f"Invalid rank '{rank}'. Must be hybrid|semantic|keyword.")
@@ -384,12 +352,6 @@ async def search_hits(
         raise ValueError("k must be between 1 and 100.")
 
     qvec = await embed_query_async(query)
-    # Opt-in federated family search (BRAINCELL_FEDERATE): fan out across the
-    # family's per-project brains in project mode instead of raising.
-    from .federate import build_federation_plan, federated_search
-    plan = build_federation_plan(project, scope, projects)
-    if plan is not None:
-        return await federated_search(store, plan, qvec, query, k, rank)
     proj_filter = _resolve_filter(projects, project, scope)
     return await store.search(qvec, query, proj_filter, k, rank)
 
@@ -579,17 +541,13 @@ async def recall_notes(
 ) -> list[Note]:
     """Core recall orchestration shared by the MCP tool and the CLI.
 
-    Embeds the query (falling back to keyword/recency when the embedder is down),
-    applies opt-in federated family fan-out (BRAINCELL_FEDERATE) when it applies,
-    else a normal single-store recall with the resolved project filter. Returns
-    raw store ``Note`` objects (ranking + federation already applied); the caller
-    adapts them (the MCP tool → ``MemoryNote`` DTOs, the CLI → JSON / a table).
+    Embeds the query (falling back to keyword/recency when the embedder is down)
+    and recalls from the connected Project store. Returns raw store ``Note``
+    objects; the caller adapts them (the MCP tool → ``MemoryNote`` DTOs, the CLI
+    → JSON / a table).
 
-    Validation, embedding fallback, federation gating, and filter resolution are
-    identical to the pre-extraction tool body, so both callers get byte-identical
-    ranking. Federation seeds from ``BRAINCELL_PROJECT_ID`` (never from an explicit
-    ``project`` — passing ``project`` disables federation by design, per
-    ``build_federation_plan``).
+    Validation, embedding fallback, and filter resolution are shared by the MCP
+    and CLI paths.
     """
     if k < 1 or k > 50:
         raise ValueError("k must be between 1 and 50.")
@@ -606,24 +564,11 @@ async def recall_notes(
                 "keyword/recency (no vector ranking). Restart when the embedder is "
                 "reachable to restore semantic recall. %s", exc,
             )
-    # Opt-in federated family recall (BRAINCELL_FEDERATE): in project mode, fan out
-    # across the family's per-project brains instead of raising on scope='family'.
-    # Returns None (→ normal single-store path) unless federation applies.
-    from .federate import build_federation_plan, federated_recall
-    plan = build_federation_plan(project, scope, projects)
-    proj_filter = None
-    if plan is not None:
-        notes = await federated_recall(
-            store, plan, qvec, k,
-            qtext=query, min_cosine=min_cosine, dedup=dedup,
-            include_superseded=include_superseded,
-        )
-    else:
-        proj_filter = _resolve_filter(projects, project, scope)
-        notes = await store.recall(
-            qvec, proj_filter, k, qtext=query, min_cosine=min_cosine, dedup=dedup,
-            include_superseded=include_superseded,
-        )
+    proj_filter = _resolve_filter(projects, project, scope)
+    notes = await store.recall(
+        qvec, proj_filter, k, qtext=query, min_cosine=min_cosine, dedup=dedup,
+        include_superseded=include_superseded,
+    )
     # Cold-start graceful degradation: when fewer than k curated notes came back
     # and there is a query to rank against, fill the remainder with transcript
     # excerpts from chunk search, provenance-marked (retrieval_origin='chunk',
@@ -635,7 +580,7 @@ async def recall_notes(
         and query and query.strip()
         and len(notes) < k
     ):
-        notes = await _chunk_fallback(store, notes, query, qvec, k, plan, proj_filter)
+            notes = await _chunk_fallback(store, notes, query, qvec, k, None, proj_filter)
     return notes
 
 

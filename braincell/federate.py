@@ -43,7 +43,7 @@ import asyncio
 import hashlib
 import os
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -102,38 +102,60 @@ class FederationTarget:
     fingerprint_ok: bool  # store's embed space == the query embedder's → vectors usable
 
 
+@dataclass(frozen=True)
+class PoolMemberStatus:
+    """One Pool member's explicit read-only query eligibility/result."""
+
+    project_id: str
+    status: str
+    detail: str
+
+
 @dataclass
 class FederationPlan:
     """A resolved federated-recall plan: the seed project + the members to query."""
     seed_pid: str
     targets: list[FederationTarget]
+    member_status: list[PoolMemberStatus] = field(default_factory=list)
 
 
-def resolve_pool_targets(pool_name: str, connected_project_id: str) -> tuple[str, list[FederationTarget]]:
+def resolve_pool_targets(
+    pool_name: str, connected_project_id: str
+) -> tuple[str, list[FederationTarget], list[PoolMemberStatus]]:
     """Resolve one explicit Pool to readable member brains.
 
     Pool membership stores ULIDs, never paths or copied memory.  A current path
     is resolved through the registry for every query; missing, inaccessible,
-    corrupt, and incompatible members are logged and skipped independently.
+    corrupt, and incompatible members are returned as structured skipped status
+    records. Membership is checked before any member database is opened.
     """
     display_name, ulids = resolve_pool(pool_name)
+    if connected_project_id not in ulids:
+        raise ValueError(
+            f"Connected Project {connected_project_id!r} is not a member of Pool {display_name!r}."
+        )
     ordered = sorted(ulids, key=lambda project_id: (project_id != connected_project_id, project_id))
     targets: list[FederationTarget] = []
+    member_status: list[PoolMemberStatus] = []
     for project_id in ordered:
         try:
             current_path = resolve_ulid_to_path(project_id)
             if current_path is None:
                 log.warning("pool %s: skip %s (no current registered project path)", display_name, project_id)
+                member_status.append(PoolMemberStatus(project_id, "missing-path", "No current registered Project path."))
                 continue
             if not current_path.is_dir():
                 log.warning("pool %s: skip %s (project path unavailable: %s)", display_name, project_id, current_path)
+                member_status.append(PoolMemberStatus(project_id, "unavailable-path", "Registered Project path is unavailable."))
                 continue
             db = get_db_path(project_id)
             if not db.exists():
                 log.info("pool %s: skip %s (no built project memory at %s)", display_name, project_id, db)
+                member_status.append(PoolMemberStatus(project_id, "missing-database", "Project memory has not been built."))
                 continue
             probe = _read_fingerprint_and_version_ro(db)
             if probe is None:
+                member_status.append(PoolMemberStatus(project_id, "unreadable-database", "Project memory is inaccessible or corrupt."))
                 continue
             fingerprint, version = probe
             if version is not None and version != MEMORY_SCHEMA_VERSION:
@@ -141,21 +163,36 @@ def resolve_pool_targets(pool_name: str, connected_project_id: str) -> tuple[str
                     "pool %s: skip %s (schema v%s != engine v%s)",
                     display_name, project_id, version, MEMORY_SCHEMA_VERSION,
                 )
+                member_status.append(PoolMemberStatus(project_id, "incompatible-schema", "Project memory schema is incompatible."))
                 continue
             fingerprint_ok = fingerprint == embed_spec.FINGERPRINT
             if not fingerprint_ok and _strict():
                 log.warning("pool %s: skip %s (embedding fingerprint mismatch)", display_name, project_id)
+                member_status.append(PoolMemberStatus(project_id, "embedding-mismatch", "Project memory uses a different embedding model."))
                 continue
             targets.append(FederationTarget(project_id, db, fingerprint_ok))
+            member_status.append(PoolMemberStatus(project_id, "ready", "Opened read-only for this Pool query."))
         except Exception as exc:  # one malformed registry member must not fail the Pool
             log.warning("pool %s: skip %s (%r)", display_name, project_id, exc)
-    return display_name, targets
+            member_status.append(PoolMemberStatus(project_id, "resolution-failed", str(exc)))
+    return display_name, targets, member_status
 
 
 def plan_for_pool(pool_name: str, connected_project_id: str) -> FederationPlan:
     """Build an explicit live read-only query plan for exactly one named Pool."""
-    _display_name, targets = resolve_pool_targets(pool_name, connected_project_id)
-    return FederationPlan(seed_pid=connected_project_id, targets=targets)
+    _display_name, targets, member_status = resolve_pool_targets(pool_name, connected_project_id)
+    return FederationPlan(
+        seed_pid=connected_project_id, targets=targets, member_status=member_status
+    )
+
+
+def _mark_pool_member(plan: FederationPlan, project_id: str, status: str, detail: str) -> None:
+    """Replace a planned member's status when its actual read fails."""
+    for index, item in enumerate(plan.member_status):
+        if item.project_id == project_id:
+            plan.member_status[index] = PoolMemberStatus(project_id, status, detail)
+            return
+    plan.member_status.append(PoolMemberStatus(project_id, status, detail))
 
 
 def _read_fingerprint_and_version_ro(
@@ -412,6 +449,7 @@ async def federated_recall(
                 return target.project_id, [n for n in notes if not n.expansion]
             except Exception as exc:  # fail-degrade: one bad member never kills recall
                 log.warning("federate: member %s skipped (%r)", target.project_id, exc)
+                _mark_pool_member(plan, target.project_id, "query-failed", str(exc))
                 return target.project_id, []
             finally:
                 if not is_self:
@@ -532,6 +570,7 @@ async def federated_search(
                 return target.project_id, hits
             except Exception as exc:  # fail-degrade
                 log.warning("federate(search): member %s skipped (%r)", target.project_id, exc)
+                _mark_pool_member(plan, target.project_id, "query-failed", str(exc))
                 return target.project_id, []
             finally:
                 if not is_self:

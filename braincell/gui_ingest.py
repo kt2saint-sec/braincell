@@ -31,10 +31,10 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Literal, Optional
+from typing import Callable, Optional
 
 from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from . import config
 from .log import get as _get_log
@@ -50,8 +50,9 @@ _SCHED_TICK_S = 60.0     # scheduler wake-up interval
 # ── Request bodies ─────────────────────────────────────────────────────────────
 
 class IngestBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     path: str
-    mode: Literal["project", "global"] = "project"
     reembed: bool = False
 
 
@@ -109,7 +110,7 @@ class IngestJob:
     started: float = field(default_factory=time.time)
     finished: Optional[float] = None
     returncode: Optional[int] = None
-    mode: str = "project"            # project | global (build target brain)
+    mode: str = "project"
     reembed: bool = False
 
     def as_dict(self) -> dict:
@@ -157,8 +158,6 @@ class IngestManager:
             # `python -c` fake see them as inert extra argv, while the real
             # `braincell build` command receives them as its own options.
             cmd = list(self.command_for(job.path))
-            if job.mode == "global":
-                cmd += ["--mode", "global"]
             if job.reembed:
                 cmd.append("--reembed")
             # PYTHONUNBUFFERED: with stdout piped (no tty) the child
@@ -401,9 +400,27 @@ def mount_ingest_api(
     *,
     db_path: Path,
     manager: IngestManager,
+    connected_project_id: str,
     pick_folder: Optional[Callable[[], dict]] = None,
 ) -> None:
-    """Register the ingestion-management routes on *app*."""
+    """Register connected-Project ingestion routes on *app*."""
+
+    def _require_connected_project(project_id: str) -> None:
+        if not connected_project_id:  # isolated factory compatibility for unit tests
+            if project_id not in set(load_path_registry().values()):
+                raise HTTPException(404, f"Unknown project {project_id!r}.")
+            return
+        if project_id != connected_project_id:
+            raise HTTPException(409, "This operation is limited to the connected Project.")
+
+    def _require_connected_path(path: str) -> Path:
+        resolved = Path(path).expanduser().resolve()
+        if not connected_project_id:  # isolated factory compatibility for unit tests
+            return resolved
+        registry = load_path_registry()
+        if registry.get(str(resolved)) != connected_project_id:
+            raise HTTPException(409, "Build is limited to the connected Project folder.")
+        return resolved
 
     @app.get("/api/fs")
     async def api_fs(path: str = "") -> dict:  # type: ignore[type-arg]
@@ -424,12 +441,12 @@ def mount_ingest_api(
 
     @app.post("/api/ingest")
     async def api_ingest(body: IngestBody) -> dict:  # type: ignore[type-arg]
-        p = Path(body.path).expanduser()
+        p = _require_connected_path(body.path)
         if not p.is_dir():
             raise HTTPException(400, f"Not a directory: {body.path}")
         try:
             job = await manager.start(
-                str(p.resolve()), mode=body.mode, reembed=body.reembed
+                str(p), reembed=body.reembed
             )
         except RuntimeError as exc:
             raise HTTPException(409, str(exc))
@@ -441,9 +458,7 @@ def mount_ingest_api(
 
     @app.post("/api/clear")
     async def api_clear(request: Request, body: ClearBody) -> dict:  # type: ignore[type-arg]
-        registry = load_path_registry()
-        if body.project_id not in set(registry.values()):
-            raise HTTPException(404, f"Unknown project {body.project_id!r}.")
+        _require_connected_project(body.project_id)
         import anyio
         result = await anyio.to_thread.run_sync(
             clear_project, db_path, body.project_id, body.include_notes
@@ -458,7 +473,7 @@ def mount_ingest_api(
     async def api_schedule_set(body: ScheduleBody) -> dict:  # type: ignore[type-arg]
         if body.interval_minutes < 0:
             raise HTTPException(400, "interval_minutes must be >= 0.")
-        norm = str(Path(body.path).expanduser().resolve())
+        norm = str(_require_connected_path(body.path))
         schedules = [s for s in load_schedules() if s.get("path") != norm]
         if body.interval_minutes > 0:
             schedules.append({

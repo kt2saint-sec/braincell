@@ -40,7 +40,6 @@ from pydantic import BaseModel, ConfigDict
 
 from .embed import embed_texts
 from .log import get as _get_log
-from .project_registry import load_path_registry
 from .store import SqliteStore
 
 log = _get_log("braincell.gui_ops")
@@ -298,13 +297,19 @@ def run_reembed_notes(db_path: Path, project_id: str) -> Optional[dict]:
 
 # ── Route mounting (called by gui.create_app when allow_writes=True) ──────────
 
-def mount_ops_api(app: FastAPI, *, db_path: Path, manager: OpsJobManager) -> None:
+def mount_ops_api(
+    app: FastAPI, *, db_path: Path, manager: OpsJobManager, connected_project_id: str
+) -> None:
     """Register the maintenance-command routes on *app*."""
 
     def _require_project(project_id: str) -> None:
-        # Mirrors /api/clear: only registered projects are valid targets.
-        if project_id not in set(load_path_registry().values()):
-            raise HTTPException(404, f"Unknown project {project_id!r}.")
+        if not connected_project_id:  # isolated factory compatibility for unit tests
+            from .project_registry import load_path_registry
+            if project_id not in set(load_path_registry().values()):
+                raise HTTPException(404, f"Unknown project {project_id!r}.")
+            return
+        if project_id != connected_project_id:
+            raise HTTPException(409, "This operation is limited to the connected Project.")
 
     async def _start(name: str, worker: Callable[[], Optional[dict]]) -> dict:
         try:

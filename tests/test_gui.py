@@ -79,11 +79,11 @@ class TestIndex:
         assert 'id="stage"' in r.text, 'Missing id="stage"'
         assert "#bcCell" in r.text, "Missing #bcCell"
 
-    def test_html_contains_pool_now(self, tmp_path):
-        """Memory-Map page carries Pool-now button text."""
+    def test_html_contains_explicit_pool_controls(self, tmp_path):
+        """Memory-Map page carries named live-Pool controls."""
         with TestClient(_app(tmp_path)) as client:
             r = client.get("/")
-        assert "Pool now" in r.text, "Missing 'Pool now'"
+        assert "Search Pool" in r.text and "Recall from Pool" in r.text
 
     def test_html_contains_memory_map(self, tmp_path):
         """Page title / heading references the memory map."""
@@ -98,23 +98,18 @@ class TestIndex:
         assert 'id="drawer"' in r.text, 'Missing id="drawer"'
         assert 'id="global-q"' in r.text, 'Missing id="global-q"'
 
-    def test_html_references_pool_or_family_api(self, tmp_path):
-        """Page JS references the /api/pool or /api/family endpoint."""
+    def test_html_references_project_only_pool_api(self, tmp_path):
         with TestClient(_app(tmp_path)) as client:
             r = client.get("/")
-        assert "/api/pool" in r.text or "/api/family" in r.text, (
-            "Page JS must reference /api/pool or /api/family"
-        )
+        assert "/api/pools" in r.text
+        assert "/api/family" not in r.text
 
-    def test_html_contains_scope_toggle(self, tmp_path):
-        """Page carries the 3-state scope toggle markup (This project/Family/All)."""
+    def test_html_has_no_implicit_cross_project_scope_toggle(self, tmp_path):
         with TestClient(_app(tmp_path)) as client:
             r = client.get("/")
-        assert 'id="scope-seg"' in r.text, 'Missing id="scope-seg"'
-        assert 'id="scope-project"' in r.text, "Missing 'This project' scope button"
-        assert 'id="scope-family"' in r.text, "Missing 'Family' scope button"
-        assert 'id="scope-all"' in r.text, "Missing 'All' scope button"
-        assert "This project" in r.text and "Family" in r.text
+        assert 'id="scope-seg"' not in r.text
+        assert 'id="scope-family"' not in r.text
+        assert 'id="scope-all"' not in r.text
 
     def test_global_hook_toggle_is_absent(self, tmp_path):
         with TestClient(_app(tmp_path)) as client:
@@ -178,18 +173,14 @@ class TestPhase1Terminology:
         assert 'id="build-btn"' in r.text, 'Missing id="build-btn"'
         assert "Build memory (no MCP)" in r.text, "Missing build-only copy"
 
-    def test_new_family_button_and_family_terminology(self, tmp_path):
-        """Grouping is a 'family' everywhere: button, header chip, drawer tag."""
+    def test_pool_button_and_pool_terminology(self, tmp_path):
         with TestClient(_app(tmp_path)) as client:
             r = client.get("/")
         assert 'id="new-family-btn"' in r.text, 'Missing id="new-family-btn"'
-        assert "＋ New family" in r.text, "Missing '＋ New family' button copy"
-        assert 'Families <b id="c-pool">' in r.text, "Header chip must say 'Families'"
-        assert "no family" in r.text, "Drawer tag must say 'no family'"
-        # Stale copy must be gone; 'pool' survives ONLY as the fuse action.
-        assert "no pool" not in r.text
-        assert "New pool" not in r.text
-        assert "Pool now" in r.text, "The fuse button keeps the reserved 'Pool now'"
+        assert "2 · Pools" in r.text
+        assert 'Pools <b id="c-pool">' in r.text
+        assert "not in a Pool" in r.text
+        assert "Pool now" not in r.text
 
     def test_wizard_register_mcp_step_and_skip_copy(self, tmp_path):
         """Wizard step 3 is 'Register MCP' (not 'Install'); step 4 skip is explicit."""
@@ -249,14 +240,14 @@ class TestApiConfig:
         """A GUI launched without a seed reports no project + federate disabled."""
         data = self._config(tmp_path)
         assert data["seed_project_id"] is None
-        assert data["federate_available"] is False
+        assert data["connected_project_id"] is None
         assert "mode" in data
 
     def test_config_seeded_exposes_seed(self, tmp_path):
         """A GUI launched with a seed exposes it + enables federation."""
         data = self._config(tmp_path, seed_project_id="SEEDPID00001")
         assert data["seed_project_id"] == "SEEDPID00001"
-        assert data["federate_available"] is True
+        assert data["connected_project_id"] == "SEEDPID00001"
 
 
 # ── /api/status ───────────────────────────────────────────────────────────────
@@ -271,32 +262,13 @@ class TestApiStatus:
         with TestClient(_app(tmp_path)) as client:
             data = client.get("/api/status").json()
         for key in ("indexed", "doc_count", "chunk_count", "stale", "mode",
-                    "db_path", "allow_writes", "global_brain"):
+                    "db_path", "allow_writes"):
             assert key in data, f"Missing key: {key}"
 
-    def test_status_global_brain_shape(self, tmp_path):
+    def test_status_does_not_expose_global_brain(self, tmp_path):
         with TestClient(_app(tmp_path)) as client:
             data = client.get("/api/status").json()
-        gb = data["global_brain"]
-        assert "exists" in gb
-        assert "path" in gb
-        assert isinstance(gb["exists"], bool)
-
-    def test_status_global_brain_exists_false_when_absent(self, tmp_path):
-        """global_brain.exists is False when the global DB has not been created."""
-        with TestClient(_app(tmp_path)) as client:
-            data = client.get("/api/status").json()
-        # The isolate_xdg fixture redirects XDG_DATA_HOME to tmp_path/xdg — no global DB there.
-        assert data["global_brain"]["exists"] is False
-
-    def test_status_global_brain_exists_true_when_present(self, tmp_path):
-        """global_brain.exists is True after the global DB is initialised."""
-        xdg = tmp_path / "xdg"
-        global_db = _init_global_db(xdg)
-        assert global_db.exists()
-        with TestClient(_app(tmp_path)) as client:
-            data = client.get("/api/status").json()
-        assert data["global_brain"]["exists"] is True
+        assert "global_brain" not in data
 
     def test_status_allow_writes_false(self, tmp_path):
         with TestClient(_app(tmp_path, allow_writes=False)) as client:
@@ -407,31 +379,20 @@ class TestApiFamilies:
     def test_families_empty(self, tmp_path):
         with TestClient(_app(tmp_path)) as client:
             r = client.get("/api/families")
-        assert r.status_code == 200
-        assert r.json() == []
+        assert r.status_code == 404
 
     def test_families_with_registered_member(self, tmp_path):
         from braincell.project_registry import add_family_members, register_path
         register_path(str(tmp_path / "proj1"), "FAMULID0001")
         add_family_members("myfamily", [str(tmp_path / "proj1")])
         with TestClient(_app(tmp_path)) as client:
-            data = client.get("/api/families").json()
-        assert len(data) == 1
-        assert data[0]["name"] == "myfamily"
-        # members list contains per-member dicts with path + project_id
-        assert isinstance(data[0]["members"], list)
-        member = data[0]["members"][0]
-        assert "path" in member
-        assert "project_id" in member
-        assert member["project_id"] == "FAMULID0001"
+            assert client.get("/api/families").status_code == 404
 
     def test_families_unregistered_member_has_null_project_id(self, tmp_path):
         from braincell.project_registry import add_family_members
         add_family_members("orphan", ["/no/such/path"])
         with TestClient(_app(tmp_path)) as client:
-            data = client.get("/api/families").json()
-        fam = next(f for f in data if f["name"] == "orphan")
-        assert fam["members"][0]["project_id"] is None
+            assert client.get("/api/families").status_code == 404
 
 
 # ── /api/notes ────────────────────────────────────────────────────────────────
@@ -636,11 +597,7 @@ class TestWriteGating:
                 "name": "testfam",
                 "paths": [str(tmp_path / "p1")],
             })
-            assert r.status_code == 200
-            assert r.json()["ok"] is True
-
-            data = client.get("/api/families").json()
-        assert any(f["name"] == "testfam" for f in data)
+            assert r.status_code == 404
 
     def test_family_rm_allow_writes(self, tmp_path):
         """With allow_writes=True, POST /api/family action=rm removes a family."""
@@ -653,16 +610,12 @@ class TestWriteGating:
                 "name": "to_remove",
                 "paths": None,  # remove entire family
             })
-            assert r.status_code == 200
-            assert r.json()["ok"] is True
-
-            data = client.get("/api/families").json()
-        assert not any(f["name"] == "to_remove" for f in data)
+            assert r.status_code == 404
 
     def test_family_invalid_action_returns_400(self, tmp_path):
         with TestClient(_app(tmp_path, allow_writes=True)) as client:
             r = client.post("/api/family", json={"action": "destroy", "name": "x"})
-        assert r.status_code == 400
+        assert r.status_code == 404
 
 
 # ── /api/pool ─────────────────────────────────────────────────────────────────
@@ -685,8 +638,7 @@ class TestApiPool:
         add_family_members("myfam", [str(tmp_path / "proj1")])
         with TestClient(_app(tmp_path, allow_writes=True)) as client:
             r = client.post("/api/pool", json={"family": "myfam"})
-        assert r.status_code == 409
-        assert "global brain" in r.json()["detail"].lower()
+        assert r.status_code == 404
 
     def test_pool_success_returns_stats(self, tmp_path):
         """Happy-path: pool a family of one project; response has pooled + skipped."""
@@ -718,12 +670,7 @@ class TestApiPool:
 
         with TestClient(_app(tmp_path, allow_writes=True)) as client:
             r = client.post("/api/pool", json={"family": "happyfam"})
-        assert r.status_code == 200
-        body = r.json()
-        assert "pooled" in body
-        assert "skipped" in body
-        assert isinstance(body["pooled"], list)
-        assert isinstance(body["skipped"], list)
+        assert r.status_code == 404
 
     def test_pool_read_only_absent(self, tmp_path):
         """POST /api/pool is absent (404/405) when allow_writes=False."""
@@ -780,7 +727,7 @@ class TestApiPool:
         # Either 409 (fingerprint mismatch) or success (if no fingerprint set → skipped)
         # The pool skips sources with no built brain, but here brain exists.
         # If both FPs are None (no embedding set), pool succeeds. Only assert not 5xx.
-        assert r.status_code in (200, 409)
+        assert r.status_code == 404
 
 
 # ── Host binding assertion ────────────────────────────────────────────────────

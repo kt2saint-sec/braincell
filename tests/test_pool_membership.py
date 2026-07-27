@@ -96,6 +96,23 @@ def test_pool_query_resolves_current_paths_and_skips_missing_or_corrupt_members(
     plan = plan_for_pool("read only", "01CONNECTED")
 
     assert [target.project_id for target in plan.targets] == ["01CONNECTED", "01VALID"]
+    assert {status.status for status in plan.member_status} >= {
+        "ready", "missing-path", "unreadable-database"
+    }
+
+
+def test_pool_query_rejects_non_member_before_resolving_any_member_path(tmp_path, monkeypatch):
+    from braincell.federate import plan_for_pool
+
+    create_pool("Private")
+    add_to_pool("Private", ["01MEMBER"])
+
+    def fail_lookup(_project_id):
+        raise AssertionError("a non-member query must not resolve a member database")
+
+    monkeypatch.setattr("braincell.federate.resolve_ulid_to_path", fail_lookup)
+    with pytest.raises(ValueError, match="not a member"):
+        plan_for_pool("Private", "01OUTSIDER")
 
 
 def test_pool_cli_never_exposes_materialized_all_projects_selector(capsys):

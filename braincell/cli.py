@@ -488,12 +488,9 @@ async def _stats_async(store: SqliteStore, iters: int) -> None:
 
 def cmd_stats(args: argparse.Namespace) -> None:
     """Show store size + a vector-search p95 benchmark (the sqlite-vec adopt-decision instrument)."""
-    mode = args.mode if args.mode else resolve_mode()
-    if mode == "global":
-        db = get_global_db_path()
-    else:
-        root = Path(args.path).resolve()
-        db = get_db_path(get_project_id(root))
+    resolve_mode(args.mode)
+    root = Path(args.path).resolve()
+    db = get_db_path(get_project_id(root))
     if not db.exists():
         print(f"No brain at {db} — run `braincell build` first.", file=sys.stderr)
         raise SystemExit(1)
@@ -693,20 +690,15 @@ def cmd_recall(args: argparse.Namespace) -> None:
     """
     from .server import recall_notes
 
-    mode = args.mode if args.mode else resolve_mode()
-    if mode == "global":
-        db = get_global_db_path()
-    else:
-        root = Path(args.path).resolve()
-        pid = resolve_project_id_readonly(root)
-        if pid is None:
-            print(f"No brain registered for {root} — run `braincell build` first.",
-                  file=sys.stderr)
-            raise SystemExit(1)
-        db = get_db_path(pid)
-        # Seed the env so _resolve_scope / build_federation_plan resolve 'self' and
-        # 'family' to this project (mirrors the MCP server wrapper's export).
-        os.environ["BRAINCELL_PROJECT_ID"] = pid
+    resolve_mode(args.mode)
+    root = Path(args.path).resolve()
+    pid = resolve_project_id_readonly(root)
+    if pid is None:
+        print(f"No brain registered for {root} — run `braincell build` first.",
+              file=sys.stderr)
+        raise SystemExit(1)
+    db = get_db_path(pid)
+    os.environ["BRAINCELL_PROJECT_ID"] = pid
 
     if not db.exists():
         print(f"No brain at {db} — run `braincell build` first.", file=sys.stderr)
@@ -774,20 +766,15 @@ def cmd_search(args: argparse.Namespace) -> None:
     """
     from .server import search_hits
 
-    mode = args.mode if args.mode else resolve_mode()
-    if mode == "global":
-        db = get_global_db_path()
-    else:
-        root = Path(args.path).resolve()
-        pid = resolve_project_id_readonly(root)
-        if pid is None:
-            print(f"No brain registered for {root} — run `braincell build` first.",
-                  file=sys.stderr)
-            raise SystemExit(1)
-        db = get_db_path(pid)
-        # Seed the env so _resolve_scope / build_federation_plan resolve 'self' and
-        # 'family' to this project (mirrors the MCP server wrapper's export).
-        os.environ["BRAINCELL_PROJECT_ID"] = pid
+    resolve_mode(args.mode)
+    root = Path(args.path).resolve()
+    pid = resolve_project_id_readonly(root)
+    if pid is None:
+        print(f"No brain registered for {root} — run `braincell build` first.",
+              file=sys.stderr)
+        raise SystemExit(1)
+    db = get_db_path(pid)
+    os.environ["BRAINCELL_PROJECT_ID"] = pid
 
     if not db.exists():
         print(f"No brain at {db} — run `braincell build` first.", file=sys.stderr)
@@ -826,8 +813,7 @@ def cmd_search(args: argparse.Namespace) -> None:
 
 def _backup_source_path(mode: str, path: str) -> Path:
     """Resolve the source DB path for a backup given *mode* and *path* arg."""
-    if mode == "global":
-        return get_global_db_path()
+    resolve_mode(mode)
     # project mode
     root = Path(path).resolve()
     project_id = get_project_id(root, create=False)  # raises ProjectIdentityMissing if unknown
@@ -873,7 +859,7 @@ def cmd_backup(args: argparse.Namespace) -> None:
     The backup is a clean, read-consistent copy — safe to copy off-host while
     the brain is in use.  The source DB is never modified.
     """
-    mode = args.mode if args.mode else resolve_mode()
+    mode = resolve_mode(args.mode)
 
     try:
         src = _backup_source_path(mode, args.path)
@@ -1442,26 +1428,14 @@ def main(argv: list[str] | None = None) -> None:
     pb.add_argument("--no-mint", action="store_true",
                     help="Fail instead of registering/minting a new project ULID if unregistered.")
     pb.add_argument("-v", "--verbose", action="store_true")
-    pb.add_argument(
-        "--mode", choices=["project", "global"], default=None,
-        help=(
-            "Brain to build into (default: resolves BRAINCELL_MODE env or 'project'). "
-            "Use 'global' to ingest into the shared global brain."
-        ),
-    )
+    pb.add_argument("--mode", choices=["project"], default=None, help=argparse.SUPPRESS)
     pb.set_defaults(func=cmd_build)
 
     ps = sub.add_parser("sync", help="Incremental refresh (new/changed transcripts).")
     ps.add_argument("path", nargs="?", default=".", help="Project path (default: cwd).")
     ps.add_argument("--skip-transcripts", action="store_true")
     ps.add_argument("-v", "--verbose", action="store_true")
-    ps.add_argument(
-        "--mode", choices=["project", "global"], default=None,
-        help=(
-            "Brain to sync into (default: resolves BRAINCELL_MODE env or 'project'). "
-            "Use 'global' to sync into the shared global brain."
-        ),
-    )
+    ps.add_argument("--mode", choices=["project"], default=None, help=argparse.SUPPRESS)
     ps.set_defaults(func=cmd_sync)
 
     pr = sub.add_parser("register", help="Mint/confirm the project ULID (no ingest).")
@@ -1564,11 +1538,8 @@ def main(argv: list[str] | None = None) -> None:
         help="Project path for scope/seed resolution (default: cwd; project mode).",
     )
     prc.add_argument(
-        "--scope", choices=["self", "family", "all"], default="self",
-        help=(
-            "self (default) = this project. family/all require global mode; "
-            "family also works in project mode with BRAINCELL_FEDERATE=on (fan-out)."
-        ),
+        "--scope", choices=["self"], default="self",
+        help="This Project only (default). Explicit Pool operations are separate commands.",
     )
     prc.add_argument("-k", "--k", type=int, default=5,
                      help="Max notes to return (1-50, default 5).")
@@ -1586,8 +1557,7 @@ def main(argv: list[str] | None = None) -> None:
     prc.add_argument("--json", action="store_true",
                      help="Emit JSON for machine consumption.")
     prc.add_argument(
-        "--mode", choices=["project", "global"], default=None,
-        help="Brain to recall from (default: resolves BRAINCELL_MODE env or 'project').",
+        "--mode", choices=["project"], default=None, help=argparse.SUPPRESS,
     )
     prc.set_defaults(func=cmd_recall)
 
@@ -1601,11 +1571,8 @@ def main(argv: list[str] | None = None) -> None:
         help="Project path for scope/seed resolution (default: cwd; project mode).",
     )
     pse.add_argument(
-        "--scope", choices=["self", "family", "all"], default="self",
-        help=(
-            "self (default) = this project. family/all require global mode; "
-            "family also works in project mode with BRAINCELL_FEDERATE=on (fan-out)."
-        ),
+        "--scope", choices=["self"], default="self",
+        help="This Project only (default). Explicit Pool operations are separate commands.",
     )
     pse.add_argument("-k", "--k", type=int, default=10,
                      help="Max chunks to return (1-100, default 10).")
@@ -1623,8 +1590,7 @@ def main(argv: list[str] | None = None) -> None:
     pse.add_argument("--json", action="store_true",
                      help="Emit JSON for machine consumption.")
     pse.add_argument(
-        "--mode", choices=["project", "global"], default=None,
-        help="Brain to search (default: resolves BRAINCELL_MODE env or 'project').",
+        "--mode", choices=["project"], default=None, help=argparse.SUPPRESS,
     )
     pse.set_defaults(func=cmd_search)
 
@@ -1743,8 +1709,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     pst.add_argument("path", nargs="?", default=".", help="Project path (default: cwd).")
     pst.add_argument(
-        "--mode", choices=["project", "global"], default=None,
-        help="Brain to inspect (default: resolves BRAINCELL_MODE env or 'project').",
+        "--mode", choices=["project"], default=None, help=argparse.SUPPRESS,
     )
     pst.add_argument(
         "--iters", type=int, default=20,
@@ -1757,15 +1722,10 @@ def main(argv: list[str] | None = None) -> None:
         help="Backup the current brain via SQLite VACUUM INTO (read-only, safe while in use).",
     )
     pbk.add_argument(
-        "path", nargs="?", default=".",
-        help="Project path (default: cwd). Ignored in global mode.",
+        "path", nargs="?", default=".", help="Project path (default: cwd).",
     )
     pbk.add_argument(
-        "--mode", choices=["project", "global"], default=None,
-        help=(
-            "Brain to back up (default: resolves BRAINCELL_MODE env or 'project'). "
-            "Use 'global' to back up the shared global brain."
-        ),
+        "--mode", choices=["project"], default=None, help=argparse.SUPPRESS,
     )
     pbk.add_argument(
         "--out",
@@ -1862,25 +1822,6 @@ def main(argv: list[str] | None = None) -> None:
     )
     pgui.add_argument("-v", "--verbose", action="store_true")
     pgui.set_defaults(func=cmd_gui)
-
-    pf = sub.add_parser("family", help="Manage project families.")
-    fsub = pf.add_subparsers(dest="family_cmd", required=True)
-
-    pfa = fsub.add_parser("add", help="Add member paths to a family (create if absent).")
-    pfa.add_argument("name", help="Family name.")
-    pfa.add_argument("paths", nargs="+", help="Project paths to add.")
-    pfa.set_defaults(func=cmd_family_add)
-
-    pfr = fsub.add_parser("rm", help="Remove a family or specific members.")
-    pfr.add_argument("name", help="Family name.")
-    pfr.add_argument(
-        "paths", nargs="*",
-        help="Paths to remove (omit all paths to remove the entire family).",
-    )
-    pfr.set_defaults(func=cmd_family_rm)
-
-    pfl = fsub.add_parser("ls", help="List families and their members (with ULID resolution).")
-    pfl.set_defaults(func=cmd_family_ls)
 
     args = p.parse_args(argv)
     args.func(args)
