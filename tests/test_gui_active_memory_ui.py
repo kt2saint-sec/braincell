@@ -50,32 +50,25 @@ class TestActiveState:
         assert "function isLaunch()" in html, "Missing the isLaunch() helper"
 
     def test_active_init_chain_url_param_then_seed(self, tmp_path):
-        """Init: ?active= URL param → launch seed → null, exactly once."""
+        """The connected Project, not a URL selector, initializes map focus."""
         html = _page(tmp_path)
-        assert 'get("active")' in html, "Missing the ?active= URL param read"
-        assert "_urlActive||(cfg&&cfg.launch_project_id)||seedProjectId||null" in html, (
-            "Active init must be ?active= → launch_project_id → seed → null"
-        )
+        assert "activeProjectId=seedProjectId||null" in html
+        assert "_urlActive||" not in html
         assert "_activeInit" in html, (
             "Active init must run once — later loadAll() calls must not clobber a switch"
         )
 
     def test_scope_params_follow_the_active_project(self, tmp_path):
-        """'This project' scopes to the ACTIVE project (not the last-clicked cell)."""
+        """Ordinary reads carry no selector capable of switching Projects."""
         html = _page(tmp_path)
-        assert '"&projects="+encodeURIComponent(activeProjectId||seedProjectId||"")' in html, (
-            "scopeParams project branch must use activeProjectId"
-        )
+        assert 'function scopeParams(){return "";}' in html
+        assert '"&projects="+encodeURIComponent(activeProjectId' not in html
 
     def test_scope_params_family_reseeds_from_active(self, tmp_path):
-        """Family federation appends &seed=<active> when active ≠ launch seed (B3)."""
+        """Retired implicit federation/seed selectors are not emitted."""
         html = _page(tmp_path)
-        assert '"&seed="+encodeURIComponent(activeProjectId)' in html, (
-            "Family branch must append &seed=<active>"
-        )
-        assert "activeProjectId&&activeProjectId!==seedProjectId" in html, (
-            "The seed param must be sent only when active ≠ launch seed"
-        )
+        assert '"&seed="+encodeURIComponent(activeProjectId)' not in html
+        assert "federate=true" not in html
 
     def test_url_rides_active_param_via_replace_state(self, tmp_path):
         """setActiveProject updates ?active= via history.replaceState (shareable tab)."""
@@ -97,9 +90,8 @@ class TestActiveChip:
         assert 'id="active-wrap"' in html, "Missing the chip wrapper"
         # placement: after the searchbar, before the scope toggle
         chip_pos = html.index('id="active-chip"')
-        assert html.index('id="global-q"') < chip_pos < html.index('id="scope-seg"'), (
-            "Chip must sit between the searchbar and the scope toggle"
-        )
+        assert html.index('id="global-q"') < chip_pos < html.index('id="status-chips"')
+        assert 'id="scope-seg"' not in html
 
     def test_chip_handlers_ship(self, tmp_path):
         html = _page(tmp_path)
@@ -117,12 +109,11 @@ class TestActiveChip:
         )
 
     def test_global_mode_reads_all_projects(self, tmp_path):
-        """With no active project the chip reads 'All projects ▾' (fixes G5)."""
+        """The chip has no retired all-Projects choice."""
         html = _page(tmp_path)
-        assert "All projects ▾" in html
-        assert "setActiveProject(null)" in html, (
-            "Global-mode dropdown must offer the unfiltered All-projects entry"
-        )
+        assert "All projects ▾" not in html
+        assert "setActiveProject(null)" not in html
+        assert 'b.textContent="Connected Project"' in html
 
     def test_dropdown_escapes_names_and_paths(self, tmp_path):
         """Every server-controlled string in the dropdown goes through esc()."""
@@ -213,21 +204,14 @@ class TestInspectorReadOnly:
 class TestFeedFilter:
     def test_filter_markup_ships(self, tmp_path):
         html = _page(tmp_path)
-        assert 'id="feed-scope"' in html, "Missing the feed filter container"
-        assert 'id="feed-scope-active"' in html
-        assert 'id="feed-scope-all"' in html
-        assert 'id="feed-scope-name"' in html, (
-            "Global-mode rail header must carry the active project's name"
-        )
+        assert 'id="feed-scope"' not in html
+        assert 'id="feed-scope-active"' not in html
+        assert 'id="feed-scope-all"' not in html
 
     def test_default_is_all_and_global_mode_only(self, tmp_path):
         html = _page(tmp_path)
-        assert 'let feedScope="all"' in html, "Filter must default to All"
-        m = re.search(r"function feedFilterParams\(\)\{(.*?)\n\}", html, re.S)
-        assert m, "feedFilterParams not found"
-        assert 'status.mode==="global"' in m.group(1), (
-            "The feed filter must apply in global mode only"
-        )
+        assert 'let feedScope="all"' not in html
+        assert 'function feedFilterParams(){return "";}' in html
 
     def test_poll_url_carries_the_filter(self, tmp_path):
         html = _page(tmp_path)
@@ -236,15 +220,10 @@ class TestFeedFilter:
         )
 
     def test_filter_change_resets_cursors(self, tmp_path):
-        """Filter (or filtered-target) change re-tails the stream from cursor 0."""
+        """No retired Project-switching feed control remains."""
         html = _page(tmp_path)
-        assert "feedResetStream" in html
-        m = re.search(r"function feedResetStream\(\)\{(.*?)\n\}", html, re.S)
-        assert m, "feedResetStream not found"
-        assert "feedCursors={after_note:0,after_doc:0}" in m.group(1)
-        m2 = re.search(r"function setFeedScope\(s\)\{(.*?)\n\}", html, re.S)
-        assert m2, "setFeedScope not found"
-        assert "feedResetStream()" in m2.group(1)
+        assert "setFeedScope" not in html
+        assert 'function feedFilterParams(){return "";}' in html
 
 
 # ── §6.3: counts banner deleted ──────────────────────────────────────────────

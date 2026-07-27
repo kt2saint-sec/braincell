@@ -33,11 +33,12 @@ import pytest
 pytest.importorskip(
     "PySide6.QtWebEngineWidgets",
     reason="hit-testing needs QtWebEngine (pip install 'braincell-mcp[native]')",
+    exc_type=ImportError,
 )
 
 # The controls a narrow viewport used to kill, plus their toolbar/header peers.
 _CONTROL_IDS = [
-    "scope-all", "add-repo-btn", "new-family-btn",
+    "active-chip", "add-repo-btn", "new-family-btn",
     "build-btn", "cmd-btn", "tut-btn",
 ]
 _WIDTHS = [1280, 1366, 1440]

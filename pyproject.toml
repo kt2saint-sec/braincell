@@ -81,11 +81,12 @@ extend-exclude = ["evals/task-ab/tasks/*/repo"]
 
 [tool.pytest.ini_options]
 # Starlette 1.3+ TestClient prefers the Pydantic-maintained `httpx2`; with plain
-# `httpx` installed it emits a one-shot StarletteDeprecationWarning at import.
+# `httpx` installed it emits a one-shot StarletteDeprecationWarning (a
+# UserWarning subclass) at import.
 # It rides in only via fastapi.testclient.TestClient (GUI/federation tests) — no
 # braincell runtime code touches it. We do NOT adopt httpx2 yet (supply-chain
 # cooldown: released 2026-07-23, unvetted), so silence the noise here instead.
 # Remove this filter if/when httpx2 is vetted and adopted as a test dependency.
 filterwarnings = [
-    "ignore:.*Starlette.*:DeprecationWarning",
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated.*:starlette.exceptions.StarletteDeprecationWarning",
 ]

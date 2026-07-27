@@ -41,7 +41,7 @@ class TestNumberedToolbar:
     def test_numbered_happy_path_labels(self, tmp_path):
         html = _page(tmp_path)
         assert "1 · ✚ Add project" in html, "Missing numbered '1 · ✚ Add project'"
-        assert "2 · ＋ New family" in html, "Missing numbered '2 · ＋ New family'"
+        assert "2 · Pools" in html, "Missing numbered '2 · Pools'"
         assert "Family recall" not in html
 
     def test_add_project_still_first_and_primary(self, tmp_path):
@@ -128,31 +128,33 @@ class TestTourSteps:
         html = _page(tmp_path)
         return html.split("const TOUR_STEPS", 1)[1].split("];", 1)[0]
 
-    def test_seven_cards(self, tmp_path):
+    def test_six_project_only_cards(self, tmp_path):
         steps = self._steps(tmp_path)
-        assert steps.count("title:") == 7, "The tour ships exactly 7 cards"
+        assert steps.count("title:") == 6
 
     def test_anchors_are_stable_dom_only(self, tmp_path):
         """Anchors must be stable DOM (toolbar/header/containers) — never
         selectors into #stage, whose children are rebuilt every frame."""
         steps = self._steps(tmp_path)
-        for sel in ('"#add-repo-btn"', '"#build-btn"', '"#active-chip"',
-                    '"#new-family-btn"', '".stage-wrap"',
-                    '"#feed-rail"'):
+        for sel in (
+            '"#add-repo-btn"',
+            '"#build-btn"',
+            '"#active-chip"',
+            '"#new-family-btn"',
+            '"#feed-rail"',
+        ):
             assert sel in steps, f"Missing stable anchor {sel}"
         assert '"#stage"' not in steps, "Never anchor to #stage internals"
         assert ".cell-g" not in steps, "Never anchor to map cells"
 
     def test_core_teaching_points(self, tmp_path):
         steps = self._steps(tmp_path)
-        # (a) active project vs added directories
-        assert "active project" in steps
-        assert "never merges memories" in steps
-        # (b) Add project vs Build memory (no MCP)
-        assert "Registers the MCP" in steps
+        assert "connected to one Project" in steps
+        assert "Ordinary Search, Recall, Build, and writes remain here" in steps
+        assert "Connects BrainCell" in steps
         assert "wires nothing into an MCP client" in steps
-        # Pool is the only fuse; chunks-vs-notes gotcha
-        assert "the one action that merges data" in steps
+        assert "stable Project memberships" in steps
+        assert "Pools never merge or copy databases" in steps
         assert "curated notes accrue as you work" in steps
 
     def test_namings_canon_in_tour_copy(self, tmp_path):

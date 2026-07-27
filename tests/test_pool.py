@@ -208,7 +208,7 @@ class TestPoolNoteLinks:
 
 
 class TestPoolCli:
-    def test_cli_all_pools_registered_projects(self, tmp_path):
+    def test_cli_rejects_implicit_all_registered_projects(self, tmp_path):
         from braincell.cli import main
 
         # Register two repo paths → fake ULIDs, and build their source brains.
@@ -223,6 +223,7 @@ class TestPoolCli:
             await _build_source("PROJB", doc_key="b1", text="beta", note="nb", seed=2)
         asyncio.run(go())
 
-        main(["pool", "--all"])
-
-        assert _global_counts() == (2, 2, 2)
+        with pytest.raises(SystemExit) as exc:
+            main(["pool", "--all"])
+        assert exc.value.code == 2
+        assert not get_global_db_path().exists()

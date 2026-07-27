@@ -11,7 +11,11 @@ import textwrap
 
 import pytest
 
-pytest.importorskip("PySide6.QtWebEngineWidgets", reason="requires the native Memory Map renderer")
+pytest.importorskip(
+    "PySide6.QtWebEngineWidgets",
+    reason="requires the native Memory Map renderer",
+    exc_type=ImportError,
+)
 
 
 def test_native_memory_map_exercises_all_pool_actions(tmp_path):

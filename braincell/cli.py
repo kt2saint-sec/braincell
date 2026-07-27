@@ -582,7 +582,8 @@ def cmd_contradictions(args: argparse.Namespace) -> None:
 
     judge = None
     if not args.no_llm:
-        judge = lambda a, b: ollama_judge(a, b, model=args.model)
+        def judge(a, b):
+            return ollama_judge(a, b, model=args.model)
     try:
         report = asyncio.run(find_contradictions(
             store,
@@ -698,14 +699,9 @@ def _note_to_dict(n) -> dict:
 
 def cmd_recall(args: argparse.Namespace) -> None:
     """Recall curated memory notes from the CLI — the SAME engine path as the
-    ``mcp__braincell__recall`` tool (server.recall_notes), so ranking/federation
-    match exactly. Read-only. Emits a human table or, with --json, machine JSON.
-
-    Brain + seed resolution mirrors `stats`/`reflect`: global mode uses the global
-    brain (no seed); project mode resolves the path → ULID read-only (never mints)
-    and exports BRAINCELL_PROJECT_ID for the resolved seed so scope='self'/'family'
-    and federation resolve consistently. `scope='family'` needs global mode OR
-    BRAINCELL_FEDERATE=on in project mode (else the engine raises, surfaced here).
+    ``mcp__braincell__recall`` tool (server.recall_notes), pinned to the Project
+    resolved from ``--path``. Read-only. Emits a human table or, with --json,
+    machine JSON. Cross-Project Recall is an explicit named-Pool operation.
     """
     from .server import recall_notes
 
@@ -727,7 +723,7 @@ def cmd_recall(args: argparse.Namespace) -> None:
     store.assert_schema_version()
     try:
         notes = asyncio.run(recall_notes(
-            store, args.query, k=args.k, scope=args.scope,
+            store, args.query, project=pid, k=args.k,
             min_cosine=args.min_cosine, dedup=not args.no_dedup,
             include_superseded=args.include_superseded,
         ))
@@ -774,14 +770,13 @@ def _hit_to_dict(h) -> dict:
 
 def cmd_search(args: argparse.Namespace) -> None:
     """Search ingested documents & transcripts from the CLI — the SAME engine path
-    as the ``mcp__braincell__search`` tool (server.search_hits), so ranking and
-    federation match exactly. Read-only.
+    as the ``mcp__braincell__search`` tool (server.search_hits), pinned to the
+    Project resolved from ``--path``. Read-only.
 
     Distinct from `recall`: `recall` returns curated memory NOTES, `search` returns
-    CHUNKS of ingested documents/transcripts. Brain + seed resolution mirrors
-    `recall` exactly (see cmd_recall). `--rank` selects the ranking strategy
-    (hybrid/semantic/keyword); `--mode` selects the project-vs-global brain, as it
-    does in every other subcommand.
+    CHUNKS of ingested documents/transcripts. `--rank` selects the ranking strategy
+    (hybrid/semantic/keyword). Cross-Project Search is an explicit named-Pool
+    operation.
     """
     from .server import search_hits
 
@@ -803,8 +798,8 @@ def cmd_search(args: argparse.Namespace) -> None:
     store.assert_schema_version()
     try:
         hits = asyncio.run(search_hits(
-            store, args.query, project=args.project, k=args.k,
-            rank=args.rank, scope=args.scope,
+            store, args.query, project=args.project or pid, k=args.k,
+            rank=args.rank,
         ))
     except ValueError as exc:
         # Engine-level rejection (e.g. scope='family' in project mode without
@@ -1671,11 +1666,7 @@ def main(argv: list[str] | None = None) -> None:
     prc.add_argument("query", help="Natural-language query text.")
     prc.add_argument(
         "--path", default=".",
-        help="Project path for scope/seed resolution (default: cwd; project mode).",
-    )
-    prc.add_argument(
-        "--scope", choices=["self"], default="self",
-        help="This Project only (default). Explicit Pool operations are separate commands.",
+        help="Connected Project path (default: cwd).",
     )
     prc.add_argument("-k", "--k", type=int, default=5,
                      help="Max notes to return (1-50, default 5).")
@@ -1704,11 +1695,7 @@ def main(argv: list[str] | None = None) -> None:
     pse.add_argument("query", help="Natural-language search query.")
     pse.add_argument(
         "--path", default=".",
-        help="Project path for scope/seed resolution (default: cwd; project mode).",
-    )
-    pse.add_argument(
-        "--scope", choices=["self"], default="self",
-        help="This Project only (default). Explicit Pool operations are separate commands.",
+        help="Connected Project path (default: cwd).",
     )
     pse.add_argument("-k", "--k", type=int, default=10,
                      help="Max chunks to return (1-100, default 10).")
@@ -1721,7 +1708,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     pse.add_argument(
         "--project", default=None,
-        help="Explicit project ULID to scope to (overrides --scope).",
+        help="Compatibility Project ULID; must match the connected Project.",
     )
     pse.add_argument("--json", action="store_true",
                      help="Emit JSON for machine consumption.")
