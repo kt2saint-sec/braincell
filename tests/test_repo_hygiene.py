@@ -35,7 +35,11 @@ _BINARY_SUFFIXES = {".png", ".ico", ".svg", ".db", ".jsonl"}
 
 # These are documented output locations inside a user's selected Project, not
 # dependencies expected to exist in this source checkout.
-_ALLOWED_GENERATED_PATHS = {".claude/skills"}
+_ALLOWED_GENERATED_PATHS = {
+    ".claude/settings.json",
+    ".claude/settings.local.json",
+    ".claude/skills",
+}
 
 
 def _tracked_text_files() -> list[str]:

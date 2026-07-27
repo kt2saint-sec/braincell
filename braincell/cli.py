@@ -1356,6 +1356,52 @@ def cmd_skills(args: argparse.Namespace) -> None:
         print(f"{status}: {name} ({path})")
 
 
+def cmd_automatic_pool_recall(args: argparse.Namespace) -> None:
+    """Manage or execute Project-local Automatic Pool recall."""
+    from .automatic_pool_recall import (
+        disable_automatic_pool_recall,
+        enable_automatic_pool_recall,
+        hook_main,
+        status_automatic_pool_recall,
+    )
+
+    if args.automatic_recall_action == "run":
+        hook_main(args.pool, args.project_id)
+        return
+
+    from .project_target import ProjectTargetError, validate_project_target
+
+    try:
+        target = validate_project_target(
+            args.path,
+            acknowledge_home=args.acknowledge_home,
+            acknowledge_non_git=args.acknowledge_non_git,
+            allow_privileged=args.allow_privileged,
+        )
+    except ProjectTargetError as exc:
+        raise SystemExit(f"braincell automatic-pool-recall: {exc}") from exc
+    try:
+        if args.automatic_recall_action == "enable":
+            result = enable_automatic_pool_recall(
+                target.path, scope=args.scope, pool_name=args.pool
+            )
+        elif args.automatic_recall_action == "disable":
+            result = disable_automatic_pool_recall(target.path, scope=args.scope)
+        else:
+            result = status_automatic_pool_recall(target.path, scope=args.scope)
+    except (RuntimeError, ValueError, KeyError) as exc:
+        raise SystemExit(f"braincell automatic-pool-recall: {exc}") from exc
+
+    state = "Enabled" if result.get("enabled") else "Disabled"
+    print(f"Automatic Pool recall: {state}")
+    print(f"  Project: {target.path}")
+    print(f"  Claude settings: {result['settings_path']}")
+    if result.get("pool"):
+        print(f"  Pool: {result['pool']}")
+    if result.get("conflict"):
+        print("  Conflict: a non-canonical hook was left unchanged")
+
+
 def cmd_legacy_service(args: argparse.Namespace) -> None:
     """Inspect or remove the retired always-on GUI unit."""
     from . import legacy_service
@@ -1645,6 +1691,40 @@ def main(argv: list[str] | None = None) -> None:
     pskills.add_argument("--acknowledge-non-git", action="store_true")
     pskills.add_argument("--allow-privileged", action="store_true")
     pskills.set_defaults(func=cmd_skills)
+
+    pautorecall = sub.add_parser(
+        "automatic-pool-recall",
+        help="Manage optional Project-local Pool recall for Claude.",
+    )
+    autorecallsub = pautorecall.add_subparsers(
+        dest="automatic_recall_action", required=True
+    )
+    action_help = {
+        "enable": "Enable Automatic Pool recall for one Project and Pool.",
+        "disable": "Disable it without changing Pool membership or Project memory.",
+        "status": "Show the selected Project's current Automatic Pool recall state.",
+    }
+    for action, help_text in action_help.items():
+        parser = autorecallsub.add_parser(action, help=help_text)
+        parser.add_argument("path", nargs="?", default=".",
+                            help="Project path (default: cwd).")
+        parser.add_argument("--scope", choices=["local", "project"], default="local",
+                            help="Private local settings or intentional shareable settings.")
+        parser.add_argument("--acknowledge-home", action="store_true")
+        parser.add_argument("--acknowledge-non-git", action="store_true")
+        parser.add_argument("--allow-privileged", action="store_true")
+        if action == "enable":
+            parser.add_argument(
+                "--pool",
+                help="Pool name; optional only when this Project belongs to exactly one Pool.",
+            )
+        parser.set_defaults(func=cmd_automatic_pool_recall)
+    prun = autorecallsub.add_parser(
+        "run", help="Internal Claude hook entry point; not for interactive use."
+    )
+    prun.add_argument("--pool", required=True)
+    prun.add_argument("--project-id", required=True)
+    prun.set_defaults(func=cmd_automatic_pool_recall)
 
     pls = sub.add_parser(
         "legacy-service",

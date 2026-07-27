@@ -10,12 +10,11 @@ from Pool**. Earlier terms are compatibility or migration language only.
 
 ## Current status
 
-This release establishes project-local connections, project-local skills, and
-the CLI Pool foundation. The remaining conversion work—project-local automatic
-Pool recall, native Memory Map Pool controls/database-open isolation, and
-preview-first legacy configuration/data migration—is not complete yet. Do not
-rely on legacy automation or shared-data behavior as part of the project-only
-workflow.
+This release establishes project-local connections and skills, CLI Pools, and
+Project-local Automatic Pool recall for Claude. Native Memory Map Pool controls,
+database-open isolation, and preview-first legacy configuration/data migration
+are not complete yet. Do not rely on legacy automation or shared-data behavior
+as part of the project-only workflow.
 
 ## What is isolated
 
@@ -126,6 +125,23 @@ Project's memory, client connection, Project registration, or membership in
 another Pool. Re-adding a member restores its live results without a Build.
 Pool names compare after Unicode NFKC normalization, whitespace normalization,
 and case-folding; the original spelling remains visible.
+
+### Optional Automatic Pool recall
+
+Automatic Pool recall is Disabled by default. Enable it only for a selected
+Project and Pool:
+
+```bash
+braincell automatic-pool-recall enable . --pool "release work"
+braincell automatic-pool-recall status .
+braincell automatic-pool-recall disable .
+```
+
+Claude private-local scope writes only `.claude/settings.local.json`. Add
+`--scope project` only when you intentionally want shareable
+`.claude/settings.json`. The hook command stores the stable Project ULID and
+Pool name, not an absolute Project path. It no-ops outside that connected
+Project, and ordinary Recall remains Project-only.
 
 ## Safety model
 

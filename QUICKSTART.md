@@ -87,6 +87,18 @@ braincell pool decouple "release work" <project-b-ulid>
 Decouple from Pool changes only that membership. It does not delete memory or
 disconnect an MCP client.
 
+Optional Automatic Pool recall for Claude is Project-local and Disabled by
+default:
+
+```bash
+braincell automatic-pool-recall enable . --pool "release work"
+braincell automatic-pool-recall disable .
+```
+
+The default uses private `.claude/settings.local.json`. Use `--scope project`
+only for an intentional shareable `.claude/settings.json`. It never changes
+ordinary Project-only Recall or Search.
+
 ## Disconnect
 
 ```bash
