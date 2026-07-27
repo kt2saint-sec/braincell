@@ -1,5 +1,7 @@
 # BrainCell
 
+Created by [Karl Toussaint (kt2saint)](https://github.com/kt2saint-sec).
+
 BrainCell is local-first project memory for MCP clients. Each **Project** has
 one database and a stable project ULID. Connecting BrainCell to Project A never
 starts it for, or exposes it to, Project B.
