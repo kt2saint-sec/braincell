@@ -73,7 +73,7 @@ class TestResolveGuiToken:
         do not reach it — patch the module global directly (the path helpers
         read it at call time).
         """
-        import braincell.config as config
+        from braincell import config
         from braincell.gui import _resolve_gui_token
 
         monkeypatch.setattr(config, "DATA_NAMESPACE", "ns_one")

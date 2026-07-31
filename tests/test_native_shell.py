@@ -12,7 +12,7 @@ from braincell import launch, native_shell
 
 
 def _start_args(path, **kw):
-    defaults = dict(path=str(path), port=8765, global_brain=False, native=False)
+    defaults = {"path": str(path), "port": 8765, "global_brain": False, "native": False}
     defaults.update(kw)
     return argparse.Namespace(**defaults)
 
@@ -38,7 +38,7 @@ class TestNativeAvailable:
         monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
         try:
             import PySide6.QtWebEngineWidgets  # noqa: F401
-        except Exception:
+        except ImportError:
             assert native_shell.native_available() is False
         else:
             assert native_shell.native_available() is True

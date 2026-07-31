@@ -17,7 +17,7 @@ import subprocess
 import sys
 import tempfile
 from contextlib import suppress
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -285,7 +285,7 @@ class ClaudeCodeClient:
 
     def _run(self, args: list[str], cwd: str | None) -> subprocess.CompletedProcess:
         return subprocess.run(
-            [self._claude, *args], cwd=cwd, capture_output=True, text=True,
+            [self._claude, *args], cwd=cwd, capture_output=True, text=True, check=False,
         )
 
     def mcp_remove(self, name: str, scope: str, cwd: str | None = None) -> None:
@@ -402,7 +402,7 @@ def _plain(value: Any) -> Any:
 
 
 def _backup_path(path: Path) -> Path:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S-%f")
     return path.with_name(f"{path.name}.braincell.bak.{stamp}")
 
 
@@ -554,7 +554,12 @@ def _read_json_object(path: Path) -> tuple[dict[str, Any], str | None]:
     except (OSError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"Cannot parse {path}; BrainCell left it unchanged. ({exc})") from exc
     if not isinstance(data, dict):
-        raise RuntimeError(f"{path} must contain a JSON object; BrainCell left it unchanged.")
+        # Suppression rationale: this is a user-facing configuration error, not a
+        # programming type error. Matches automatic_pool_recall.py:55; raising
+        # TypeError here would break that contract.
+        raise RuntimeError(  # noqa: TRY004
+            f"{path} must contain a JSON object; BrainCell left it unchanged."
+        )
     return data, path.read_text(encoding="utf-8")
 
 

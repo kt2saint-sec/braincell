@@ -104,11 +104,11 @@ def test_conflict_then_resolution_installs(tmp_path):
     mine.parent.mkdir(parents=True)
     mine.write_text("different content\n", encoding="utf-8")
     result = install_project_skills(project, "claude")
-    assert dict((n, s) for n, s, _ in result)["braincell-init"] == "conflict"
+    assert {n: s for n, s, _ in result}["braincell-init"] == "conflict"
 
     mine.unlink()
     result = install_project_skills(project, "claude")
-    assert dict((n, s) for n, s, _ in result)["braincell-init"] == "installed"
+    assert {n: s for n, s, _ in result}["braincell-init"] == "installed"
 
 
 def test_remove_deletes_only_unchanged_managed_skills(tmp_path):

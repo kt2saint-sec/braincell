@@ -14,7 +14,6 @@ import asyncio
 import sys
 import time
 from pathlib import Path
-from typing import Optional
 
 from fastapi.testclient import TestClient
 
@@ -25,7 +24,7 @@ def _app(
     tmp_path: Path,
     *,
     allow_writes: bool = True,
-    auth_token: Optional[str] = None,
+    auth_token: str | None = None,
     native_bridge=None,
 ):
     from braincell.gui import create_app
@@ -266,7 +265,7 @@ class TestClear:
             assert body["docs_removed"] == 1
             assert body["notes_removed"] == 0
             projs = client.get("/api/projects").json()
-        me = [p for p in projs if p["project_id"] == pid][0]
+        me = next(p for p in projs if p["project_id"] == pid)
         assert me["docs"] == 0 and me["chunks"] == 0 and me["notes"] == 1
 
     def test_clear_including_notes(self, tmp_path):
@@ -277,7 +276,7 @@ class TestClear:
             assert r.status_code == 200
             assert r.json()["notes_removed"] == 1
             projs = client.get("/api/projects").json()
-        me = [p for p in projs if p["project_id"] == pid][0]
+        me = next(p for p in projs if p["project_id"] == pid)
         assert me["notes"] == 0
 
     def test_404_unknown_project(self, tmp_path):

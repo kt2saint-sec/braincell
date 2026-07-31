@@ -70,6 +70,7 @@ def _ignored(paths: set[str]) -> set[str]:
     proc = subprocess.run(
         ["git", "check-ignore", "--stdin"],
         cwd=REPO, input="\n".join(ordered).encode("utf-8"), capture_output=True,
+        check=False,
     )
     stdout = proc.stdout.decode("utf-8", errors="replace")
     return {_unquote(line.strip()) for line in stdout.splitlines() if line.strip()}

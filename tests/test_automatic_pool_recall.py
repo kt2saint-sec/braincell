@@ -14,13 +14,13 @@ from braincell.automatic_pool_recall import (
     run_hook,
     status_automatic_pool_recall,
 )
+from braincell.cli import main
 from braincell.project_registry import (
     add_to_pool,
     create_pool,
     decouple_from_pool,
     register_path,
 )
-from braincell.cli import main
 
 
 def _project(tmp_path, project_id="01CONNECTED"):

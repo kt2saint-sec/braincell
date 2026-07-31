@@ -20,7 +20,6 @@ import pytest
 from braincell import install as inst
 from braincell.cli import main
 
-
 # ── command resolution ──────────────────────────────────────────────────────────
 
 def test_resolve_server_command_prefers_console_script(monkeypatch):
@@ -32,7 +31,7 @@ def test_resolve_server_command_prefers_console_script(monkeypatch):
 
 def test_resolve_server_command_fallback_to_module(monkeypatch):
     monkeypatch.setattr(inst.shutil, "which", lambda n: None)
-    cmd, args = inst.resolve_server_command()
+    _cmd, args = inst.resolve_server_command()
     assert args == ["-m", "braincell.server"]
 
 
@@ -104,7 +103,7 @@ def test_load_json_refuses_corrupt(tmp_path, monkeypatch):
 def test_claude_mcp_add_builds_one_project_scoped_argv(tmp_path, monkeypatch):
     calls = []
 
-    def fake_run(argv, cwd=None, capture_output=True, text=True):
+    def fake_run(argv, cwd=None, capture_output=True, text=True, check=False):
         calls.append((argv, cwd))
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
@@ -127,7 +126,7 @@ def test_claude_mcp_add_builds_one_project_scoped_argv(tmp_path, monkeypatch):
 
 
 def test_claude_mcp_add_raises_on_failure(tmp_path, monkeypatch):
-    def fake_run(argv, cwd=None, capture_output=True, text=True):
+    def fake_run(argv, cwd=None, capture_output=True, text=True, check=False):
         return subprocess.CompletedProcess(argv, 1, stdout="", stderr="boom")
 
     monkeypatch.setattr(inst.subprocess, "run", fake_run)
