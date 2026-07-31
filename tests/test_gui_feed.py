@@ -165,13 +165,14 @@ class TestTailSince:
         store = make_store(tmp_path)
 
         async def _run():
-            from braincell.store import upsert_chunk
+            import hashlib
             from tests.conftest import fake_vec
-            doc_id = await _insert_doc_and_chunk(
-                store, project=PID_A, doc_key="multi", text="first page")
-            cf = await store._conn_get()
-            await upsert_chunk(cf, doc_id, 1, "second page", fake_vec(9))
-            await cf.commit()
+            await store.replace_document(
+                project_id=PID_A, doc_key="multi", title="multi",
+                content_hash=hashlib.sha256(b"first page\nsecond page").digest(),
+                content_type="cell",
+                chunks=[("first page", fake_vec(0)), ("second page", fake_vec(9))],
+            )
             data = await store.tail_since(
                 note_after=0, doc_after=0, projects=None, limit=30)
             await store.aclose()

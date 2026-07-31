@@ -289,16 +289,14 @@ class TestListDocuments:
 
     def _seed_docs(self, store, project: str, count: int):
         async def _inner():
-            from braincell.store import upsert_document
-            cf = await store._conn_get()
             for i in range(count):
                 doc_key = f"doc-{i:04d}"
-                content_hash = hashlib.sha256(doc_key.encode()).digest()
-                await upsert_document(
-                    cf, project_id=project, doc_key=doc_key,
-                    title=f"Title {i}", content_hash=content_hash,
+                await store.replace_document(
+                    project_id=project, doc_key=doc_key,
+                    title=f"Title {i}",
+                    content_hash=hashlib.sha256(doc_key.encode()).digest(),
+                    content_type="cell", chunks=[],
                 )
-            await cf.commit()
         asyncio.run(_inner())
 
     def test_limit_is_respected(self, tmp_path):
@@ -327,16 +325,16 @@ class TestListDocuments:
         store = make_store(tmp_path)
 
         async def _seed():
-            from braincell.store import upsert_document
-            cf = await store._conn_get()
             for key, title in [
                 ("alpha-session", "My Alpha Doc"),
                 ("beta-session", "Some Beta Doc"),
                 ("gamma-session", "Gamma Doc"),
             ]:
-                ch = hashlib.sha256(key.encode()).digest()
-                await upsert_document(cf, project_id="proj-C", doc_key=key, title=title, content_hash=ch)
-            await cf.commit()
+                await store.replace_document(
+                    project_id="proj-C", doc_key=key, title=title,
+                    content_hash=hashlib.sha256(key.encode()).digest(),
+                    content_type="cell", chunks=[],
+                )
 
         asyncio.run(_seed())
 
@@ -906,11 +904,12 @@ class TestForgetSupersede:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# SECTION 7: upsert_chunk dimension guard
+# SECTION 7: replace_document dimension guard + legacy upsert retirement (BC-24)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class TestUpsertChunk:
-    """upsert_chunk: a wrong-dim embedding raises ValueError("write refused")."""
+class TestDocumentWriteGuards:
+    """The one production document-write path refuses wrong-dim embeddings, and
+    the retired raw caller-owned-connection upsert helpers stay gone."""
 
     def test_wrong_dim_raises_value_error(self, tmp_path):
         from braincell import embed_spec
@@ -920,32 +919,38 @@ class TestUpsertChunk:
 
         async def _run():
             store = make_store(tmp_path)
-            cf = await store._conn_get()
-            content_hash = hashlib.sha256(b"test").digest()
-            doc_id, _ = await upsert_document(
-                cf, project_id="proj-dim", doc_key="dim-test",
-                title="dim test", content_hash=content_hash,
-            )
             with pytest.raises(ValueError, match="write refused"):
-                await upsert_chunk(cf, doc_id, 0, "some text", wrong_dim_vec)
+                await store.replace_document(
+                    project_id="proj-dim", doc_key="dim-test",
+                    title="dim test",
+                    content_hash=hashlib.sha256(b"test").digest(),
+                    content_type="cell",
+                    chunks=[("some text", wrong_dim_vec)],
+                )
 
         asyncio.run(_run())
 
     def test_correct_dim_succeeds(self, tmp_path):
         """Sanity: a correct-dim vector must not raise."""
-        from braincell.store import upsert_chunk, upsert_document
 
         async def _run():
             store = make_store(tmp_path)
-            cf = await store._conn_get()
-            content_hash = hashlib.sha256(b"ok").digest()
-            doc_id, _ = await upsert_document(
-                cf, project_id="proj-dim2", doc_key="dim-ok",
-                title="ok", content_hash=content_hash,
+            await store.replace_document(  # must not raise
+                project_id="proj-dim2", doc_key="dim-ok", title="ok",
+                content_hash=hashlib.sha256(b"ok").digest(),
+                content_type="cell", chunks=[("text", fake_vec(0))],
             )
-            await upsert_chunk(cf, doc_id, 0, "text", fake_vec(0))  # must not raise
 
         asyncio.run(_run())
+
+    def test_legacy_raw_upsert_helpers_are_retired(self):
+        """BC-24: the free upsert_document/upsert_chunk helpers committed a
+        caller-owned raw connection outside SqliteStore transaction ownership.
+        They are removed; every document write goes through replace_document."""
+        import braincell.store as store_module
+
+        assert not hasattr(store_module, "upsert_document")
+        assert not hasattr(store_module, "upsert_chunk")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

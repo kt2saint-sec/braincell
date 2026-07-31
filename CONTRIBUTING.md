@@ -131,6 +131,9 @@ headless-GUI fallback, an always-on GUI service, or optionalize PySide6.
 
 ## Scope
 
+[ARCHITECTURE.md](ARCHITECTURE.md) maps the modules, CLI surface, database
+schema, and on-disk state — read it before adding a module or a command.
+
 `braincell-mcp` is the **Project-memory serving and Build** layer
 (Search/Recall/Remember + Build/sync). It
 indexes and ranks content you feed it — it does not generate content itself (no parsing,

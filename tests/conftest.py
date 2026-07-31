@@ -9,7 +9,8 @@ Isolation guarantees:
 - BRAINCELL_DATA_NAMESPACE is set to an inert test namespace so even if a
   stray import reads the env, it hits a throwaway directory.
 - No live Ollama: tests that need embeddings build fake unit vectors of
-  embed_spec.DIM dimensions and call upsert_chunk / store.recall directly.
+  embed_spec.DIM dimensions and call store.replace_document / store.recall
+  directly.
 """
 
 import os
@@ -113,14 +114,10 @@ async def _insert_doc_and_chunk(store, *, project: str, doc_key: str, text: str,
     """Insert one document + one chunk with a fake embedding (helper for tests)."""
     import hashlib
 
-    from braincell.store import upsert_chunk, upsert_document
-
-    cf = await store._conn_get()
-    content_hash = hashlib.sha256(text.encode()).digest()
-    doc_id, _ = await upsert_document(
-        cf, project_id=project, doc_key=doc_key, title=doc_key,
-        content_hash=content_hash, content_type="cell",
+    doc_id, _changed = await store.replace_document(
+        project_id=project, doc_key=doc_key, title=doc_key,
+        content_hash=hashlib.sha256(text.encode()).digest(),
+        content_type="cell",
+        chunks=[(text, fake_vec(seed))],
     )
-    await upsert_chunk(cf, doc_id, 0, text, fake_vec(seed))
-    await cf.commit()
     return doc_id

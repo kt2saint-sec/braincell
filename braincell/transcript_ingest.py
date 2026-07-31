@@ -305,6 +305,7 @@ async def ingest_transcripts(
         # Change #2 (2026-05-29): skill dedup-and-tag
         "skill_bodies_deduped": 0,   # skill bodies seen but NOT re-embedded (already in store)
         "skill_docs_created": 0,     # canonical skill docs newly embedded this run
+        "skill_bodies_stale": 0,     # BC-21: bodies outranked by the stored canonical authority
     }
 
     # Collect candidate JSONL files.
@@ -441,21 +442,62 @@ async def ingest_transcripts(
                 content_pages.append(page)
 
         # Embed each skill body ONCE: canonical doc_key="skill:<name>" per project.
-        # Dedup check: if a doc with that key already exists (changed=False on an
-        # unmodified hash), we skip re-embedding (cross-session + cross-run dedup).
+        #
+        # CANONICAL SKILL AUTHORITY (BC-21): when historical transcripts carry
+        # DIFFERENT bodies for one skill, the canonical body is the candidate
+        # whose source transcript file has the newest mtime; equal mtimes break
+        # the tie on the lexicographically greatest content-hash hex. The winning
+        # authority pair is persisted in the skill doc's metadata
+        # ("source_mtime_ns" + the stored content hash), and a candidate replaces
+        # the stored body only when its (mtime, hash) ranks STRICTLY higher —
+        # so re-ingesting the same transcript set in any order converges on the
+        # same canonical body. An equal-hash candidate from a newer source still
+        # raises the recorded authority, closing the ordering hole where an
+        # authority-less duplicate could later lose to an older body.
         skill_failed = False
+        try:
+            source_mtime_ns = fpath.stat().st_mtime_ns
+        except OSError:
+            source_mtime_ns = 0
         for skill_page, skill_name in skill_body_pages:
             skill_doc_key = f"skill:{skill_name}"
             skill_hash = hashlib.sha256(skill_page.encode()).digest()
-            if await store.document_is_current(
-                project_id,
-                skill_doc_key,
-                skill_hash,
-                expected_chunks=1,
-            ):
-                stats["skill_bodies_deduped"] += 1
-                continue
-            # New or changed skill body — embed and store.
+            candidate_authority = (source_mtime_ns, skill_hash.hex())
+            existing = await store.document_metadata(project_id, skill_doc_key)
+            if existing is not None:
+                stored_hash = existing["content_hash"]
+                stored_meta = existing["metadata"]
+                try:
+                    stored_mtime = int(stored_meta.get("source_mtime_ns", -1))
+                except (TypeError, ValueError):
+                    stored_mtime = -1
+                stored_authority = (
+                    stored_mtime,
+                    stored_hash.hex() if stored_hash else "",
+                )
+                stored_complete = await store.document_is_current(
+                    project_id,
+                    skill_doc_key,
+                    stored_hash if stored_hash else b"",
+                    expected_chunks=1,
+                )
+                if stored_hash == skill_hash and stored_complete:
+                    stats["skill_bodies_deduped"] += 1
+                    if candidate_authority > stored_authority:
+                        await store.update_document_metadata(
+                            project_id,
+                            skill_doc_key,
+                            {**stored_meta, "source_mtime_ns": source_mtime_ns},
+                        )
+                    continue
+                if stored_complete and candidate_authority <= stored_authority:
+                    # A lower-ranked different body never replaces the canonical
+                    # one, in any ingestion order. An INCOMPLETE stored doc falls
+                    # through instead: any candidate may repair it, and the true
+                    # winner still lands once its source is (re)visited.
+                    stats["skill_bodies_stale"] += 1
+                    continue
+            # New skill, repair, or a strictly higher-authority body — embed.
             try:
                 skill_embeddings = embed_texts([skill_page])
             except Exception as exc:  # noqa: BLE001 — embedder outage skips this skill body, never writes null vectors
@@ -472,7 +514,10 @@ async def ingest_transcripts(
                 content_hash=skill_hash,
                 content_type="skill",
                 chunks=[(skill_page, skill_embeddings[0])],
-                metadata={"skill_name": skill_name},
+                metadata={
+                    "skill_name": skill_name,
+                    "source_mtime_ns": source_mtime_ns,
+                },
             )
             stats["skill_docs_created"] += 1
         # ── End Change #2 skill embedding ──────────────────────────────────────

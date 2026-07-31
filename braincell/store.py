@@ -2936,6 +2936,53 @@ class SqliteStore:
             and int(row[2]) == expected_chunks
         )
 
+    async def document_metadata(
+        self, project_id: str, doc_key: str,
+    ) -> Optional[dict]:
+        """Return one document's stored content hash and parsed metadata.
+
+        ``{"content_hash": bytes | None, "metadata": dict}``; None when the
+        document does not exist. Malformed stored metadata comes back as ``{}``
+        so callers can apply their own policy without crashing on legacy rows.
+        """
+        cf = await self._conn_get()
+        row = await (
+            await cf.execute(
+                "SELECT content_hash, metadata FROM bc_documents "
+                "WHERE project_id=? AND doc_key=?",
+                (project_id, doc_key),
+            )
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            metadata = json.loads(row[1]) if row[1] else {}
+        except (TypeError, json.JSONDecodeError):
+            metadata = {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        return {
+            "content_hash": bytes(row[0]) if row[0] is not None else None,
+            "metadata": metadata,
+        }
+
+    async def update_document_metadata(
+        self, project_id: str, doc_key: str, metadata: dict,
+    ) -> bool:
+        """Rewrite one document's metadata JSON without touching content state.
+
+        Returns True iff the document existed. Chunks, FTS rows, and the
+        content hash are untouched, so ingest checkpoints stay valid.
+        """
+        meta_json = json.dumps(metadata)
+        async with self._write_transaction() as cf:
+            cursor = await cf.execute(
+                "UPDATE bc_documents SET metadata=?, updated_at=? "
+                "WHERE project_id=? AND doc_key=?",
+                (meta_json, datetime.now().isoformat(), project_id, doc_key),
+            )
+            return cursor.rowcount > 0
+
     async def replace_document(
         self,
         *,
@@ -3178,136 +3225,6 @@ class SqliteStore:
         except RuntimeError:
             # No running loop — safe to drive aclose() to completion.
             asyncio.run(self.aclose())
-
-
-# ── Upsert helpers (used by pipeline and braincell_remember) ──────────────────
-
-async def upsert_document(
-    cf: aiosqlite.Connection,
-    project_id: str,
-    doc_key: str,
-    title: str,
-    content_hash: bytes,
-    content_type: str = "cell",
-    commit_sha: str | None = None,
-    run_id: str | None = None,
-    metadata: dict | None = None,
-) -> tuple[int, bool]:
-    """Upsert a document row. Returns (doc_id, was_changed).
-
-    Idempotent: ON CONFLICT uses content_hash to detect changes.
-    Returns was_changed=True only when the hash actually differs.
-    """
-    meta_json = json.dumps(metadata or {})
-    now = datetime.now().isoformat()
-
-    # Check existing.
-    row = await (await cf.execute(
-        "SELECT id, content_hash FROM bc_documents "
-        "WHERE project_id = ? AND doc_key = ?",
-        (project_id, doc_key),
-    )).fetchone()
-
-    if row is not None:
-        existing_id = row[0]
-        existing_hash = bytes(row[1]) if row[1] else None
-        if existing_hash == content_hash:
-            return existing_id, False
-        # Hash changed — update.
-        await cf.execute(
-            "UPDATE bc_documents "
-            "SET title=?, content_hash=?, commit_sha=?, run_id=?, "
-            "updated_at=?, metadata=? "
-            "WHERE id=?",
-            (title, content_hash, commit_sha, run_id, now, meta_json, existing_id),
-        )
-        await cf.commit()
-        return existing_id, True
-
-    # New document.
-    cursor = await cf.execute(
-        "INSERT INTO bc_documents "
-        "(project_id, doc_key, title, content_hash, content_type, "
-        "commit_sha, run_id, created_at, updated_at, metadata) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (project_id, doc_key, title, content_hash, content_type,
-         commit_sha, run_id, now, now, meta_json),
-    )
-    await cf.commit()
-    return cursor.lastrowid, True
-
-
-async def upsert_chunk(
-    cf: aiosqlite.Connection,
-    document_id: int,
-    chunk_index: int,
-    chunk_text: str,
-    embedding: np.ndarray | None,
-    run_id: str | None = None,
-) -> None:
-    """Upsert a chunk + its embedding BLOB (idempotent by document_id + index).
-
-    Also maintains the bc_chunks_fts index with an explicit INSERT/DELETE
-    (bc_chunks_fts is a content table — it does not auto-sync on row change;
-    triggers would require DDL-level setup not guaranteed in all SQLite builds,
-    so we do explicit index maintenance here).
-    """
-    if embedding is not None and embedding.shape[0] != embed_spec.DIM:
-        raise ValueError(
-            f"BrainCell write refused: chunk embedding is {embedding.shape[0]}-d but "
-            f"embed_spec.DIM={embed_spec.DIM} ({embed_spec.FINGERPRINT}). Refusing to "
-            f"mix vector spaces in one store — after a provider/model/dim change, "
-            f"rebuild with `braincell build --reembed`."
-        )
-    chunk_hash = hashlib.sha256(chunk_text.encode()).digest()
-    emb_blob = _vec_to_blob(embedding) if embedding is not None else None
-
-    row = await (await cf.execute(
-        "SELECT id FROM bc_chunks WHERE document_id = ? AND chunk_index = ?",
-        (document_id, chunk_index),
-    )).fetchone()
-
-    if row is not None:
-        chunk_id = row[0]
-        # bc_chunks_fts is an external-content FTS5 table (content='bc_chunks').
-        # For external-content tables, DELETE FROM fts WHERE rowid=? re-reads the
-        # OLD text from the content table to un-index it.  If the content row is
-        # updated first, FTS reads the NEW text at delete-time and un-indexes the
-        # wrong term — leaving the old term permanently stale.
-        # Correct order: FTS DELETE (while content still has old text) → content
-        # UPDATE → FTS INSERT with new text.
-        try:
-            await cf.execute("DELETE FROM bc_chunks_fts WHERE rowid=?", (chunk_id,))
-        except sqlite3.OperationalError:
-            pass  # FTS5 absent in this frozen sqlite3 build — non-fatal
-        await cf.execute(
-            "UPDATE bc_chunks SET chunk_text=?, chunk_hash=?, embedding=?, run_id=? "
-            "WHERE document_id=? AND chunk_index=?",
-            (chunk_text, chunk_hash, emb_blob, run_id, document_id, chunk_index),
-        )
-        try:
-            await cf.execute(
-                "INSERT INTO bc_chunks_fts(rowid, chunk_text) VALUES (?, ?)",
-                (chunk_id, chunk_text),
-            )
-        except sqlite3.OperationalError:
-            pass  # FTS5 absent in this frozen sqlite3 build — non-fatal
-    else:
-        cursor = await cf.execute(
-            "INSERT INTO bc_chunks (document_id, chunk_index, chunk_text, "
-            "chunk_hash, embedding, run_id) VALUES (?, ?, ?, ?, ?, ?)",
-            (document_id, chunk_index, chunk_text, chunk_hash, emb_blob, run_id),
-        )
-        chunk_id = cursor.lastrowid
-        # Sync the FTS5 index for the new row.
-        try:
-            await cf.execute(
-                "INSERT INTO bc_chunks_fts(rowid, chunk_text) VALUES (?, ?)",
-                (chunk_id, chunk_text),
-            )
-        except sqlite3.OperationalError:
-            pass  # FTS5 absent in this frozen sqlite3 build — non-fatal
-    await cf.commit()
 
 
 # ── open_store() factory ──────────────────────────────────────────────────────

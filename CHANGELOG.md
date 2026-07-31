@@ -15,6 +15,14 @@ details are intentionally excluded.
 - Dry-run backup-retention planning with `--keep-backups`; optional
   `--backup-root` arguments include external recovery directories without
   deleting anything.
+- Opt-in retention execution for `braincell storage`. `--expire-operations-days`
+  and `--expire-tombstones-days` plan operation-history expiry and hard-purging
+  of long-tombstoned notes; `--apply` executes the printed plan. Every axis is
+  disabled by default, `--apply` is refused when no retention option is
+  configured, and the work runs under the destination mutation lock.
+- Retention plans mark backup snapshots referenced by undo history as
+  **protected** rather than as removal candidates, and re-verify that protection
+  at delete time. Active and superseded memory is never a candidate.
 
 ### Fixed
 
@@ -46,6 +54,12 @@ details are intentionally excluded.
   create them only after a non-empty mutation plan exists.
 - Made note persistence and its FTS row one all-or-nothing transaction for
   individual indexing failures.
+- Gave canonical skill documents a deterministic authority. When historical
+  transcripts carry several bodies for one skill, the newest source-file
+  modification time wins, ties break on content hash, and the winning authority
+  is persisted so re-ingestion in any order converges on the same body.
+- Removed the free `upsert_document`/`upsert_chunk` helpers, which committed
+  caller-owned SQLite connections outside the store's transaction ownership.
 - Changed Ollama embedding warm-up to use a Build-scoped keep-alive followed by
   an explicit unload, and moved synchronous reranking calls off the async event
   loop with bounded concurrency.
@@ -67,10 +81,20 @@ details are intentionally excluded.
 
 ### Known limitations
 
-- Storage reporting is informational. BrainCell does not automatically expire
-  indexed transcripts, tombstoned notes, operation history, or curated memory.
-- Canonical skill documents still need a defined monotonic authority when
-  historical transcripts contain multiple versions of the same skill.
+- BrainCell never expires anything on its own. Retention runs only when you pass
+  an explicit window and `--apply`; there is no default retention age, and
+  indexed transcripts and curated memory are never expiry candidates.
+- `braincell storage` does not report freelist, embedding, foreign-document, or
+  orphan-database detail, and there is no authorized compaction (`VACUUM`)
+  workflow or WAL-starvation warning.
+- Deleted or moved Projects can still leave orphaned registry entries and
+  databases with no read-only orphan inventory. Reassociating a moved Project is
+  supported.
+- `consolidate` and `reflect` require a successful safety backup; `--reembed`
+  and Memory Map clear do not yet have an equivalent backup/override policy.
+- Native launcher installation, the desktop entry, and the default data root
+  remain Linux/XDG-oriented. The Memory Map auth token relies on default
+  per-user ACLs on Windows rather than an enforced mode.
 
 ## v0.4.0 - 2026-07-27
 

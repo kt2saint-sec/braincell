@@ -444,3 +444,164 @@ class TestGetProjectId:
 
         with pytest.raises(ProjectIdentityMissing):
             get_project_id(unregistered, create=False)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 6: canonical skill authority (BC-21)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestSkillAuthority:
+    """The canonical skill body is order-independent: the newest source-file
+    mtime wins, with a deterministic content-hash tiebreak — so re-ingesting
+    historical transcripts in ANY order converges on the same body."""
+
+    _SKILL_TEMPLATE = (
+        "Base directory for this skill: /skills/demo-skill\n"
+        "demo skill body variant {variant}"
+    )
+
+    def _patch_ingest(self, monkeypatch, ingest, transcript_root):
+        monkeypatch.setattr(ingest, "_TRANSCRIPT_ROOTS", [transcript_root])
+        monkeypatch.setattr(ingest, "load_path_registry", lambda: {})
+        monkeypatch.setattr(
+            ingest, "resolve_family_ulids", lambda _project_id, registry: {"source-1"}
+        )
+        monkeypatch.setattr(
+            ingest, "_resolve_source_ulid", lambda _path, _registry: "source-1"
+        )
+        monkeypatch.setattr(
+            ingest,
+            "embed_texts",
+            lambda texts: [fake_vec(i + 1) for i, _ in enumerate(texts)],
+        )
+        monkeypatch.setenv("BRAINCELL_COMPACT", "0")
+
+    def _write_session(self, root, name, body, mtime_s):
+        import os
+
+        f = root / f"{name}.jsonl"
+        f.write_text(json.dumps({"content": body}), encoding="utf-8")
+        os.utime(f, ns=(mtime_s * 10**9, mtime_s * 10**9))
+        return f
+
+    async def _canonical_body(self, store):
+        cf = await store._conn_get()
+        row = await (
+            await cf.execute(
+                "SELECT c.chunk_text FROM bc_documents d "
+                "JOIN bc_chunks c ON c.document_id=d.id "
+                "WHERE d.project_id=? AND d.doc_key=?",
+                ("source-1", "skill:demo-skill"),
+            )
+        ).fetchone()
+        return row[0] if row else None
+
+    def test_newer_source_wins_regardless_of_ingestion_order(
+        self, tmp_path, monkeypatch
+    ):
+        import braincell.transcript_ingest as ingest
+
+        old_body = self._SKILL_TEMPLATE.format(variant="OLD")
+        new_body = self._SKILL_TEMPLATE.format(variant="NEW")
+
+        for order in ("old-first", "new-first"):
+            root = tmp_path / order
+            root.mkdir()
+            store_dir = tmp_path / f"store-{order}"
+            store_dir.mkdir()
+            store = make_store(store_dir)
+            self._patch_ingest(monkeypatch, ingest, root)
+
+            async def _run(root=root, store=store, order=order):
+                first, second = (
+                    (("session-old", old_body, 1_000), ("session-new", new_body, 2_000))
+                    if order == "old-first"
+                    else (("session-new", new_body, 2_000), ("session-old", old_body, 1_000))
+                )
+                self._write_session(root, *first)
+                stats_one = await ingest.ingest_transcripts(
+                    store, "source-1", ledger_path=store_dir / "ledger.json"
+                )
+                assert stats_one["skill_docs_created"] == 1
+                self._write_session(root, *second)
+                stats_two = await ingest.ingest_transcripts(
+                    store, "source-1", ledger_path=store_dir / "ledger.json"
+                )
+                if order == "new-first":
+                    # The older body must have been refused as stale.
+                    assert stats_two["skill_bodies_stale"] == 1
+                    assert stats_two["skill_docs_created"] == 0
+                return await self._canonical_body(store)
+
+            assert asyncio.run(_run()) == new_body
+
+    def test_equal_mtime_breaks_tie_on_greater_content_hash(
+        self, tmp_path, monkeypatch
+    ):
+        import braincell.transcript_ingest as ingest
+
+        body_a = self._SKILL_TEMPLATE.format(variant="alpha")
+        body_b = self._SKILL_TEMPLATE.format(variant="beta")
+        winner = max(
+            (body_a, body_b),
+            key=lambda body: hashlib.sha256(body.encode()).hexdigest(),
+        )
+
+        for order, bodies in (("ab", (body_a, body_b)), ("ba", (body_b, body_a))):
+            root = tmp_path / order
+            root.mkdir()
+            store_dir = tmp_path / f"store-{order}"
+            store_dir.mkdir()
+            store = make_store(store_dir)
+            self._patch_ingest(monkeypatch, ingest, root)
+
+            async def _run(root=root, store=store, bodies=bodies, order=order):
+                self._write_session(root, f"session-one-{order}", bodies[0], 5_000)
+                await ingest.ingest_transcripts(
+                    store, "source-1", ledger_path=store_dir / "ledger.json"
+                )
+                self._write_session(root, f"session-two-{order}", bodies[1], 5_000)
+                await ingest.ingest_transcripts(
+                    store, "source-1", ledger_path=store_dir / "ledger.json"
+                )
+                return await self._canonical_body(store)
+
+            assert asyncio.run(_run()) == winner
+
+    def test_unchanged_body_from_newer_source_raises_recorded_authority(
+        self, tmp_path, monkeypatch
+    ):
+        """Equal-hash dedup must still record the newer source's authority, so
+        an older DIFFERENT body can never win by arriving afterwards."""
+        import braincell.transcript_ingest as ingest
+
+        body = self._SKILL_TEMPLATE.format(variant="stable")
+        older_body = self._SKILL_TEMPLATE.format(variant="ancient")
+
+        root = tmp_path / "sessions"
+        root.mkdir()
+        store = make_store(tmp_path)
+        self._patch_ingest(monkeypatch, ingest, root)
+
+        async def _run():
+            self._write_session(root, "session-a", body, 1_000)
+            await ingest.ingest_transcripts(
+                store, "source-1", ledger_path=tmp_path / "ledger.json"
+            )
+            # Same body again from a NEWER file: deduped, authority raised.
+            self._write_session(root, "session-b", body, 3_000)
+            stats = await ingest.ingest_transcripts(
+                store, "source-1", ledger_path=tmp_path / "ledger.json"
+            )
+            assert stats["skill_bodies_deduped"] == 1
+            meta = await store.document_metadata("source-1", "skill:demo-skill")
+            assert meta["metadata"]["source_mtime_ns"] == 3_000 * 10**9
+            # An older different body now loses to the recorded authority.
+            self._write_session(root, "session-c", older_body, 2_000)
+            stats = await ingest.ingest_transcripts(
+                store, "source-1", ledger_path=tmp_path / "ledger.json"
+            )
+            assert stats["skill_bodies_stale"] == 1
+            return await self._canonical_body(store)
+
+        assert asyncio.run(_run()) == body

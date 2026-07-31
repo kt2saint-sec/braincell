@@ -80,7 +80,10 @@ braincell storage . --keep-backups 3
 ```
 
 Project storage grows with indexed content and retained history. The retention
-list is informational only; BrainCell does not silently expire curated memory.
+list is a dry-run plan; BrainCell never silently expires curated memory.
+Deleting anything requires an explicitly configured
+`braincell storage . --keep-backups N --apply`, and snapshots referenced by
+undo history are always kept.
 
 ## Optional: create a Pool
 

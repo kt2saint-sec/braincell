@@ -161,7 +161,7 @@ def _measure_long_running_command(
 async def _seed_project(root: Path, index: int, notes: int, chunks: int) -> str:
     from braincell import embed_spec
     from braincell.config import get_db_path, get_project_id
-    from braincell.store import SqliteStore, upsert_chunk, upsert_document
+    from braincell.store import SqliteStore
 
     root.mkdir(parents=True, exist_ok=True)
     (root / ".git").mkdir(exist_ok=True)
@@ -170,7 +170,6 @@ async def _seed_project(root: Path, index: int, notes: int, chunks: int) -> str:
     db.parent.mkdir(parents=True, exist_ok=True)
     store = SqliteStore(db)
     store.assert_schema_version()
-    connection = await store._conn_get()  # Benchmark seeding uses store-owned connection.
     for note_index in range(notes):
         text = (
             f"pool baseline member {index} note {note_index} "
@@ -187,20 +186,13 @@ async def _seed_project(root: Path, index: int, notes: int, chunks: int) -> str:
             f"pool baseline member {index} chunk {chunk_index} "
             f"deployment rollback search latency cache"
         )
-        doc_id, _changed = await upsert_document(
-            connection,
-            project_id,
-            f"doc-{index}-{chunk_index}",
-            f"Document {index}-{chunk_index}",
-            hashlib.sha256(text.encode("utf-8")).digest(),
-            "text/plain",
-        )
-        await upsert_chunk(
-            connection,
-            doc_id,
-            0,
-            text,
-            _unit_vec(f"chunk:{index}:{chunk_index}", embed_spec.DIM),
+        await store.replace_document(
+            project_id=project_id,
+            doc_key=f"doc-{index}-{chunk_index}",
+            title=f"Document {index}-{chunk_index}",
+            content_hash=hashlib.sha256(text.encode("utf-8")).digest(),
+            content_type="text/plain",
+            chunks=[(text, _unit_vec(f"chunk:{index}:{chunk_index}", embed_spec.DIM))],
         )
     await store.aclose()
     return project_id

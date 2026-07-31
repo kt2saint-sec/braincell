@@ -608,7 +608,12 @@ def cmd_stats(args: argparse.Namespace) -> None:
 
 
 def cmd_storage(args: argparse.Namespace) -> None:
-    """Report persistent-state size and an optional backup-pruning dry run."""
+    """Report persistent-state size and plan — or explicitly apply — retention.
+
+    Dry run by default; --apply executes the freshly recomputed plan under the
+    destination mutation lock. Every retention axis is disabled until the owner
+    configures it, and snapshots referenced by undo history are never deleted.
+    """
     import json
 
     root = Path(args.path).resolve()
@@ -617,13 +622,27 @@ def cmd_storage(args: argparse.Namespace) -> None:
         raise SystemExit(
             f"No BrainCell Project registered for {root}; storage inspection never mints."
         )
-    from .storage_accounting import storage_report
+    from .catalog_io import MutationBusyError
+    from .storage_accounting import (
+        RetentionRefusedError,
+        apply_retention,
+        storage_report,
+    )
 
-    report = storage_report(
-        project_id,
+    retention_kwargs = dict(
         keep_backups=args.keep_backups,
         backup_roots=[Path(item) for item in args.backup_root],
+        expire_operations_days=args.expire_operations_days,
+        expire_tombstones_days=args.expire_tombstones_days,
     )
+    if args.apply:
+        try:
+            result = apply_retention(project_id, **retention_kwargs)
+        except (RetentionRefusedError, MutationBusyError) as exc:
+            raise SystemExit(f"braincell storage: {exc}") from exc
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return
+    report = storage_report(project_id, **retention_kwargs)
     print(json.dumps(report, indent=2, sort_keys=True))
 
 
@@ -2063,6 +2082,26 @@ def main(argv: list[str] | None = None) -> None:
         action="append",
         default=[],
         help="Also account for an external recovery-backup directory (repeatable).",
+    )
+    pstorage.add_argument(
+        "--expire-operations-days",
+        type=int,
+        default=None,
+        help="Plan expiring undo/operation history older than N days "
+             "(rows only; a snapshot stays protected until its history row is gone).",
+    )
+    pstorage.add_argument(
+        "--expire-tombstones-days",
+        type=int,
+        default=None,
+        help="Plan hard-purging notes tombstoned more than N days ago "
+             "(never touches active/superseded notes or undo-referenced ones).",
+    )
+    pstorage.add_argument(
+        "--apply",
+        action="store_true",
+        help="Execute the printed plan (refused with no retention option "
+             "configured; undo-referenced snapshots are never deleted).",
     )
     pstorage.set_defaults(func=cmd_storage)
 

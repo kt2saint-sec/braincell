@@ -68,9 +68,13 @@ ollama pull qwen3-embedding:4b
 Verify:
 
 ```bash
-braincell --version
+braincell --help
 braincell-mcp --help
+pipx list
 ```
+
+`braincell --help` lists every subcommand; `pipx list` reports the installed
+`braincell-mcp` version. There is no `braincell --version` flag.
 
 Upgrade later:
 
@@ -154,9 +158,22 @@ braincell storage . --keep-backups 3 --backup-root /path/to/recovery-backups
 ```
 
 The report includes file sizes and Project row counts. Retention output is a
-dry-run plan only: it never deletes backups, indexed transcripts, operation
-history, tombstones, or curated memory. Project databases grow with indexed
-content and retained history, so use this report to review storage deliberately.
+dry-run plan by default: it never deletes backups, indexed transcripts,
+operation history, tombstones, or curated memory. Project databases grow with
+indexed content and retained history, so use this report to review storage
+deliberately.
+
+Executing retention is a separate, explicit step:
+
+```bash
+braincell storage . --keep-backups 3 --apply
+braincell storage . --expire-operations-days 180 --expire-tombstones-days 180 --apply
+```
+
+Nothing is ever expired by default — `--apply` is refused unless at least one
+retention option is configured, snapshots referenced by undo history (and
+tombstoned notes referenced by recorded operations) are never deleted, and
+active or superseded memory is never touched.
 
 ## Pools: intentional, live cross-Project reads
 
@@ -205,4 +222,4 @@ python3 -m pip install -e ".[dev,openai]"
 python3 -m pytest
 ruff check braincell tests
 ```
-The Memory Map is a PySide6/QtWebEngine application. Test its native window and bridge for desktop changes; a standalone-browser test is supplemental only. See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution requirements.
+The Memory Map is a PySide6/QtWebEngine application. Test its native window and bridge for desktop changes; a standalone-browser test is supplemental only. See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution requirements and [ARCHITECTURE.md](ARCHITECTURE.md) for the module, CLI, schema, and on-disk state map.
