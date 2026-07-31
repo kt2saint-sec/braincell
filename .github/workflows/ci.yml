@@ -12,7 +12,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, windows-latest, macos-latest]
-        python-version: ['3.11', '3.12', '3.13']
+        python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -38,11 +38,15 @@ jobs:
       - name: Smoke test built wheel
         shell: bash
         run: |
-          python -m venv /tmp/braincell-wheel
+          # RUNNER_TEMP, not /tmp: on Windows the (native) python resolves /tmp
+          # to C:\tmp while Git-Bash maps it to the MSYS mount — two different
+          # directories. Backslashes are normalized so bash and python agree.
+          VENV="${RUNNER_TEMP//\\//}/braincell-wheel"
+          python -m venv "$VENV"
           if [ "$RUNNER_OS" = "Windows" ]; then
-            BIN=/tmp/braincell-wheel/Scripts
+            BIN="$VENV/Scripts"
           else
-            BIN=/tmp/braincell-wheel/bin
+            BIN="$VENV/bin"
           fi
           "$BIN/pip" install dist/*.whl
           "$BIN/braincell" --help
@@ -57,7 +61,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
       - run: python -m pip install '.[dev]'
       - name: Full-tree Ruff technical-debt report
         run: ruff check braincell tests --statistics

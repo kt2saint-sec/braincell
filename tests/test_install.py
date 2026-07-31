@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import stat
 import subprocess
+import tomllib
 
 import pytest
 
@@ -58,7 +59,7 @@ def test_install_hook_appends_preserving_others(tmp_path, monkeypatch):
     path = _settings(tmp_path, monkeypatch, _IRONLAW)
     assert inst.install_hook("py -m braincell.family_hook") is True
 
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     ups = data["hooks"]["UserPromptSubmit"]
     cmds = [h["command"] for e in ups for h in e["hooks"]]
     assert "bash /x/check-iron-law.sh" in cmds, "iron-law hook must be preserved"
@@ -70,7 +71,7 @@ def test_install_hook_is_idempotent(tmp_path, monkeypatch):
     _settings(tmp_path, monkeypatch, _IRONLAW)
     assert inst.install_hook("py -m braincell.family_hook") is True
     assert inst.install_hook("py -m braincell.family_hook") is False  # no dup
-    data = json.loads((tmp_path / "settings.json").read_text())
+    data = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
     cmds = [h["command"] for e in data["hooks"]["UserPromptSubmit"] for h in e["hooks"]]
     assert sum("braincell.family_hook" in c for c in cmds) == 1
 
@@ -80,7 +81,7 @@ def test_uninstall_hook_removes_only_braincell(tmp_path, monkeypatch):
     inst.install_hook("py -m braincell.family_hook")
     removed = inst.uninstall_hook()
     assert removed == 1
-    data = json.loads((tmp_path / "settings.json").read_text())
+    data = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
     cmds = [h["command"] for e in data["hooks"]["UserPromptSubmit"] for h in e["hooks"]]
     assert cmds == ["bash /x/check-iron-law.sh"], "only braincell entry removed"
 
@@ -182,7 +183,9 @@ def test_codex_config_preserves_unrelated_content_permissions_and_final_newline(
     assert result["changed"] is True
     assert "# keep" in text and "fast_mode = true" in text
     assert "[mcp_servers.braincell]" in text
-    assert 'cwd = "' + str(repo.resolve()) + '"' in text
+    # Parse rather than substring-match the cwd: TOML escapes Windows
+    # backslashes, so the raw path never appears verbatim in the rendered text.
+    assert tomllib.loads(text)["mcp_servers"]["braincell"]["cwd"] == str(repo.resolve())
     assert not text.endswith("\n")
     assert stat.S_IMODE(cfg.stat().st_mode) == 0o640
     assert result["backup_path"]

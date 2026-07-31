@@ -55,7 +55,7 @@ class TestFsBrowse:
         (tmp_path / "proj_a").mkdir()
         (tmp_path / "proj_b").mkdir()
         (tmp_path / ".hidden").mkdir()
-        (tmp_path / "file.txt").write_text("x")
+        (tmp_path / "file.txt").write_text("x", encoding="utf-8")
         with TestClient(_app(tmp_path)) as client:
             r = client.get("/api/fs", params={"path": str(tmp_path)})
         assert r.status_code == 200
@@ -72,7 +72,7 @@ class TestFsBrowse:
 
     def test_404_on_file(self, tmp_path):
         f = tmp_path / "f.txt"
-        f.write_text("x")
+        f.write_text("x", encoding="utf-8")
         with TestClient(_app(tmp_path)) as client:
             assert client.get("/api/fs", params={"path": str(f)}).status_code == 404
 
@@ -289,7 +289,7 @@ class TestClear:
         pid = "01TESTPROJECTCCCCCCCCCCCCC"
         self._seed(tmp_path, pid)
         ledger = tmp_path / "transcript_ingest_ledger.json"
-        ledger.write_text("{}")
+        ledger.write_text("{}", encoding="utf-8")
         with TestClient(_app(tmp_path)) as client:
             r = client.post("/api/clear", json={"project_id": pid})
         assert r.status_code == 200

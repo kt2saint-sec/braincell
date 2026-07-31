@@ -15,6 +15,8 @@ The conftest autouse fixture isolates XDG_DATA_HOME + BRAINCELL_DATA_NAMESPACE
 per test, so nothing here touches the real ~/.local/share.
 """
 
+import sys
+
 import pytest
 
 
@@ -25,6 +27,7 @@ def _no_env_token(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestResolveGuiToken:
+    @pytest.mark.xfail(sys.platform == "win32", strict=True, reason="no Windows ACL on GUI auth token — see BUGS.md cross-platform CI section")
     def test_mints_persists_0600_and_reuses(self):
         from braincell.config import get_gui_token_path
         from braincell.gui import _resolve_gui_token

@@ -89,7 +89,7 @@ def test_enable_is_idempotent_and_conflict_safe(tmp_path):
     assert project_hook_settings_path(project, "local").read_bytes() == before
 
     settings = project_hook_settings_path(project, "local")
-    payload = json.loads(settings.read_text())
+    payload = json.loads(settings.read_text(encoding="utf-8"))
     payload["hooks"]["UserPromptSubmit"][-1]["hooks"][0]["command"] += " --changed"
     settings.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(RuntimeError, match="conflicting"):
@@ -112,7 +112,7 @@ def test_disable_removes_only_braincell_hook_and_is_idempotent(tmp_path):
     project = _project(tmp_path)
     settings = project_hook_settings_path(project, "local")
     enable_automatic_pool_recall(project, scope="local")
-    payload = json.loads(settings.read_text())
+    payload = json.loads(settings.read_text(encoding="utf-8"))
     payload["hooks"]["UserPromptSubmit"].append({"hooks": [{"command": "keep-me"}]})
     settings.write_text(json.dumps(payload), encoding="utf-8")
 
@@ -120,8 +120,8 @@ def test_disable_removes_only_braincell_hook_and_is_idempotent(tmp_path):
     second = disable_automatic_pool_recall(project, scope="local")
 
     assert first["changed"] is True and second["changed"] is False
-    assert "keep-me" in settings.read_text()
-    assert "automatic-pool-recall run" not in settings.read_text()
+    assert "keep-me" in settings.read_text(encoding="utf-8")
+    assert "automatic-pool-recall run" not in settings.read_text(encoding="utf-8")
 
 
 def test_status_is_project_and_scope_specific(tmp_path):

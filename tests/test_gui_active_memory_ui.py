@@ -256,7 +256,7 @@ class TestEmbeddedJsHygiene:
         """The shipped <script> must parse — it has zero other static analysis."""
         js = _extract_script(_page(tmp_path))
         js_file = tmp_path / "gui_script.js"
-        js_file.write_text(js)
+        js_file.write_text(js, encoding="utf-8")
         proc = subprocess.run(
             ["node", "--check", str(js_file)],
             capture_output=True,

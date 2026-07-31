@@ -20,7 +20,7 @@ def test_status_reports_legacy_residue(tmp_path, monkeypatch):
 
     unit_dir = _unit_dir(tmp_path, monkeypatch)
     unit_dir.mkdir(parents=True)
-    (unit_dir / legacy_service.UNIT_NAME).write_text("[Unit]\n")
+    (unit_dir / legacy_service.UNIT_NAME).write_text("[Unit]\n", encoding="utf-8")
     monkeypatch.setattr(
         legacy_service,
         "_systemctl",
@@ -38,7 +38,7 @@ def test_remove_is_exact_and_idempotent(tmp_path, monkeypatch):
     unit_dir = _unit_dir(tmp_path, monkeypatch)
     unit_dir.mkdir(parents=True)
     unit = unit_dir / legacy_service.UNIT_NAME
-    unit.write_text("[Unit]\n")
+    unit.write_text("[Unit]\n", encoding="utf-8")
     calls: list[list[str]] = []
 
     def fake_systemctl(args):
@@ -62,7 +62,7 @@ def test_remove_preserves_unit_when_stop_fails(tmp_path, monkeypatch):
     unit_dir = _unit_dir(tmp_path, monkeypatch)
     unit_dir.mkdir(parents=True)
     unit = unit_dir / legacy_service.UNIT_NAME
-    unit.write_text("[Unit]\n")
+    unit.write_text("[Unit]\n", encoding="utf-8")
 
     def fake_systemctl(args):
         if args[0] == "disable":

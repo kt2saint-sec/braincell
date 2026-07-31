@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 
 import pytest
 
@@ -19,6 +20,10 @@ def _start_args(path, **kw):
 # ── native_available ──────────────────────────────────────────────────────────
 
 class TestNativeAvailable:
+    @pytest.mark.skipif(
+        sys.platform != "linux",
+        reason="the display-env gate is Linux-only (native_shell.native_available)",
+    )
     def test_false_without_display(self, monkeypatch):
         monkeypatch.delenv("DISPLAY", raising=False)
         monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
@@ -293,7 +298,7 @@ class TestLauncherNativeExec:
 
         _, desktop = install_launcher(proj)
         exec_line = next(
-            ln for ln in desktop.read_text().splitlines() if ln.startswith("Exec=")
+            ln for ln in desktop.read_text(encoding="utf-8").splitlines() if ln.startswith("Exec=")
         )
         assert exec_line.endswith(f'start "{proj.resolve()}"')
         assert "--native" not in exec_line

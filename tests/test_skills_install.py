@@ -60,7 +60,7 @@ def test_fresh_install_writes_every_skill_inside_selected_project(tmp_path):
     for name, _status, path in results:
         assert path == target / name / "SKILL.md"
         assert path.exists()
-        assert path.read_text().lstrip().startswith("---"), "SKILL.md lost its frontmatter"
+        assert path.read_text(encoding="utf-8").lstrip().startswith("---"), "SKILL.md lost its frontmatter"
 
 
 def test_reinstall_is_idempotent(tmp_path):
@@ -68,13 +68,13 @@ def test_reinstall_is_idempotent(tmp_path):
     target = project / ".claude" / "skills"
     install_project_skills(project, "claude")
     before = {
-        p: p.read_text() for p in target.rglob("SKILL.md")
+        p: p.read_text(encoding="utf-8") for p in target.rglob("SKILL.md")
     }
 
     results = install_project_skills(project, "claude")
 
     assert {r[1] for r in results} == {"current"}, "re-run should report no-op, not rewrite"
-    after = {p: p.read_text() for p in target.rglob("SKILL.md")}
+    after = {p: p.read_text(encoding="utf-8") for p in target.rglob("SKILL.md")}
     assert after == before, "idempotent re-run modified a file"
 
 
@@ -84,13 +84,13 @@ def test_existing_different_skill_is_refused_not_clobbered(tmp_path):
     target = project / ".claude" / "skills"
     mine = target / "braincell-init" / "SKILL.md"
     mine.parent.mkdir(parents=True)
-    mine.write_text("---\nname: braincell-init\n---\n\nMY OWN SKILL, DO NOT TOUCH\n")
+    mine.write_text("---\nname: braincell-init\n---\n\nMY OWN SKILL, DO NOT TOUCH\n", encoding="utf-8")
 
     results = install_project_skills(project, "claude")
 
     by_name = {name: status for name, status, _ in results}
     assert by_name["braincell-init"] == "conflict"
-    assert "MY OWN SKILL, DO NOT TOUCH" in mine.read_text(), (
+    assert "MY OWN SKILL, DO NOT TOUCH" in mine.read_text(encoding="utf-8"), (
         "install_project_skills overwrote a user-authored skill"
     )
     # The non-conflicting one still installs — one conflict must not block the rest.
@@ -102,7 +102,7 @@ def test_conflict_then_resolution_installs(tmp_path):
     project = _project(tmp_path)
     mine = project / ".claude" / "skills" / "braincell-init" / "SKILL.md"
     mine.parent.mkdir(parents=True)
-    mine.write_text("different content\n")
+    mine.write_text("different content\n", encoding="utf-8")
     result = install_project_skills(project, "claude")
     assert dict((n, s) for n, s, _ in result)["braincell-init"] == "conflict"
 
@@ -163,6 +163,6 @@ def test_installed_skills_carry_no_maintainer_path(tmp_path):
     project = _project(tmp_path)
     install_project_skills(project, "claude")
     for path in (project / ".claude" / "skills").rglob("SKILL.md"):
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         assert "HOME/braincell" not in text, f"{path} references the maintainer's clone"
         assert "/home/" not in text, f"{path} contains an absolute home path"

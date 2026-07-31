@@ -65,7 +65,10 @@ def test_privileged_execution_requires_explicit_override(tmp_path, monkeypatch):
     project = tmp_path / "project"
     project.mkdir()
     (project / ".git").mkdir()
-    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    # raising=False: os.geteuid does not exist on Windows; production reads it
+    # via getattr(os, "geteuid", None), so injecting it still exercises the
+    # privileged path there.
+    monkeypatch.setattr(os, "geteuid", lambda: 0, raising=False)
     monkeypatch.delenv("SUDO_USER", raising=False)
 
     with pytest.raises(ProjectTargetError, match="--allow-privileged"):

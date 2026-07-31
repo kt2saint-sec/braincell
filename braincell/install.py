@@ -16,6 +16,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -415,15 +416,25 @@ def _atomic_write_text(path: Path, text: str, mode: int | None) -> Path | None:
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temp_path = Path(temporary)
     try:
-        if mode is not None:
-            os.fchmod(fd, stat.S_IMODE(mode))
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+        try:
+            handle = os.fdopen(fd, "w", encoding="utf-8", newline="")
+        except Exception:
+            os.close(fd)
+            raise
+        with handle:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
+        # Permissions are applied by path after the descriptor is closed:
+        # os.fchmod is absent on Windows before 3.13, and a live descriptor
+        # would block the unlink below on Windows.
+        if mode is not None:
+            os.chmod(temp_path, stat.S_IMODE(mode))
         os.replace(temp_path, path)
     except Exception:
-        temp_path.unlink(missing_ok=True)
+        # Cleanup must never replace the exception that caused it.
+        with suppress(OSError):
+            temp_path.unlink(missing_ok=True)
         raise
     return backup
 
