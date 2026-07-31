@@ -1,7 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (c) 2026 Karl Toussaint (kt2saint)
 """
-gui.py — BrainCell local web viewer (Phase K).
+gui.py — FastAPI application behind the native Memory Map.
+
+Not a browser product: the app is served on 127.0.0.1 exclusively to the
+native Memory Map shell (``native_shell.py``). The historical "local web
+viewer (Phase K)" framing is retired.
 
 A thin FastAPI read-mostly viewer/manager over the brain.  Reuses
 braincell.store, braincell.project_registry, braincell.embed, braincell.config,

@@ -81,3 +81,21 @@ Found during the same pass and also applied:
 - `orphan reconciliation` now anchors on the path↔ULID registry loader
   (`braincell/project_registry.py:76`) rather than the unrelated path-safety
   validator.
+
+## Stale docstrings — corrected 2026-07-31
+
+Three module docstrings contradicted the binding Project-only architecture and
+were corrected in place; the original wording is preserved here.
+
+- `braincell/pool.py:4` read "merge existing per-project ``braincell.db``
+  files into the global brain … the cheap alternative to ``build --mode
+  global``, which re-ingests and re-embeds every repo." Corrected to state the
+  module is a retired, unwired surface retained for `legacy_recovery.py`, and
+  that `build --mode` accepts only `project`.
+- `braincell/gui.py:4` read "BrainCell local web viewer (Phase K)." Corrected
+  to "FastAPI application behind the native Memory Map" with an explicit
+  not-a-browser-product note.
+- `braincell/config.py:150` (`get_global_db_path`) instructed "created
+  explicitly (``braincell build --mode global``)" — a command that cannot run.
+  Corrected to mark the global brain retired and the path retained for legacy
+  recovery and tests.

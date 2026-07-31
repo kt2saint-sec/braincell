@@ -161,7 +161,7 @@ the namespace is overridable with `BRAINCELL_DATA_NAMESPACE`.
 Project-local files BrainCell writes inside a connected Project:
 `.codex/config.toml`, `.vscode/mcp.json`, `.mcp.json` (Claude project scope),
 `.claude/settings.local.json` or `.claude/settings.json` (Automatic Pool
-recall), `.claude/skills/`, `.agents/skills/`.
+recall), `.claude/skills` and `.agents/skills` directories.
 
 ## Document set
 
@@ -176,9 +176,12 @@ One home per fact. When these disagree, the listed owner wins.
 | `CHANGELOG.md` | Release-facing verified changes |
 | `BUGS.md` | Verified faults, with `file:line` anchors |
 | `CONTRIBUTING.md` | Contribution rules, CLA, dev checks, invariants for contributors |
-| `AGENTS.md` | Repair-worktree agent instructions and the pre-fix evidence ledger |
-| `CLAUDE.md` | Worktree scope and authority |
+| `AGENTS.md` (internal, gitignored) | Repair-worktree agent instructions and the pre-fix evidence ledger |
 | `COMMERCIAL-LICENSE.md` | Dual-licensing terms |
+
+A second internal, gitignored instructions file (the Claude one) owns worktree
+scope and authority; like `AGENTS.md` it exists only in working copies and is
+never published.
 
 `AGENTS.md` line anchors are deliberately *historical* — they record where each
 fault lived before its repair so regressions stay traceable. Do not "correct"

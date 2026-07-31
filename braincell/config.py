@@ -147,10 +147,12 @@ def get_tour_seen_path() -> Path:
 
 
 def get_global_db_path() -> Path:
-    """Return ``~/.local/share/<namespace>/global/braincell.db`` — the shared global brain.
+    """Return ``~/.local/share/<namespace>/global/braincell.db`` — the RETIRED shared global brain.
 
     Parallel to the workspace-level registry/families paths: NOT under ``projects/``.
-    The global brain must be created explicitly (``braincell build --mode global``)
-    before any tool or ``open_store`` can open it.
+    Retired surface: ``braincell build --mode global`` no longer exists
+    (``--mode`` accepts only ``project``), so nothing creates this DB anymore.
+    The path is retained for ``legacy_recovery.py`` and the retired pooling
+    tests; normal runtime never opens it.
     """
     return _xdg_data_home() / DATA_NAMESPACE / "global" / "braincell.db"
