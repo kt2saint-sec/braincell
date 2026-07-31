@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import uuid
 from collections.abc import Callable
 from contextlib import redirect_stdout
 from dataclasses import dataclass, field
@@ -39,6 +40,7 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 
 from .embed import embed_texts
+from .gui_mutation import GuiMutationCoordinator
 from .log import get as _get_log
 from .store import SqliteStore
 
@@ -137,9 +139,10 @@ class _LineWriter:
 class OpsJobManager:
     """Runs one maintenance worker at a time in a thread; keeps the last job."""
 
-    def __init__(self) -> None:
+    def __init__(self, coordinator: GuiMutationCoordinator | None = None) -> None:
         self.job: OpsJob | None = None
         self._task: asyncio.Task | None = None
+        self._coordinator = coordinator or GuiMutationCoordinator()
 
     @property
     def busy(self) -> bool:
@@ -148,6 +151,7 @@ class OpsJobManager:
     async def start(self, name: str, worker: Callable[[], dict | None]) -> OpsJob:
         if self.busy:
             raise RuntimeError("A maintenance job is already running.")
+        self._coordinator.claim(f"maintenance:{name}")
         job = OpsJob(name=name)
         self.job = job
         self._task = asyncio.ensure_future(self._run(job, worker))
@@ -162,6 +166,7 @@ class OpsJobManager:
             job.state = "error"
         finally:
             job.finished = time.time()
+            self._coordinator.release(f"maintenance:{job.name}")
 
     @staticmethod
     def _captured(job: OpsJob, worker: Callable[[], dict | None]) -> dict | None:
@@ -188,23 +193,22 @@ def run_consolidate(
     db_path: Path, project_id: str, threshold: float, apply: bool, llm: bool,
 ) -> dict | None:
     """`braincell consolidate` core (cli._consolidate_async + auto-backup)."""
-    from .cli import _auto_backup, _consolidate_async
+    from .cli import _consolidate_async, _required_auto_backup
 
     backup: str | None = None
-    if apply:
-        bp = _auto_backup(db_path, "consolidate")
-        if bp is not None:
-            backup = str(bp)
-            print(f"Pre-merge backup: {bp}")
-        else:
-            print("Proceeding WITHOUT a pre-merge backup.")
+
+    def create_backup() -> str:
+        nonlocal backup
+        backup = _required_auto_backup(db_path, "consolidate")
+        return backup
 
     store = SqliteStore(db_path)
     store.assert_schema_version()
     try:
         asyncio.run(_consolidate_async(
             store, project_id, threshold=threshold, apply=apply,
-            use_llm=llm, verbose=False, backup_path=backup,
+            use_llm=llm, verbose=False,
+            backup_factory=create_backup if apply else None,
         ))
     finally:
         store.close()
@@ -216,18 +220,16 @@ def run_reflect(
     since_days: int | None, apply: bool, model: str | None,
 ) -> dict | None:
     """`braincell reflect` core (reflect.reflect + auto-backup)."""
-    from .cli import _auto_backup
+    from .cli import _required_auto_backup
     from .embed import embed_query_async
     from .reflect import reflect
 
     backup: str | None = None
-    if apply:
-        bp = _auto_backup(db_path, "reflect")
-        if bp is not None:
-            backup = str(bp)
-            print(f"Pre-reflect backup: {bp}")
-        else:
-            print("Proceeding WITHOUT a pre-reflect backup.")
+
+    def create_backup() -> str:
+        nonlocal backup
+        backup = _required_auto_backup(db_path, "reflect")
+        return backup
 
     store = SqliteStore(db_path)
     store.assert_schema_version()
@@ -236,7 +238,8 @@ def run_reflect(
             store, project_id, threshold=threshold, since_days=since_days,
             apply=apply, model=model,
             embed_fn=embed_query_async if apply else None,
-            verbose=False, backup_path=backup,
+            verbose=False,
+            backup_factory=create_backup if apply else None,
         ))
     finally:
         store.close()
@@ -295,12 +298,26 @@ def run_reembed_notes(db_path: Path, project_id: str) -> dict | None:
     return {"reembedded": count}
 
 
+def _run_locked(
+    db_path: Path, operation: str, worker: Callable[[], Optional[dict]],
+) -> Optional[dict]:
+    """Run a maintenance worker under the cross-process destination lock."""
+    from .catalog_io import mutation_lock
+
+    with mutation_lock(db_path, operation=operation):
+        return worker()
+
+
 # ── Route mounting (called by gui.create_app when allow_writes=True) ──────────
 
 def mount_ops_api(
-    app: FastAPI, *, db_path: Path, manager: OpsJobManager, connected_project_id: str
+    app: FastAPI, *, db_path: Path, manager: OpsJobManager,
+    connected_project_id: str,
+    coordinator: Optional[GuiMutationCoordinator] = None,
 ) -> None:
     """Register the maintenance-command routes on *app*."""
+
+    mutation_coordinator = coordinator or manager._coordinator
 
     def _require_project(project_id: str) -> None:
         if not connected_project_id:  # isolated factory compatibility for unit tests
@@ -323,8 +340,12 @@ def mount_ops_api(
         _require_project(body.project_id)
         return await _start(
             "consolidate",
-            lambda: run_consolidate(
-                db_path, body.project_id, body.threshold, body.apply, body.llm,
+            lambda: _run_locked(
+                db_path,
+                "maintenance:consolidate",
+                lambda: run_consolidate(
+                    db_path, body.project_id, body.threshold, body.apply, body.llm,
+                ),
             ),
         )
 
@@ -333,9 +354,13 @@ def mount_ops_api(
         _require_project(body.project_id)
         return await _start(
             "reflect",
-            lambda: run_reflect(
-                db_path, body.project_id, body.threshold, body.since_days,
-                body.apply, body.model,
+            lambda: _run_locked(
+                db_path,
+                "maintenance:reflect",
+                lambda: run_reflect(
+                    db_path, body.project_id, body.threshold, body.since_days,
+                    body.apply, body.model,
+                ),
             ),
         )
 
@@ -344,9 +369,13 @@ def mount_ops_api(
         _require_project(body.project_id)
         return await _start(
             "contradictions",
-            lambda: run_contradictions(
-                db_path, body.project_id, body.threshold, body.limit,
-                body.no_llm, body.model,
+            lambda: _run_locked(
+                db_path,
+                "maintenance:contradictions",
+                lambda: run_contradictions(
+                    db_path, body.project_id, body.threshold, body.limit,
+                    body.no_llm, body.model,
+                ),
             ),
         )
 
@@ -355,7 +384,11 @@ def mount_ops_api(
         _require_project(body.project_id)
         return await _start(
             "reembed-notes",
-            lambda: run_reembed_notes(db_path, body.project_id),
+            lambda: _run_locked(
+                db_path,
+                "maintenance:reembed-notes",
+                lambda: run_reembed_notes(db_path, body.project_id),
+            ),
         )
 
     @app.get("/api/ops/status")
@@ -368,8 +401,8 @@ def mount_ops_api(
         from .cli import _vacuum_into
         if not db_path.exists():
             raise HTTPException(409, "No brain built yet — nothing to back up.")
-        ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-        dest = db_path.parent / f"braincell-backup-{ts}.db"
+        ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
+        dest = db_path.parent / f"braincell-backup-{ts}-{uuid.uuid4().hex[:8]}.db"
         import anyio
         try:
             await anyio.to_thread.run_sync(_vacuum_into, db_path, dest)
@@ -392,8 +425,18 @@ def mount_ops_api(
         """Reverse a recorded merge operation — same as `braincell memory undo`."""
         _require_project(body.project_id)
         store: SqliteStore = request.app.state.store
+        from .catalog_io import mutation_lock
+
         try:
-            result = await store.undo_operation(body.op_id, body.project_id)
-        except ValueError as exc:
-            raise HTTPException(409, str(exc))
+            mutation_coordinator.claim("memory-undo")
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        try:
+            with mutation_lock(db_path, operation="memory-undo"):
+                try:
+                    result = await store.undo_operation(body.op_id, body.project_id)
+                except ValueError as exc:
+                    raise HTTPException(409, str(exc)) from exc
+        finally:
+            mutation_coordinator.release("memory-undo")
         return {"ok": True, **result}

@@ -18,6 +18,7 @@ Design constraints:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -26,6 +27,7 @@ import sqlite3
 import sys
 import time
 from collections.abc import Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -291,7 +293,7 @@ class Store(Protocol):
 
     async def search(
         self,
-        qvec: np.ndarray,
+        qvec: Optional[np.ndarray],
         qtext: str,
         project: str | None,
         k: int,
@@ -843,6 +845,12 @@ class SqliteStore:
         self._read_only = read_only
         # single aiosqlite connection (opened lazily on first async call)
         self._conn: aiosqlite.Connection | None = None
+        # Writes use a separate connection. One task owns it from BEGIN through
+        # commit/rollback, while reads continue on _conn with SQLite isolation.
+        self._write_conn: aiosqlite.Connection | None = None
+        self._conn_init_lock = asyncio.Lock()
+        self._write_conn_init_lock = asyncio.Lock()
+        self._write_lock = asyncio.Lock()
         # FTS5 availability (probed in assert_schema_version)
         self._fts5_ok: bool = True
         # Instrumentation: rolling window of _vector_search decode+matmul times
@@ -1124,27 +1132,70 @@ class SqliteStore:
         accidental write early; ``journal_mode`` is never set on a RO handle.
         """
         if self._conn is None:
-            if self._read_only:
-                uri = f"file:{Path(self._db_path).resolve().as_posix()}?mode=ro"
-                self._conn = await aiosqlite.connect(uri, uri=True)
-                await self._conn.execute("PRAGMA query_only=ON")
-                await self._conn.execute("PRAGMA busy_timeout=5000")
-                await self._conn.execute("PRAGMA foreign_keys=ON")
-            else:
-                self._conn = await aiosqlite.connect(str(self._db_path))
-                await self._conn.execute("PRAGMA busy_timeout=30000")
-                await self._conn.execute("PRAGMA journal_mode=WAL")
-                # FK enforcement is per-CONNECTION and off by default, so every
-                # handle must opt in or `bc_note_links` cascade never fires.
-                await self._conn.execute("PRAGMA foreign_keys=ON")
-            self._conn.row_factory = aiosqlite.Row
+            async with self._conn_init_lock:
+                if self._conn is None:
+                    self._conn = await self._open_async_connection(read_only=self._read_only)
         return self._conn
+
+    async def _open_async_connection(
+        self, *, read_only: bool,
+    ) -> aiosqlite.Connection:
+        """Open and configure one async connection without publishing it."""
+        if read_only:
+            uri = f"file:{Path(self._db_path).resolve().as_posix()}?mode=ro"
+            connection = await aiosqlite.connect(uri, uri=True)
+            await connection.execute("PRAGMA query_only=ON")
+            await connection.execute("PRAGMA busy_timeout=5000")
+        else:
+            connection = await aiosqlite.connect(str(self._db_path))
+            await connection.execute("PRAGMA busy_timeout=30000")
+            await connection.execute("PRAGMA journal_mode=WAL")
+        # FK enforcement is per-connection and off by default.
+        await connection.execute("PRAGMA foreign_keys=ON")
+        connection.row_factory = aiosqlite.Row
+        return connection
+
+    async def _write_conn_get(self) -> aiosqlite.Connection:
+        """Return the dedicated writer connection; read-only stores cannot write."""
+        if self._read_only:
+            raise PermissionError(f"BrainCell store is read-only: {self._db_path}")
+        if self._write_conn is None:
+            async with self._write_conn_init_lock:
+                if self._write_conn is None:
+                    self._write_conn = await self._open_async_connection(read_only=False)
+        return self._write_conn
+
+    @asynccontextmanager
+    async def _write_transaction(self, *, immediate: bool = True):
+        """Give one coroutine exclusive ownership of the writer transaction.
+
+        The dedicated writer connection prevents normal reads from seeing
+        uncommitted state. The task lock prevents another writer from entering,
+        committing, or rolling back this task's transaction.
+        """
+        async with self._write_lock:
+            connection = await self._write_conn_get()
+            await connection.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
+            try:
+                yield connection
+            except BaseException:
+                await connection.rollback()
+                raise
+            else:
+                try:
+                    await connection.commit()
+                except BaseException:
+                    # SQLite can leave a transaction active when COMMIT fails
+                    # (for example SQLITE_BUSY). Never release ownership with
+                    # the shared writer connection still inside that transaction.
+                    await connection.rollback()
+                    raise
 
     # ── search ────────────────────────────────────────────────────────────────
 
     async def search(
         self,
-        qvec: np.ndarray,
+        qvec: Optional[np.ndarray],
         qtext: str,
         project: str | None,
         k: int,
@@ -1165,6 +1216,8 @@ class SqliteStore:
         fts_hits: list[tuple[int, float]] = []
 
         if mode in ("semantic", "hybrid"):
+            if qvec is None:
+                raise ValueError(f"{mode} search requires a query embedding.")
             vec_hits = await self._vector_search(cf, qvec, project, fetch_k)
 
         if mode in ("keyword", "hybrid"):
@@ -1610,10 +1663,9 @@ class SqliteStore:
                 f"`braincell build --reembed`."
             )
 
-        mem = await self._conn_get()
         tags_json = json.dumps(tags or [])
         emb_blob = _vec_to_blob(embedding) if embedding is not None else None
-        try:
+        async with self._write_transaction() as mem:
             # Single transaction: the note row and its FTS index entry commit
             # TOGETHER, so a crash can never leave a durable note that is
             # permanently keyword-unsearchable (previously separate commits).
@@ -1623,10 +1675,6 @@ class SqliteStore:
             # Auto-link this note to similar recent notes (no-op when NULL vec
             # or links unavailable); commits in the same transaction as the note.
             await self._autolink_note(mem, note_id, project, embedding)
-        except BaseException:
-            await mem.rollback()  # unexpected — don't leave a half-write
-            raise
-        await mem.commit()
         return str(note_id)
 
     # ── shared non-committing write primitives (atomic merges) ────────────────
@@ -1661,9 +1709,21 @@ class SqliteStore:
                     (note_id, content),
                 )
             except sqlite3.OperationalError as exc:
-                # FTS5 unavailable at runtime (race vs the _fts5_ok probe). The
-                # note still commits; only keyword indexing is skipped.
-                log.warning("FTS5 memory_fts update failed (non-fatal): %s", exc)
+                message = str(exc).lower()
+                if (
+                    "no such table: memory_fts" in message
+                    or "no such module: fts5" in message
+                ):
+                    # A verified capability loss is recoverable: mark FTS
+                    # unavailable so recall takes its recency path.
+                    self._fts5_ok = False
+                    log.warning(
+                        "FTS5 became unavailable; using recency recall: %s", exc
+                    )
+                else:
+                    # An individual indexing failure is not capability loss.
+                    # Propagate so _write_transaction rolls the base note back.
+                    raise
         return note_id
 
     async def _tombstone_note_tx(
@@ -1701,47 +1761,35 @@ class SqliteStore:
         In both cases the ownership check (project_id match) is enforced —
         a note owned by another project is never touched.
         """
-        mem = await self._conn_get()
-        if not hard:
-            # Soft-delete: stamp deleted_at only when the row is live (owned + not yet
-            # tombstoned). rowcount == 0 means not-found / wrong-project / already-dead.
-            changed = await self._tombstone_note_tx(mem, note_id, project_id)
-            await mem.commit()
-            return changed > 0
+        async with self._write_transaction() as mem:
+            if not hard:
+                # Soft-delete: stamp deleted_at only when the row is live (owned + not yet
+                # tombstoned). rowcount == 0 means not-found / wrong-project / already-dead.
+                changed = await self._tombstone_note_tx(mem, note_id, project_id)
+                return changed > 0
 
-        # Hard-delete: verify ownership first, then remove FTS entry then the row.
-        row = await (await mem.execute(
-            "SELECT id FROM memory_notes WHERE id = ? AND project_id = ?",
-            (note_id, project_id),
-        )).fetchone()
-        if row is None:
-            return False
-        # External-content FTS5: delete the index entry FIRST (while the content
-        # row still holds the text to un-index), then the note row — mirrors the
-        # ordering used for bc_chunks_fts.
-        if self._fts5_ok:
-            try:
-                await mem.execute("DELETE FROM memory_fts WHERE rowid = ?", (note_id,))
-            except sqlite3.OperationalError as exc:
-                log.warning("FTS5 memory_fts delete failed (non-fatal): %s", exc)
-        # FK: `superseded_by` is a self-reference with no ON DELETE action, so a
-        # note that some other note was superseded BY cannot be deleted while that
-        # pointer stands (verified: IntegrityError). Clearing it first is the
-        # explicit policy — the survivor keeps its content, it just loses a dangling
-        # link to a purged replacement. `bc_note_links` needs no such step: its
-        # foreign keys cascade, so edges go with the note.
-        # A survivor whose replacement is purged goes back to being current
-        # truth — so its status returns to 'active' unless it was independently
-        # tombstoned.
-        await mem.execute(
-            "UPDATE memory_notes SET superseded_by = NULL, "
-            "status = CASE WHEN status = 'superseded' THEN 'active' ELSE status END "
-            "WHERE superseded_by = ?",
-            (note_id,),
-        )
-        await mem.execute("DELETE FROM memory_notes WHERE id = ?", (note_id,))
-        await mem.commit()
-        return True
+            # Hard-delete: verify ownership first, then remove FTS entry then the row.
+            row = await (await mem.execute(
+                "SELECT id FROM memory_notes WHERE id = ? AND project_id = ?",
+                (note_id, project_id),
+            )).fetchone()
+            if row is None:
+                return False
+            # External-content FTS5: delete the index entry FIRST (while the content
+            # row still holds the text to un-index), then the note row.
+            if self._fts5_ok:
+                try:
+                    await mem.execute("DELETE FROM memory_fts WHERE rowid = ?", (note_id,))
+                except sqlite3.OperationalError as exc:
+                    log.warning("FTS5 memory_fts delete failed (non-fatal): %s", exc)
+            await mem.execute(
+                "UPDATE memory_notes SET superseded_by = NULL, "
+                "status = CASE WHEN status = 'superseded' THEN 'active' ELSE status END "
+                "WHERE superseded_by = ?",
+                (note_id,),
+            )
+            await mem.execute("DELETE FROM memory_notes WHERE id = ?", (note_id,))
+            return True
 
     async def supersede(
         self,
@@ -1792,14 +1840,12 @@ class SqliteStore:
                 f"`braincell build --reembed`."
             )
 
-        mem = await self._conn_get()
         # The whole read-modify-write runs in ONE immediate transaction so two
         # writers racing to supersede the same note cannot both win. BEGIN IMMEDIATE
         # takes SQLite's write lock up front (busy_timeout applies), and the final
         # UPDATE is a compare-and-set: it only matches while the note is still live
         # and unsuperseded, so the loser's rowcount is 0 and it rolls back.
-        await mem.execute("BEGIN IMMEDIATE")
-        try:
+        async with self._write_transaction() as mem:
             old = await (await mem.execute(
                 "SELECT kind, tags, confidence, deleted_at, superseded_by FROM memory_notes "
                 "WHERE id = ? AND project_id = ?",
@@ -1841,10 +1887,6 @@ class SqliteStore:
                 )
             # Auto-link the new note to similar recent notes (no-op when NULL vec).
             await self._autolink_note(mem, new_id, project_id, embedding)
-        except BaseException:
-            await mem.rollback()  # nothing half-written: note, FTS row and pointer all revert
-            raise
-        await mem.commit()
         return new_id
 
     # ── Merge operation log (undo for consolidate/reflect) ────────────────────
@@ -1858,13 +1900,12 @@ class SqliteStore:
         """Open a merge operation and return its id (the `<op#>` users pass to undo)."""
         if kind not in ("consolidate", "reflect"):
             raise ValueError(f"Invalid operation kind '{kind}'.")
-        mem = await self._conn_get()
-        cur = await mem.execute(
-            "INSERT INTO bc_operations(kind, project_id, backup_path) VALUES (?, ?, ?)",
-            (kind, project_id, backup_path),
-        )
-        await mem.commit()
-        return int(cur.lastrowid)
+        async with self._write_transaction() as mem:
+            cur = await mem.execute(
+                "INSERT INTO bc_operations(kind, project_id, backup_path) VALUES (?, ?, ?)",
+                (kind, project_id, backup_path),
+            )
+            return int(cur.lastrowid)
 
     async def _record_operation_note_tx(
         self, mem: aiosqlite.Connection, op_id: int, note_id: int, action: str,
@@ -1892,9 +1933,8 @@ class SqliteStore:
         keeps the FIRST snapshot, so re-recording after a partial mutation cannot
         overwrite the true prior state with an already-mutated one.
         """
-        mem = await self._conn_get()
-        await self._record_operation_note_tx(mem, op_id, note_id, action)
-        await mem.commit()
+        async with self._write_transaction() as mem:
+            await self._record_operation_note_tx(mem, op_id, note_id, action)
 
     # ── Atomic cluster merges (all-or-nothing per cluster) ────────────────────
     # Previously, `consolidate --apply` / `reflect --apply` issued each snapshot,
@@ -1939,10 +1979,8 @@ class SqliteStore:
                     f"{len(merged_content)} chars, over the {_MAX_NOTE_CHARS}-char limit."
                 )
 
-        mem = await self._conn_get()
-        await mem.execute("BEGIN IMMEDIATE")
         new_id: int | None = None
-        try:
+        async with self._write_transaction() as mem:
             if merged_content is None:
                 for nid in cluster_ids:
                     if nid == representative_id:
@@ -1982,10 +2020,6 @@ class SqliteStore:
                     )
                 for nid in cluster_ids:
                     await self._tombstone_note_tx(mem, nid, project_id)
-        except BaseException:
-            await mem.rollback()  # the whole cluster reverts — no partial merge
-            raise
-        await mem.commit()
         return new_id
 
     async def reflect_cluster_atomic(
@@ -2024,9 +2058,7 @@ class SqliteStore:
             )
 
         emb_blob = _vec_to_blob(embedding) if embedding is not None else None
-        mem = await self._conn_get()
-        await mem.execute("BEGIN IMMEDIATE")
-        try:
+        async with self._write_transaction() as mem:
             synth_id = await self._insert_note_tx(
                 mem, project_id, kind, content, "[]", confidence, emb_blob,
             )
@@ -2045,27 +2077,22 @@ class SqliteStore:
                 )
                 await self._tombstone_note_tx(mem, nid, project_id)
             await self._autolink_note(mem, synth_id, project_id, embedding)
-        except BaseException:
-            await mem.rollback()  # synthesis, snapshots and retirements all revert
-            raise
-        await mem.commit()
         return synth_id
 
     async def finalize_operation(self, op_id: int) -> int:
         """Stamp the operation's note_count. Returns it. Drops an empty operation so
         a dry-run-like no-op never litters `memory log`."""
-        mem = await self._conn_get()
-        row = await (await mem.execute(
-            "SELECT COUNT(*) FROM bc_operation_notes WHERE op_id = ?", (op_id,),
-        )).fetchone()
-        count = int(row[0]) if row else 0
-        if count == 0:
-            await mem.execute("DELETE FROM bc_operations WHERE id = ?", (op_id,))
-        else:
-            await mem.execute(
-                "UPDATE bc_operations SET note_count = ? WHERE id = ?", (count, op_id),
-            )
-        await mem.commit()
+        async with self._write_transaction() as mem:
+            row = await (await mem.execute(
+                "SELECT COUNT(*) FROM bc_operation_notes WHERE op_id = ?", (op_id,),
+            )).fetchone()
+            count = int(row[0]) if row else 0
+            if count == 0:
+                await mem.execute("DELETE FROM bc_operations WHERE id = ?", (op_id,))
+            else:
+                await mem.execute(
+                    "UPDATE bc_operations SET note_count = ? WHERE id = ?", (count, op_id),
+                )
         return count
 
     async def list_operations(
@@ -2106,9 +2133,7 @@ class SqliteStore:
         and is reported as 'skipped_changed' instead of being clobbered. Runs in one
         BEGIN IMMEDIATE transaction, mirroring `supersede`'s discipline.
         """
-        mem = await self._conn_get()
-        await mem.execute("BEGIN IMMEDIATE")
-        try:
+        async with self._write_transaction() as mem:
             op = await (await mem.execute(
                 "SELECT kind, project_id, undone_at FROM bc_operations WHERE id = ?",
                 (op_id,),
@@ -2176,10 +2201,6 @@ class SqliteStore:
                 "UPDATE bc_operations SET undone_at = datetime('now') WHERE id = ?",
                 (op_id,),
             )
-        except BaseException:
-            await mem.rollback()
-            raise
-        await mem.commit()
         return {
             "op_id": op_id, "kind": op[0], "restored": restored,
             "skipped_changed": skipped, "missing": missing,
@@ -2721,19 +2742,25 @@ class SqliteStore:
             batch = null_rows[i : i + batch_size]
             texts = [r[1] for r in batch]
             embeddings = embed_fn(texts)
-            for (note_id, _), vec in zip(batch, embeddings):
-                if vec.shape[0] != embed_spec.DIM:
-                    raise ValueError(
-                        f"BrainCell reembed_notes: embedding is {vec.shape[0]}-d but "
-                        f"embed_spec.DIM={embed_spec.DIM} ({embed_spec.FINGERPRINT}). "
-                        f"Aborting backfill — provider/model mismatch."
-                    )
-                await mem.execute(
-                    "UPDATE memory_notes SET embedding = ? WHERE id = ?",
-                    (_vec_to_blob(vec), note_id),
+            if len(embeddings) != len(batch):
+                raise ValueError(
+                    "BrainCell reembed_notes: provider returned "
+                    f"{len(embeddings)} embeddings for {len(batch)} inputs."
                 )
-                count += 1
-            await mem.commit()
+            async with self._write_transaction() as writer:
+                for (note_id, _), vec in zip(batch, embeddings, strict=True):
+                    if vec.shape[0] != embed_spec.DIM:
+                        raise ValueError(
+                            f"BrainCell reembed_notes: embedding is {vec.shape[0]}-d but "
+                            f"embed_spec.DIM={embed_spec.DIM} ({embed_spec.FINGERPRINT}). "
+                            f"Aborting backfill — provider/model mismatch."
+                        )
+                    await writer.execute(
+                        "UPDATE memory_notes SET embedding = ? "
+                        "WHERE id = ? AND embedding IS NULL",
+                        (_vec_to_blob(vec), note_id),
+                    )
+                    count += 1
         return count
 
     # ── Cluster detection + deterministic merge ───────────────────────────────
@@ -2872,6 +2899,196 @@ class SqliteStore:
                 continue
             await self.forget(note_id, project, hard=False)
 
+    # ── atomic document replacement ───────────────────────────────────────────
+
+    async def document_is_current(
+        self,
+        project_id: str,
+        doc_key: str,
+        content_hash: bytes,
+        *,
+        expected_chunks: int,
+    ) -> bool:
+        """Return whether a document has exactly the completed requested state.
+
+        A matching document hash alone is not a successful ingest checkpoint:
+        every expected chunk must exist and have a non-null embedding, and no
+        trailing chunk from an older, longer version may remain.
+        """
+        cf = await self._conn_get()
+        row = await (
+            await cf.execute(
+                "SELECT d.content_hash, COUNT(c.id), "
+                "COALESCE(SUM(c.embedding IS NOT NULL), 0) "
+                "FROM bc_documents d "
+                "LEFT JOIN bc_chunks c ON c.document_id = d.id "
+                "WHERE d.project_id=? AND d.doc_key=? "
+                "GROUP BY d.id",
+                (project_id, doc_key),
+            )
+        ).fetchone()
+        if row is None:
+            return False
+        stored_hash = bytes(row[0]) if row[0] is not None else None
+        return (
+            stored_hash == content_hash
+            and int(row[1]) == expected_chunks
+            and int(row[2]) == expected_chunks
+        )
+
+    async def replace_document(
+        self,
+        *,
+        project_id: str,
+        doc_key: str,
+        title: str,
+        content_hash: bytes,
+        content_type: str,
+        chunks: Sequence[tuple[str, np.ndarray]],
+        commit_sha: Optional[str] = None,
+        run_id: Optional[str] = None,
+        metadata: Optional[dict] = None,
+    ) -> tuple[int, bool]:
+        """Atomically replace one document and its exact chunk/FTS set.
+
+        All embeddings are validated and serialized before the write lock is
+        acquired. A validation error or any database failure therefore leaves
+        the prior hash, chunks, and FTS entries intact.
+        """
+        prepared: list[tuple[int, str, bytes, bytes]] = []
+        for chunk_index, (chunk_text, embedding) in enumerate(chunks):
+            vector = np.asarray(embedding, dtype=np.float32)
+            if vector.ndim != 1 or vector.shape[0] != embed_spec.DIM:
+                actual = (
+                    f"{vector.shape[0]}-d"
+                    if vector.ndim == 1
+                    else f"shape {vector.shape}"
+                )
+                raise ValueError(
+                    f"BrainCell write refused: chunk embedding is {actual} but "
+                    f"embed_spec.DIM={embed_spec.DIM} ({embed_spec.FINGERPRINT}). "
+                    "Refusing to mix vector spaces in one store."
+                )
+            if not np.all(np.isfinite(vector)):
+                raise ValueError(
+                    "BrainCell write refused: chunk embedding contains non-finite values."
+                )
+            norm = float(np.linalg.norm(vector))
+            if not np.isfinite(norm) or norm == 0.0:
+                raise ValueError(
+                    "BrainCell write refused: chunk embedding has zero or non-finite norm."
+                )
+            prepared.append(
+                (
+                    chunk_index,
+                    chunk_text,
+                    hashlib.sha256(chunk_text.encode()).digest(),
+                    _vec_to_blob(vector),
+                )
+            )
+
+        expected_chunks = len(prepared)
+        if await self.document_is_current(
+            project_id,
+            doc_key,
+            content_hash,
+            expected_chunks=expected_chunks,
+        ):
+            cf = await self._conn_get()
+            row = await (
+                await cf.execute(
+                    "SELECT id FROM bc_documents WHERE project_id=? AND doc_key=?",
+                    (project_id, doc_key),
+                )
+            ).fetchone()
+            if row is not None:
+                return int(row[0]), False
+
+        now = datetime.now().isoformat()
+        meta_json = json.dumps(metadata or {})
+        async with self._write_transaction() as cf:
+            row = await (
+                await cf.execute(
+                    "SELECT id FROM bc_documents WHERE project_id=? AND doc_key=?",
+                    (project_id, doc_key),
+                )
+            ).fetchone()
+            if row is None:
+                cursor = await cf.execute(
+                    "INSERT INTO bc_documents "
+                    "(project_id, doc_key, title, content_hash, content_type, "
+                    "commit_sha, run_id, created_at, updated_at, metadata) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        project_id,
+                        doc_key,
+                        title,
+                        content_hash,
+                        content_type,
+                        commit_sha,
+                        run_id,
+                        now,
+                        now,
+                        meta_json,
+                    ),
+                )
+                document_id = int(cursor.lastrowid)
+            else:
+                document_id = int(row[0])
+                old_chunks = await (
+                    await cf.execute(
+                        "SELECT id FROM bc_chunks WHERE document_id=?",
+                        (document_id,),
+                    )
+                ).fetchall()
+                if self._fts5_ok:
+                    for old_chunk in old_chunks:
+                        await cf.execute(
+                            "DELETE FROM bc_chunks_fts WHERE rowid=?",
+                            (int(old_chunk[0]),),
+                        )
+                await cf.execute(
+                    "DELETE FROM bc_chunks WHERE document_id=?",
+                    (document_id,),
+                )
+                await cf.execute(
+                    "UPDATE bc_documents SET title=?, content_hash=?, "
+                    "content_type=?, commit_sha=?, run_id=?, updated_at=?, metadata=? "
+                    "WHERE id=?",
+                    (
+                        title,
+                        content_hash,
+                        content_type,
+                        commit_sha,
+                        run_id,
+                        now,
+                        meta_json,
+                        document_id,
+                    ),
+                )
+
+            for chunk_index, chunk_text, chunk_hash, emb_blob in prepared:
+                cursor = await cf.execute(
+                    "INSERT INTO bc_chunks "
+                    "(document_id, chunk_index, chunk_text, chunk_hash, embedding, run_id) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        document_id,
+                        chunk_index,
+                        chunk_text,
+                        chunk_hash,
+                        emb_blob,
+                        run_id,
+                    ),
+                )
+                if self._fts5_ok:
+                    await cf.execute(
+                        "INSERT INTO bc_chunks_fts(rowid, chunk_text) VALUES (?, ?)",
+                        (int(cursor.lastrowid), chunk_text),
+                    )
+
+        return document_id, True
+
     # ── list_documents ──────────────────────────────────────────────────────────
 
     _LIST_DOCUMENTS_MAX_LIMIT: int = 200
@@ -2929,12 +3146,16 @@ class SqliteStore:
         Preferred in async context (e.g. server lifespan finally block).
         Safe to call multiple times; subsequent calls are no-ops.
         """
-        if self._conn is not None:
-            try:
-                await self._conn.close()
-            except Exception as exc:  # noqa: BLE001 — close is best-effort teardown; the handle is dropped regardless
-                log.warning("Error closing braincell.db connection: %s", exc)
-            self._conn = None
+        async with self._write_lock:
+            for attribute in ("_write_conn", "_conn"):
+                connection = getattr(self, attribute)
+                if connection is None:
+                    continue
+                try:
+                    await connection.close()
+                except Exception as exc:  # noqa: BLE001 — close is best-effort teardown; the handle is dropped regardless
+                    log.warning("Error closing braincell.db connection: %s", exc)
+                setattr(self, attribute, None)
 
     def close(self) -> None:
         """Close all open DB connections from a sync context.

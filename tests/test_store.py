@@ -66,6 +66,220 @@ class TestCloseLifecycle:
         store.close()  # connections were never lazily opened
 
 
+class TestAsyncWriteOwnership:
+    """One coroutine must own the shared connection's transaction until exit."""
+
+    def test_ordinary_write_cannot_commit_another_tasks_transaction(self, tmp_path):
+        store = make_store(tmp_path)
+        assert hasattr(store, "_write_transaction"), (
+            "SqliteStore needs one ownership gate for shared-connection writes"
+        )
+
+        async def _run():
+            owner_started = asyncio.Event()
+            release_owner = asyncio.Event()
+
+            async def unfinished_owner():
+                with pytest.raises(RuntimeError, match="force owner rollback"):
+                    async with store._write_transaction(immediate=True) as mem:
+                        await mem.execute(
+                            "INSERT INTO memory_notes "
+                            "(project_id, scope, kind, content, tags, note_uid) "
+                            "VALUES (?, 'project', 'note', ?, '[]', ?)",
+                            ("proj-lock", "unfinished owner row", "owner-row"),
+                        )
+                        owner_started.set()
+                        await release_owner.wait()
+                        raise RuntimeError("force owner rollback")
+
+            async def ordinary_writer():
+                await owner_started.wait()
+                return await store.remember(
+                    "ordinary concurrent row", "note", "proj-lock"
+                )
+
+            owner = asyncio.create_task(unfinished_owner())
+            writer = asyncio.create_task(ordinary_writer())
+            await owner_started.wait()
+            await asyncio.sleep(0)
+            assert not writer.done(), "ordinary writer entered another task's transaction"
+            release_owner.set()
+            await owner
+            ordinary_id = await writer
+
+            mem = await store._conn_get()
+            rows = await (
+                await mem.execute(
+                    "SELECT id, content FROM memory_notes ORDER BY id"
+                )
+            ).fetchall()
+            assert [(str(row[0]), row[1]) for row in rows] == [
+                (ordinary_id, "ordinary concurrent row")
+            ]
+
+        asyncio.run(_run())
+
+    def test_failed_commit_rolls_back_before_next_writer(self, tmp_path, monkeypatch):
+        store = make_store(tmp_path)
+
+        async def _run():
+            writer = await store._write_conn_get()
+            real_commit = writer.commit
+            calls = 0
+
+            async def fail_once():
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise sqlite3.OperationalError("simulated busy commit")
+                await real_commit()
+
+            monkeypatch.setattr(writer, "commit", fail_once)
+            with pytest.raises(sqlite3.OperationalError, match="simulated busy"):
+                await store.remember("must roll back", "note", "project")
+
+            note_id = await store.remember("next writer succeeds", "note", "project")
+            reader = await store._conn_get()
+            rows = await (
+                await reader.execute(
+                    "SELECT id, content FROM memory_notes ORDER BY id"
+                )
+            ).fetchall()
+            assert [(str(row[0]), row[1]) for row in rows] == [
+                (note_id, "next writer succeeds")
+            ]
+
+        asyncio.run(_run())
+
+
+class TestAtomicDocumentReplacement:
+    """Document metadata, chunks, embeddings, and FTS move as one unit."""
+
+    def test_invalid_replacement_preserves_previous_document(self, tmp_path):
+        store = make_store(tmp_path)
+
+        async def _run():
+            old_hash = hashlib.sha256(b"old").digest()
+            await store.replace_document(
+                project_id="proj-atomic",
+                doc_key="session-1",
+                title="old",
+                content_hash=old_hash,
+                content_type="transcript",
+                chunks=[("old searchable phrase", fake_vec(1))],
+            )
+
+            bad_embedding = np.zeros(3, dtype=np.float32)
+            with pytest.raises(ValueError, match="embedding is 3-d"):
+                await store.replace_document(
+                    project_id="proj-atomic",
+                    doc_key="session-1",
+                    title="new",
+                    content_hash=hashlib.sha256(b"new").digest(),
+                    content_type="transcript",
+                    chunks=[("new phrase", bad_embedding)],
+                )
+
+            cf = await store._conn_get()
+            doc = await (
+                await cf.execute(
+                    "SELECT title, content_hash FROM bc_documents "
+                    "WHERE project_id=? AND doc_key=?",
+                    ("proj-atomic", "session-1"),
+                )
+            ).fetchone()
+            chunks = await (
+                await cf.execute(
+                    "SELECT chunk_index, chunk_text FROM bc_chunks "
+                    "WHERE document_id=("
+                    "SELECT id FROM bc_documents WHERE project_id=? AND doc_key=?"
+                    ") ORDER BY chunk_index",
+                    ("proj-atomic", "session-1"),
+                )
+            ).fetchall()
+            old_fts = await (
+                await cf.execute(
+                    "SELECT rowid FROM bc_chunks_fts "
+                    "WHERE bc_chunks_fts MATCH 'searchable'"
+                )
+            ).fetchall()
+            new_fts = await (
+                await cf.execute(
+                    "SELECT rowid FROM bc_chunks_fts WHERE bc_chunks_fts MATCH 'new'"
+                )
+            ).fetchall()
+
+            assert doc[0] == "old"
+            assert bytes(doc[1]) == old_hash
+            assert [(row[0], row[1]) for row in chunks] == [
+                (0, "old searchable phrase")
+            ]
+            assert len(old_fts) == 1
+            assert new_fts == []
+
+        asyncio.run(_run())
+
+    def test_shorter_replacement_removes_trailing_chunks_and_stale_fts(self, tmp_path):
+        store = make_store(tmp_path)
+
+        async def _run():
+            await store.replace_document(
+                project_id="proj-atomic",
+                doc_key="session-2",
+                title="long",
+                content_hash=hashlib.sha256(b"long").digest(),
+                content_type="transcript",
+                chunks=[
+                    ("keep before replacement", fake_vec(1)),
+                    ("obsolete zebra phrase", fake_vec(2)),
+                    ("obsolete yak phrase", fake_vec(3)),
+                ],
+            )
+            new_hash = hashlib.sha256(b"short").digest()
+            doc_id, changed = await store.replace_document(
+                project_id="proj-atomic",
+                doc_key="session-2",
+                title="short",
+                content_hash=new_hash,
+                content_type="transcript",
+                chunks=[("only current phrase", fake_vec(4))],
+            )
+
+            assert changed is True
+            assert await store.document_is_current(
+                "proj-atomic", "session-2", new_hash, expected_chunks=1
+            )
+
+            cf = await store._conn_get()
+            chunks = await (
+                await cf.execute(
+                    "SELECT chunk_index, chunk_text FROM bc_chunks "
+                    "WHERE document_id=? ORDER BY chunk_index",
+                    (doc_id,),
+                )
+            ).fetchall()
+            stale_fts = await (
+                await cf.execute(
+                    "SELECT rowid FROM bc_chunks_fts "
+                    "WHERE bc_chunks_fts MATCH 'zebra OR yak'"
+                )
+            ).fetchall()
+            current_fts = await (
+                await cf.execute(
+                    "SELECT rowid FROM bc_chunks_fts "
+                    "WHERE bc_chunks_fts MATCH 'current'"
+                )
+            ).fetchall()
+
+            assert [(row[0], row[1]) for row in chunks] == [
+                (0, "only current phrase")
+            ]
+            assert stale_fts == []
+            assert len(current_fts) == 1
+
+        asyncio.run(_run())
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECTION 2: list_documents
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -453,6 +667,41 @@ class TestRemember:
             )).fetchone()
             assert row is not None, "FTS row missing after remember — atomicity broken"
             assert row[0] == int(note_id)
+
+        asyncio.run(_run())
+
+    def test_individual_fts_insert_failure_rolls_back_vectorless_note(
+        self, tmp_path, monkeypatch
+    ):
+        store = make_store(tmp_path)
+
+        async def _run():
+            if not store._fts5_ok:
+                pytest.skip("FTS5 not available")
+            writer = await store._write_conn_get()
+            real_execute = writer.execute
+
+            async def fail_note_fts(sql, parameters=None):
+                if sql.startswith("INSERT INTO memory_fts"):
+                    raise sqlite3.OperationalError("simulated FTS row failure")
+                if parameters is None:
+                    return await real_execute(sql)
+                return await real_execute(sql, parameters)
+
+            monkeypatch.setattr(writer, "execute", fail_note_fts)
+            with pytest.raises(sqlite3.OperationalError, match="simulated FTS"):
+                await store.remember(
+                    "must not become invisible", "note", "proj-atomic", embedding=None
+                )
+
+            reader = await store._conn_get()
+            count = await (
+                await reader.execute(
+                    "SELECT COUNT(*) FROM memory_notes WHERE project_id=?",
+                    ("proj-atomic",),
+                )
+            ).fetchone()
+            assert count[0] == 0
 
         asyncio.run(_run())
 

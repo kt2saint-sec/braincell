@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import DATA_NAMESPACE, get_db_path
+from .catalog_io import MutationBusyError, mutation_lock
 from .project_registry import load_path_registry
 from .schema import MEMORY_SCHEMA_VERSION
 from .store import SqliteStore
@@ -72,6 +73,15 @@ def _source_state_digest(path: Path) -> str:
         if artifact.exists():
             digest.update(artifact.name.encode())
             digest.update(artifact.read_bytes())
+    return digest.hexdigest()
+
+
+def _connection_state_digest(connection: sqlite3.Connection) -> str:
+    """Digest one SQLite snapshot by logical SQL content, including WAL state."""
+    digest = hashlib.sha256()
+    for statement in connection.iterdump():
+        digest.update(statement.encode("utf-8"))
+        digest.update(b"\n")
     return digest.hexdigest()
 
 
@@ -189,21 +199,38 @@ def _destination_conflicts(source: sqlite3.Connection, destination: Path, projec
     return conflicts
 
 
+def _preview_snapshot(
+    snapshot: Path,
+    *,
+    reported_source: Path,
+    discovery: LegacyDiscovery,
+) -> tuple[dict[str, Any], dict[str, dict[str, list[int]]]]:
+    """Build an approval report and retain its exact row-selection manifest."""
+    registered = set(load_path_registry().values())
+    with _read_only(snapshot, purpose="Preview") as connection:
+        version = _schema_version(connection)
+        source_state_digest = _connection_state_digest(connection)
+        manifest, categories = _manifest(connection, registered)
+        projects = {}
+        for project_id, selected in sorted(manifest.items()):
+            destination = get_db_path(project_id)
+            projects[project_id] = {"destination": str(destination), "documents": len(selected["documents"]), "notes": len(selected["notes"]), "conflicts": _destination_conflicts(connection, destination, project_id, selected["documents"], selected["notes"])}
+    report: dict[str, Any] = {"source": str(reported_source), "source_state_digest": source_state_digest, "source_schema_version": version, "discovery": asdict(discovery), "classifications": categories, "projects": projects}
+    report["approval_digest"] = hashlib.sha256(json.dumps(report, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return report, manifest
+
+
 def preview(source_path: Path | None = None) -> dict[str, Any]:
     """Classify rows using read-only source *and destination* connections only."""
     discovery = discover_legacy_configuration()
     source = Path(source_path or discovery.database).expanduser().resolve()
     if not source.is_file():
         raise LegacyRecoveryError(f"Legacy database does not exist: {source}")
-    with _read_only(source, purpose="Preview") as connection:
-        version = _schema_version(connection)
-        manifest, categories = _manifest(connection, set(load_path_registry().values()))
-        projects = {}
-        for project_id, selected in sorted(manifest.items()):
-            destination = get_db_path(project_id)
-            projects[project_id] = {"destination": str(destination), "documents": len(selected["documents"]), "notes": len(selected["notes"]), "conflicts": _destination_conflicts(connection, destination, project_id, selected["documents"], selected["notes"])}
-    report: dict[str, Any] = {"source": str(source), "source_state_digest": _source_state_digest(source), "source_schema_version": version, "discovery": asdict(discovery), "classifications": categories, "projects": projects}
-    report["approval_digest"] = hashlib.sha256(json.dumps(report, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    report, _manifest_rows = _preview_snapshot(
+        source,
+        reported_source=source,
+        discovery=discovery,
+    )
     return report
 
 
@@ -391,49 +418,84 @@ def apply(*, source_path: Path | None, project_ids: list[str], approval_digest: 
     """Apply an approved manifest, restoring the failed destination on every error."""
     if not project_ids:
         raise LegacyRecoveryError("Apply requires at least one selected Project.")
-    report = preview(source_path)
-    if approval_digest != report["approval_digest"]:
-        raise LegacyRecoveryError("Approval digest does not match the current preview; preview again.")
-    selected = sorted(set(project_ids))
-    if unknown := [pid for pid in selected if pid not in report["projects"]]:
-        raise LegacyRecoveryError(f"Selected Projects are not attributable: {', '.join(unknown)}")
-    conflicts = {pid: report["projects"][pid]["conflicts"] for pid in selected if report["projects"][pid]["conflicts"]}
-    if conflicts:
-        raise LegacyRecoveryError(f"Destination conflicts must be resolved before apply: {conflicts}")
-    source = Path(report["source"])
+    discovery = discover_legacy_configuration()
+    source = Path(source_path or discovery.database).expanduser().resolve()
+    if not source.is_file():
+        raise LegacyRecoveryError(f"Legacy database does not exist: {source}")
+
+    # This retained backup is also the immutable apply source. Previewing and
+    # copying the same file closes the live-source/WAL/registry attribution race.
     source_backup = create_backup(source, backup_dir)
+    try:
+        report, manifest = _preview_snapshot(
+            source_backup,
+            reported_source=source,
+            discovery=discovery,
+        )
+        if approval_digest != report["approval_digest"]:
+            raise LegacyRecoveryError(
+                "Approval digest does not match the current preview; preview again."
+            )
+        selected = sorted(set(project_ids))
+        if unknown := [pid for pid in selected if pid not in report["projects"]]:
+            raise LegacyRecoveryError(
+                f"Selected Projects are not attributable: {', '.join(unknown)}"
+            )
+        conflicts = {
+            pid: report["projects"][pid]["conflicts"]
+            for pid in selected
+            if report["projects"][pid]["conflicts"]
+        }
+        if conflicts:
+            raise LegacyRecoveryError(
+                f"Destination conflicts must be resolved before apply: {conflicts}"
+            )
+    except Exception:
+        # Refused preflight snapshots have no recovery value and otherwise grow
+        # without bound under repeated bad approvals/conflicts.
+        source_backup.unlink(missing_ok=True)
+        raise
     results: dict[str, Any] = {}
-    with _read_only(source, purpose="Apply") as connection:
+    with _read_only(source_backup, purpose="Apply") as connection:
         connection.execute("BEGIN")
-        manifest, _ = _manifest(connection, set(load_path_registry().values()))
         for project_id in selected:
             destination = get_db_path(project_id)
-            existed = _prepare_destination(destination)
-            destination_backup = None
             try:
-                with _exclusive_destination(destination) as destination_connection:
-                    if existed:
-                        destination_backup = _backup_database(
-                            destination, "destination", backup_dir
-                        )
-                    copied = _copy_project(
-                        connection, destination_connection, project_id, manifest[project_id]
-                    )
-                    verification = _verify(
-                        connection, destination_connection, project_id, manifest[project_id]
-                    )
-                    if not verification["ok"]:
-                        raise LegacyRecoveryError(
-                            f"Post-copy verification failed for {project_id}: {verification}"
-                        )
-                    destination_connection.commit()
+                with mutation_lock(destination, operation="legacy-recovery"):
+                    existed = _prepare_destination(destination)
+                    destination_backup = None
+                    try:
+                        with _exclusive_destination(destination) as destination_connection:
+                            if existed:
+                                destination_backup = _backup_database(
+                                    destination, "destination", backup_dir
+                                )
+                            copied = _copy_project(
+                                connection, destination_connection, project_id, manifest[project_id]
+                            )
+                            verification = _verify(
+                                connection, destination_connection, project_id, manifest[project_id]
+                            )
+                            if not verification["ok"]:
+                                raise LegacyRecoveryError(
+                                    f"Post-copy verification failed for {project_id}: {verification}"
+                                )
+                            destination_connection.commit()
+                    except Exception:
+                        if not existed:
+                            for artifact in (
+                                destination,
+                                _wal_path(destination),
+                                _shm_path(destination),
+                            ):
+                                if artifact.exists():
+                                    artifact.unlink()
+                        raise
+            except MutationBusyError as exc:
+                raise LegacyRecoveryError(str(exc), completed_projects=results) from exc
             except Exception as exc:
                 # The guarded transaction is never committed before exact
                 # verification, so its rollback restores the affected database.
-                if not existed:
-                    for artifact in (destination, _wal_path(destination), _shm_path(destination)):
-                        if artifact.exists():
-                            artifact.unlink()
                 raise LegacyRecoveryError(
                     f"Recovery failed for {project_id}; its destination was restored "
                     f"from its guarded transaction. {exc}",

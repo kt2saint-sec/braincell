@@ -734,13 +734,16 @@ def create_app(
             return {"deleted": deleted}
 
         # Ingestion management (folder navigation / build jobs / clear / schedules).
+        from .gui_mutation import GuiMutationCoordinator
         from .gui_ingest import IngestManager, mount_ingest_api
-        app.state.ingest_manager = IngestManager()
+        app.state.mutation_coordinator = GuiMutationCoordinator()
+        app.state.ingest_manager = IngestManager(app.state.mutation_coordinator)
         mount_ingest_api(
             app,
             db_path=db_path,
             manager=app.state.ingest_manager,
             connected_project_id=seed_project_id or "",
+            coordinator=app.state.mutation_coordinator,
             pick_folder=(native_bridge.pick_folder if native_bridge is not None else None),
         )
 
@@ -751,12 +754,13 @@ def create_app(
         # Maintenance commands (consolidate/reflect/contradictions/reembed/
         # backup/memory log+undo) — the GUI counterparts of the remaining CLI.
         from .gui_ops import OpsJobManager, mount_ops_api
-        app.state.ops_manager = OpsJobManager()
+        app.state.ops_manager = OpsJobManager(app.state.mutation_coordinator)
         mount_ops_api(
             app,
             db_path=db_path,
             manager=app.state.ops_manager,
             connected_project_id=seed_project_id or "",
+            coordinator=app.state.mutation_coordinator,
         )
 
     return app
@@ -805,6 +809,9 @@ def run_gui(
     path: str = ".",
     url_extra_query: str | None = None,
     restart_command: str = "gui",
+    acknowledge_home: bool = False,
+    acknowledge_non_git: bool = False,
+    allow_privileged: bool = False,
 ) -> None:
     """Resolve the brain, build the app, and run the native GUI.
 
@@ -835,7 +842,8 @@ def run_gui(
         )
 
     resolve_mode(mode)
-    project_id = get_project_id(Path(path).resolve())
+    project_root = Path(path).resolve()
+    project_id = get_project_id(project_root)
     db_path = get_db_path(project_id)
 
     # Gate the namespace-wide API even though it is localhost-only. The first
@@ -854,15 +862,21 @@ def run_gui(
     if restart_command == "start":
         restart_argv = [
             sys.executable, "-m", "braincell.cli", "start",
-            str(Path(path).resolve()), "--port", str(port),
+            str(project_root), "--port", str(port),
         ]
     else:
         restart_argv = [
-            sys.executable, "-m", "braincell.cli", "gui", str(Path(path).resolve()),
+            sys.executable, "-m", "braincell.cli", "gui", str(project_root),
             "--port", str(port),
         ]
         if allow_writes:
             restart_argv.append("--allow-writes")
+    if acknowledge_home:
+        restart_argv.append("--acknowledge-home")
+    if acknowledge_non_git:
+        restart_argv.append("--acknowledge-non-git")
+    if allow_privileged:
+        restart_argv.append("--allow-privileged")
 
     native_bridge = native_shell.NativeBridge()
     app = create_app(

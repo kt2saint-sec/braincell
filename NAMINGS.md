@@ -37,6 +37,9 @@ and code identifiers.
 - **Forget** — soft-delete a memory note while preserving necessary history.
 - **Correct memory** — replace saved memory with corrected information while
   preserving provenance.
+- **Storage report** — a read-only account of BrainCell state and an optional
+  backup-retention dry run. Never call a dry-run candidate list a cleanup or
+  imply that BrainCell deleted memory.
 
 ## Pools
 

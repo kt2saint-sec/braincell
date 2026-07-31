@@ -20,7 +20,7 @@ import os
 from pathlib import Path
 
 from .compaction import compact_pages
-from .embed import embed_texts, prewarm_embed_model
+from .embed import embed_texts
 from .log import get as _get_log
 from .project_registry import (
     load_path_registry,
@@ -29,7 +29,7 @@ from .project_registry import (
     resolve_path_to_ulid,
 )
 from .skill_tag import is_skill_body, skill_name_from_body
-from .store import SqliteStore, _secret_scan, upsert_chunk, upsert_document
+from .store import SqliteStore, _secret_scan
 
 
 def _compaction_enabled() -> bool:
@@ -64,8 +64,16 @@ def _load_ledger(ledger_path: Path) -> dict[str, str]:
     if not ledger_path.exists():
         return {}
     try:
-        return json.loads(ledger_path.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001 — an unreadable or corrupt ledger degrades to a first run, never a crash
+        data = json.loads(ledger_path.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in data.items()
+        ):
+            return data
+        log.warning("Transcript ledger has an invalid format: %s", ledger_path)
+        return {}
+    except (json.JSONDecodeError, OSError) as exc:
+        log.warning("Transcript ledger is unreadable (%s): %s", ledger_path, exc)
         return {}
 
 
@@ -150,6 +158,39 @@ def _text_from_record(obj: dict) -> str | None:
     return None
 
 
+def _page_from_line(raw_line: bytes) -> str | None:
+    """Extract one bounded text page from a raw JSONL line."""
+    line = raw_line.decode("utf-8", errors="replace").strip()
+    if not line:
+        return None
+    try:
+        obj = json.loads(line)
+    except json.JSONDecodeError:
+        return line[:2000] if len(line) > 20 else None
+    if not isinstance(obj, dict):
+        return None
+    text = _text_from_record(obj)
+    if text is None and isinstance(obj.get("payload"), dict):
+        text = _text_from_record(obj["payload"])
+    return text[:2000] if text else None
+
+
+def _extract_text_and_sha(path: Path) -> tuple[list[str], str]:
+    """Extract pages and hash the exact same single-pass source snapshot."""
+    pages: list[str] = []
+    digest = hashlib.sha256()
+    try:
+        fh = path.open("rb")
+    except OSError:
+        return [], ""
+    with fh:
+        for raw_line in fh:
+            digest.update(raw_line)
+            if page := _page_from_line(raw_line):
+                pages.append(page)
+    return pages, digest.hexdigest()
+
+
 def _extract_text_from_jsonl(path: Path) -> list[str]:
     """Tolerantly extract text pages from a JSONL transcript file.
 
@@ -158,34 +199,7 @@ def _extract_text_from_jsonl(path: Path) -> list[str]:
     if present, skipping malformed lines silently.
     Returns a list of non-empty text strings (one per usable line).
     """
-    pages: list[str] = []
-    try:
-        fh = path.open(encoding="utf-8", errors="replace")
-    except OSError:
-        return []
-    with fh:
-        for raw_line in fh:
-            line = raw_line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                # Plain text lines are also valid (some session logs are non-JSON).
-                if len(line) > 20:
-                    pages.append(line[:2000])
-                continue
-            if not isinstance(obj, dict):
-                continue
-            text = _text_from_record(obj)
-            if text is None and isinstance(obj.get("payload"), dict):
-                # Codex nests transcript text one level down: response_item.payload.content,
-                # event_msg.payload.message. The top-level record is just {type, timestamp,
-                # payload}.
-                text = _text_from_record(obj["payload"])
-            if text:
-                pages.append(text[:2000])
-    return pages
+    return _extract_text_and_sha(path)[0]
 
 
 # ── Source-project attribution ─────────────────────────────────────────────────
@@ -306,11 +320,6 @@ async def ingest_transcripts(
         log.info("No transcript files found in: %s", _TRANSCRIPT_ROOTS)
         return stats
 
-    # Pre-warm embed model once before the loop.
-    prewarm_embed_model()
-
-    cf = await store._conn_get()
-
     for fpath in candidates:
         stats["files_scanned"] += 1
 
@@ -330,17 +339,9 @@ async def ingest_transcripts(
         doc_key = f"{source_ulid}:{fpath.stem}"
 
         try:
-            mtime = fpath.stat().st_mtime
-        except OSError:
-            continue
-        mtime_key = f"{doc_key}@{mtime:.3f}"
-
-        if incremental and ledger.get(doc_key) == mtime_key:
-            stats["files_skipped"] += 1
-            continue
-
-        try:
-            pages = _extract_text_from_jsonl(fpath)
+            # Extraction and digest came from one file descriptor above, so an
+            # append between two separate reads cannot checkpoint mismatched data.
+            pages, source_digest = _extract_text_and_sha(fpath)
         except Exception as exc:  # noqa: BLE001 — one malformed transcript is skipped, not ledgered, retried next run
             log.warning(
                 "Extraction failed for %s: %s — skipped (not ledgered; retried next run)",
@@ -348,8 +349,24 @@ async def ingest_transcripts(
             )
             stats["files_failed"] += 1
             continue
+        if not source_digest:
+            continue
+
+        if incremental and ledger.get(doc_key) == source_digest:
+            stats["files_skipped"] += 1
+            continue
         if not pages:
-            ledger[doc_key] = mtime_key
+            empty_hash = hashlib.sha256(b"").digest()
+            await store.replace_document(
+                project_id=source_ulid,
+                doc_key=doc_key,
+                title=fpath.name,
+                content_hash=empty_hash,
+                content_type="transcript",
+                chunks=[],
+                metadata={"source_path": str(fpath), "invoked_skills": []},
+            )
+            ledger[doc_key] = source_digest
             continue
 
         # Compact BEFORE secret-scan (less to scan).
@@ -358,8 +375,18 @@ async def ingest_transcripts(
             stats["pages_dropped_noise"] += _c["dropped_noise"]
             stats["pages_deduped"] += _c["deduped"]
             if not pages:
-                # All pages were noise or duplicates — ledger the file as done.
-                ledger[doc_key] = mtime_key
+                # The new source is empty after filtering: atomically clear any
+                # older chunks so the ledger never hides stale searchable text.
+                await store.replace_document(
+                    project_id=source_ulid,
+                    doc_key=doc_key,
+                    title=fpath.name,
+                    content_hash=hashlib.sha256(b"").digest(),
+                    content_type="transcript",
+                    chunks=[],
+                    metadata={"source_path": str(fpath), "invoked_skills": []},
+                )
+                ledger[doc_key] = source_digest
                 continue
 
         # Secret-scan every page BEFORE write.
@@ -377,7 +404,16 @@ async def ingest_transcripts(
             clean_pages.append(page)
 
         if not clean_pages:
-            ledger[doc_key] = mtime_key
+            await store.replace_document(
+                project_id=source_ulid,
+                doc_key=doc_key,
+                title=fpath.name,
+                content_hash=hashlib.sha256(b"").digest(),
+                content_type="transcript",
+                chunks=[],
+                metadata={"source_path": str(fpath), "invoked_skills": []},
+            )
+            ledger[doc_key] = source_digest
             continue
 
         # ── Change #2: skill dedup-and-tag ─────────────────────────────────────
@@ -407,28 +443,18 @@ async def ingest_transcripts(
         # Embed each skill body ONCE: canonical doc_key="skill:<name>" per project.
         # Dedup check: if a doc with that key already exists (changed=False on an
         # unmodified hash), we skip re-embedding (cross-session + cross-run dedup).
+        skill_failed = False
         for skill_page, skill_name in skill_body_pages:
             skill_doc_key = f"skill:{skill_name}"
             skill_hash = hashlib.sha256(skill_page.encode()).digest()
-            skill_doc_id, skill_changed = await upsert_document(
-                cf,
-                project_id=project_id,  # canonical skill docs belong to the BUILD project
-                doc_key=skill_doc_key,
-                title=f"skill:{skill_name}",
-                content_hash=skill_hash,
-                content_type="skill",
-                metadata={"skill_name": skill_name},
-            )
-            if not skill_changed:
-                # Already embedded; check that at least one non-null chunk exists.
-                already_skill = await (await cf.execute(
-                    "SELECT 1 FROM bc_chunks WHERE document_id = ? "
-                    "AND embedding IS NOT NULL LIMIT 1",
-                    (skill_doc_id,),
-                )).fetchone()
-                if already_skill is not None:
-                    stats["skill_bodies_deduped"] += 1
-                    continue  # skip re-embedding this skill body
+            if await store.document_is_current(
+                project_id,
+                skill_doc_key,
+                skill_hash,
+                expected_chunks=1,
+            ):
+                stats["skill_bodies_deduped"] += 1
+                continue
             # New or changed skill body — embed and store.
             try:
                 skill_embeddings = embed_texts([skill_page])
@@ -437,46 +463,57 @@ async def ingest_transcripts(
                     "Embed failed for skill '%s' from %s: %s — skipped",
                     skill_name, fpath.name, exc,
                 )
+                skill_failed = True
                 continue
-            await upsert_chunk(cf, skill_doc_id, 0, skill_page, skill_embeddings[0])
+            await store.replace_document(
+                project_id=project_id,
+                doc_key=skill_doc_key,
+                title=f"skill:{skill_name}",
+                content_hash=skill_hash,
+                content_type="skill",
+                chunks=[(skill_page, skill_embeddings[0])],
+                metadata={"skill_name": skill_name},
+            )
             stats["skill_docs_created"] += 1
         # ── End Change #2 skill embedding ──────────────────────────────────────
 
         if not content_pages:
-            # File contained only skill bodies (all processed above) — ledger as done.
-            ledger[doc_key] = mtime_key
+            # File now contains only skill bodies. Clear any old transcript chunks;
+            # canonical skill documents above remain independently searchable.
+            await store.replace_document(
+                project_id=source_ulid,
+                doc_key=doc_key,
+                title=fpath.name,
+                content_hash=hashlib.sha256(b"").digest(),
+                content_type="transcript",
+                chunks=[],
+                metadata={
+                    "source_path": str(fpath),
+                    "invoked_skills": sorted(invoked_skills),
+                },
+            )
+            if not skill_failed:
+                ledger[doc_key] = source_digest
+            else:
+                stats["files_failed"] = stats.get("files_failed", 0) + 1
             continue
 
         content_hash = hashlib.sha256(
             "\n".join(content_pages).encode()
         ).digest()
 
-        doc_id, changed = await upsert_document(
-            cf,
-            project_id=source_ulid,
-            doc_key=doc_key,
-            title=fpath.name,
-            content_hash=content_hash,
-            content_type="transcript",
-            # Change #2: record which skills were invoked in this session.
-            metadata={
-                "source_path": str(fpath),
-                "invoked_skills": sorted(invoked_skills),
-            },
-        )
-
-        if not changed and incremental:
-            # Checkpoint-on-success: a doc that exists but has no non-null embedding
-            # (a prior failed run) falls through and is re-embedded.
-            already = await (await cf.execute(
-                "SELECT 1 FROM bc_chunks WHERE document_id = ? "
-                "AND embedding IS NOT NULL LIMIT 1",
-                (doc_id,),
-            )).fetchone()
-            if already is not None:
-                ledger[doc_key] = mtime_key
+        if incremental and await store.document_is_current(
+            source_ulid,
+            doc_key,
+            content_hash,
+            expected_chunks=len(content_pages),
+        ):
+            if not skill_failed:
+                ledger[doc_key] = source_digest
                 stats["files_skipped"] += 1
-                continue
+            else:
+                stats["files_failed"] = stats.get("files_failed", 0) + 1
+            continue
 
         # CHECKPOINT-ON-SUCCESS: on embed failure, do NOT write null chunks and do
         # NOT ledger this file — it's retried next run (no permanent null rows).
@@ -490,12 +527,25 @@ async def ingest_transcripts(
             stats["files_failed"] = stats.get("files_failed", 0) + 1
             continue
 
-        for idx, (page, emb) in enumerate(zip(content_pages, embeddings)):
-            await upsert_chunk(cf, doc_id, idx, page, emb)
-            stats["chunks_written"] += 1
+        await store.replace_document(
+            project_id=source_ulid,
+            doc_key=doc_key,
+            title=fpath.name,
+            content_hash=content_hash,
+            content_type="transcript",
+            chunks=list(zip(content_pages, embeddings, strict=True)),
+            metadata={
+                "source_path": str(fpath),
+                "invoked_skills": sorted(invoked_skills),
+            },
+        )
+        stats["chunks_written"] += len(content_pages)
 
         stats["files_ingested"] += 1
-        ledger[doc_key] = mtime_key
+        if not skill_failed:
+            ledger[doc_key] = source_digest
+        else:
+            stats["files_failed"] = stats.get("files_failed", 0) + 1
 
         if progress_cb:
             progress_cb(

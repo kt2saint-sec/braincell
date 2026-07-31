@@ -10,6 +10,11 @@ details are intentionally excluded.
 
 - Windows and macOS test runners alongside Linux in continuous integration,
   with a cross-platform wheel smoke test.
+- Read-only `braincell storage` accounting for Project databases, row counts,
+  catalogs, locks, and owned backup files.
+- Dry-run backup-retention planning with `--keep-backups`; optional
+  `--backup-root` arguments include external recovery directories without
+  deleting anything.
 
 ### Fixed
 
@@ -18,6 +23,32 @@ details are intentionally excluded.
   temporary file's handle open when that call failed, and then reported the
   resulting cleanup error in place of the original cause. Permissions are now
   applied after the file is closed, which works on every supported platform.
+
+### Reliability and safety
+
+- Serialized SQLite mutations across async tasks, CLI processes, GUI ingest,
+  maintenance, clear, undo, and legacy recovery.
+- Made transcript replacement atomic across its content hash, chunks, FTS rows,
+  and ingestion checkpoint. Failed or incomplete embedding work remains
+  retryable and shorter replacements remove stale chunks.
+- Enforced embedding output cardinality, dimensions, finiteness, and nonzero
+  norms before persistence.
+- Hardened Project registry updates with locked compare-and-set identity
+  creation, atomic durable writes, corruption preservation, and path-component
+  validation that prevents state from escaping the BrainCell namespace.
+- Kept keyword Search and Recall available during embedding-provider outages;
+  semantic-only requests continue to fail explicitly.
+- Made scheduled Build attempts distinguish success, failure, and GUI mutation
+  contention, with locked atomic schedule persistence.
+- Made legacy recovery apply the exact approved immutable snapshot while
+  holding the destination mutation lock.
+- Made destructive maintenance backups collision-resistant and mandatory, and
+  create them only after a non-empty mutation plan exists.
+- Made note persistence and its FTS row one all-or-nothing transaction for
+  individual indexing failures.
+- Changed Ollama embedding warm-up to use a Build-scoped keep-alive followed by
+  an explicit unload, and moved synchronous reranking calls off the async event
+  loop with bounded concurrency.
 
 ### Changed
 
@@ -36,10 +67,10 @@ details are intentionally excluded.
 
 ### Known limitations
 
-- The Memory Map authentication token is created with POSIX mode `0600`. No
-  equivalent restriction is applied on Windows; the file inherits the
-  permissions of the user configuration directory, which is user-scoped by
-  default.
+- Storage reporting is informational. BrainCell does not automatically expire
+  indexed transcripts, tombstoned notes, operation history, or curated memory.
+- Canonical skill documents still need a defined monotonic authority when
+  historical transcripts contain multiple versions of the same skill.
 
 ## v0.4.0 - 2026-07-27
 

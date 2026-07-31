@@ -13,9 +13,9 @@ the reader process (the MCP server) MUST set the same env, or the build-time
 guard and the read-time guard (store._cosine_top_k + the persisted embed
 fingerprint) fail loud — they never silently mix vector spaces.
 
-keep_alive=0 (temporal separation) on the Ollama path —
-evict the embed model after each batch instead of "30m", to avoid OOM with
-qwen3.5:27b under OLLAMA_MAX_LOADED_MODELS=1. (No-op for hosted providers.)
+The Ollama path keeps the model resident across one build's batches, then the
+CLI explicitly unloads it. This avoids repeated cold loads while bounding the
+VRAM lifecycle. (No-op for hosted providers.)
 """
 
 import hashlib
@@ -135,9 +135,9 @@ QUERY_PREFIX, DOC_PREFIX = _resolve_prefixes(MODEL)
 # all providers (OpenAI vectors are not unit-length on the wire).
 DISTANCE: str = "inner-product"
 
-# Ollama keep_alive override: evict after each batch pass.
-# Unused by hosted providers.
-KEEP_ALIVE: str = "0"
+# Keep the embedding model resident across a build's sub-batches. The CLI
+# explicitly unloads it when the build finishes; hosted providers ignore this.
+KEEP_ALIVE: str = os.environ.get("BRAINCELL_EMBED_KEEP_ALIVE", "5m")
 
 # Bounded timeout (seconds) for the Ollama embed HTTP call. The default ollama
 # client has timeout=None (httpx → no timeout), so a daemon that is reachable but

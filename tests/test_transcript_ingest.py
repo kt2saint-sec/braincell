@@ -7,10 +7,15 @@ All tests use tmp_path isolation; no live Ollama or real ~/.claude transcripts.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 
 import pytest
+
+from tests.conftest import fake_vec, make_store
+
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECTION 1: _file_sha — streaming vs. whole-file equivalence
@@ -274,7 +279,103 @@ class TestExtractTextFromJsonl:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# SECTION 4: get_project_id (config.py)
+# SECTION 4: end-to-end ingest checkpointing
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestIngestCheckpointing:
+    """A failed replacement is retryable and cannot expose mixed generations."""
+
+    def test_embed_failure_preserves_old_state_then_retry_replaces_it(
+        self, tmp_path, monkeypatch
+    ):
+        import braincell.transcript_ingest as ingest
+
+        store = make_store(tmp_path)
+        transcript_root = tmp_path / "sessions"
+        transcript_root.mkdir()
+        transcript = transcript_root / "session-1.jsonl"
+        transcript.write_text(
+            json.dumps({"content": "new replacement transcript content"}),
+            encoding="utf-8",
+        )
+        ledger_path = tmp_path / "ledger.json"
+        old_hash = hashlib.sha256(b"old state").digest()
+
+        monkeypatch.setattr(ingest, "_TRANSCRIPT_ROOTS", [transcript_root])
+        monkeypatch.setattr(ingest, "load_path_registry", lambda: {})
+        monkeypatch.setattr(
+            ingest, "resolve_family_ulids", lambda _project_id, registry: {"source-1"}
+        )
+        monkeypatch.setattr(
+            ingest, "_resolve_source_ulid", lambda _path, _registry: "source-1"
+        )
+        monkeypatch.setenv("BRAINCELL_COMPACT", "0")
+
+        async def _run():
+            await store.replace_document(
+                project_id="source-1",
+                doc_key="source-1:session-1",
+                title="old",
+                content_hash=old_hash,
+                content_type="transcript",
+                chunks=[("old searchable state", fake_vec(1))],
+            )
+
+            def fail_embed(_texts):
+                raise RuntimeError("provider unavailable")
+
+            monkeypatch.setattr(ingest, "embed_texts", fail_embed)
+            first = await ingest.ingest_transcripts(
+                store,
+                "source-1",
+                ledger_path=ledger_path,
+            )
+            assert first["files_failed"] == 1
+
+            cf = await store._conn_get()
+            failed_state = await (
+                await cf.execute(
+                    "SELECT d.content_hash, c.chunk_text "
+                    "FROM bc_documents d JOIN bc_chunks c ON c.document_id=d.id "
+                    "WHERE d.project_id=? AND d.doc_key=?",
+                    ("source-1", "source-1:session-1"),
+                )
+            ).fetchone()
+            assert bytes(failed_state[0]) == old_hash
+            assert failed_state[1] == "old searchable state"
+            assert "source-1:session-1" not in ingest._load_ledger(ledger_path)
+
+            monkeypatch.setattr(
+                ingest,
+                "embed_texts",
+                lambda texts: [fake_vec(i + 10) for i, _ in enumerate(texts)],
+            )
+            second = await ingest.ingest_transcripts(
+                store,
+                "source-1",
+                ledger_path=ledger_path,
+            )
+            assert second["files_ingested"] == 1
+
+            replaced = await (
+                await cf.execute(
+                    "SELECT d.content_hash, c.chunk_text "
+                    "FROM bc_documents d JOIN bc_chunks c ON c.document_id=d.id "
+                    "WHERE d.project_id=? AND d.doc_key=?",
+                    ("source-1", "source-1:session-1"),
+                )
+            ).fetchone()
+            assert bytes(replaced[0]) != old_hash
+            assert replaced[1] == "new replacement transcript content"
+            assert ingest._load_ledger(ledger_path)["source-1:session-1"] == ingest._file_sha(
+                transcript
+            )
+
+        asyncio.run(_run())
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 5: get_project_id (config.py)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestGetProjectId:

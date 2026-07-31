@@ -57,6 +57,10 @@ braincell-pre*-*.db
 *.sqlite-wal
 *.sqlite-shm
 *-journal
+# Fixed, reused BrainCell interprocess coordination files. These live beside
+# XDG databases in normal operation, but must not become source artifacts if a
+# developer redirects state into a checkout.
+*.mutation.lock
 
 # ── Tooling / caches ──────────────────────────────────────────────────────────
 .pytest_cache/

@@ -428,6 +428,21 @@ def test_apply_retains_source_and_each_existing_destination_backup(tmp_path):
     assert result["projects"]["01POOLED"]["destination_backup"] is None
 
 
+def test_refused_apply_removes_unneeded_source_snapshot(tmp_path):
+    from braincell import legacy_recovery
+
+    source = _legacy_fixture(tmp_path)
+    backups = tmp_path / "backups"
+    with pytest.raises(legacy_recovery.LegacyRecoveryError, match="Approval digest"):
+        legacy_recovery.apply(
+            source_path=source,
+            project_ids=["01ATTRIBUTABLE"],
+            approval_digest="wrong",
+            backup_dir=backups,
+        )
+    assert not list(backups.glob("*.db"))
+
+
 def test_ambiguous_rows_are_never_copied(tmp_path):
     from braincell.config import get_db_path
     from braincell.legacy_recovery import apply, preview
@@ -438,3 +453,47 @@ def test_ambiguous_rows_are_never_copied(tmp_path):
     with sqlite3.connect(get_db_path("01ATTRIBUTABLE")) as destination:
         assert destination.execute("SELECT COUNT(*) FROM bc_documents WHERE project_id='01UNKNOWN'").fetchone()[0] == 0
         assert destination.execute("SELECT COUNT(*) FROM memory_notes WHERE project_id='01UNKNOWN'").fetchone()[0] == 0
+
+
+def test_apply_reads_exact_snapshot_even_if_live_source_changes_after_approval_check(
+    tmp_path, monkeypatch
+):
+    from braincell import legacy_recovery
+    from braincell.config import get_db_path
+
+    source = _legacy_fixture(tmp_path)
+    report = legacy_recovery.preview(source)
+    real_preview_snapshot = legacy_recovery._preview_snapshot
+    mutated = False
+
+    def preview_then_mutate(snapshot, *, reported_source, discovery):
+        nonlocal mutated
+        result = real_preview_snapshot(
+            snapshot,
+            reported_source=reported_source,
+            discovery=discovery,
+        )
+        if snapshot != source and not mutated:
+            with sqlite3.connect(source) as connection:
+                connection.execute(
+                    "UPDATE bc_documents SET title='changed after snapshot' "
+                    "WHERE doc_key='a-doc'"
+                )
+            mutated = True
+        return result
+
+    monkeypatch.setattr(
+        legacy_recovery, "_preview_snapshot", preview_then_mutate
+    )
+    legacy_recovery.apply(
+        source_path=source,
+        project_ids=["01ATTRIBUTABLE"],
+        approval_digest=report["approval_digest"],
+        backup_dir=tmp_path / "backups",
+    )
+
+    with sqlite3.connect(get_db_path("01ATTRIBUTABLE")) as destination:
+        title = destination.execute(
+            "SELECT title FROM bc_documents WHERE doc_key='a-doc'"
+        ).fetchone()[0]
+    assert title != "changed after snapshot"

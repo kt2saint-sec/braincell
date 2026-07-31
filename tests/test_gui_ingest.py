@@ -331,10 +331,68 @@ class TestSchedule:
     def test_schedule_due_logic(self):
         from braincell.gui_ingest import schedule_due
         now = 1_000_000.0
-        assert schedule_due({"interval_minutes": 10, "last_run": None}, now)
-        assert schedule_due({"interval_minutes": 10, "last_run": now - 601}, now)
-        assert not schedule_due({"interval_minutes": 10, "last_run": now - 599}, now)
-        assert not schedule_due({"interval_minutes": 0, "last_run": None}, now)
+        assert schedule_due({"interval_minutes": 10, "last_success": None}, now)
+        assert schedule_due({"interval_minutes": 10, "last_success": now - 601}, now)
+        assert not schedule_due({"interval_minutes": 10, "last_success": now - 599}, now)
+        assert not schedule_due({"interval_minutes": 0, "last_success": None}, now)
+
+    def test_failed_scheduled_ingest_updates_attempt_not_success(
+        self, tmp_path, monkeypatch
+    ):
+        import braincell.gui_ingest as gui_ingest
+
+        path = str((tmp_path / "project").resolve())
+        gui_ingest.save_schedules([
+            {
+                "path": path,
+                "interval_minutes": 60,
+                "last_attempt": None,
+                "last_success": None,
+            }
+        ])
+
+        class FailedManager:
+            busy = False
+            job = None
+
+            async def start(self, scheduled_path):
+                assert scheduled_path == path
+                self.job = gui_ingest.IngestJob(path=path, state="error", returncode=7)
+
+            async def wait(self):
+                return None
+
+        now = 1_000_000.0
+        assert asyncio.run(
+            gui_ingest.run_due_schedule_once(FailedManager(), now=now)
+        )
+        schedule = gui_ingest.load_schedules()[0]
+        assert schedule["last_attempt"] == now
+        assert schedule["last_success"] is None
+        assert schedule["last_error"] == "build exited with status 7"
+        assert not gui_ingest.schedule_due(schedule, now + 60)
+
+    def test_gui_mutation_contention_does_not_advance_attempt(self, tmp_path):
+        import braincell.gui_ingest as gui_ingest
+        from braincell.gui_mutation import GuiMutationBusy
+
+        path = str((tmp_path / "project").resolve())
+        gui_ingest.save_schedules([{
+            "path": path,
+            "interval_minutes": 60,
+            "last_attempt": None,
+            "last_success": None,
+        }])
+
+        class BusyManager:
+            busy = False
+            async def start(self, _path):
+                raise GuiMutationBusy("maintenance owns the GUI")
+
+        assert not asyncio.run(
+            gui_ingest.run_due_schedule_once(BusyManager(), now=1_000_000.0)
+        )
+        assert gui_ingest.load_schedules()[0]["last_attempt"] is None
 
 
 # ── SPA carries the new UI ────────────────────────────────────────────────────

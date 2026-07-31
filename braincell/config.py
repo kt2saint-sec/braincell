@@ -57,7 +57,7 @@ def get_project_id(project_root: Path, *, create: bool = True) -> str:
     """
     # Lazy import: project_registry imports config, so a module-level import here
     # would be circular.
-    from .project_registry import register_path, resolve_path_to_ulid
+    from .project_registry import get_or_create_project_id, resolve_path_to_ulid
 
     project_root = Path(project_root).resolve()
 
@@ -73,9 +73,7 @@ def get_project_id(project_root: Path, *, create: bool = True) -> str:
 
     # 2. fresh identity — stored ONLY in the central XDG registry, nothing in the repo
     from ulid import ULID  # lazy: only minting needs it
-    new_id = str(ULID())
-    register_path(project_root, new_id)
-    return new_id
+    return get_or_create_project_id(project_root, ULID)
 
 
 def resolve_project_id_readonly(project_root: Path) -> str | None:
@@ -92,6 +90,10 @@ def resolve_project_id_readonly(project_root: Path) -> str | None:
 
 def get_local_state_dir(project_id: str) -> Path:
     """Return ``~/.local/share/<namespace>/projects/<id>/`` — never committed."""
+    from .project_registry import is_safe_project_id
+
+    if not is_safe_project_id(project_id):
+        raise ValueError(f"Unsafe Project identity: {project_id!r}")
     return _xdg_data_home() / DATA_NAMESPACE / "projects" / project_id
 
 

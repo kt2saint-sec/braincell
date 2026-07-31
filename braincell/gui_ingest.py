@@ -37,7 +37,9 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 
 from . import config
+from .catalog_io import atomic_write_json, catalog_lock
 from .log import get as _get_log
+from .gui_mutation import GuiMutationBusy, GuiMutationCoordinator
 from .project_registry import load_path_registry
 
 log = _get_log("braincell.gui_ingest")
@@ -45,6 +47,7 @@ log = _get_log("braincell.gui_ingest")
 _LEDGER_FILENAME = "transcript_ingest_ledger.json"
 _LOG_TAIL = 200          # lines of job log kept/returned
 _SCHED_TICK_S = 60.0     # scheduler wake-up interval
+_SCHED_FAILURE_RETRY_S = 300.0
 
 
 # ── Request bodies ─────────────────────────────────────────────────────────────
@@ -129,10 +132,11 @@ class IngestJob:
 class IngestManager:
     """Runs one build subprocess at a time; keeps the last job for polling."""
 
-    def __init__(self) -> None:
+    def __init__(self, coordinator: GuiMutationCoordinator | None = None) -> None:
         self.job: IngestJob | None = None
         self._proc: asyncio.subprocess.Process | None = None
         self._task: asyncio.Task | None = None
+        self._coordinator = coordinator or GuiMutationCoordinator()
 
     # Overridable seam (tests swap in a trivial command).
     def command_for(self, path: str) -> list[str]:
@@ -147,6 +151,7 @@ class IngestManager:
     ) -> IngestJob:
         if self.busy:
             raise RuntimeError("An ingest job is already running.")
+        self._coordinator.claim("ingest")
         job = IngestJob(path=path, mode=mode, reembed=reembed)
         self.job = job
         self._task = asyncio.ensure_future(self._run(job))
@@ -190,6 +195,7 @@ class IngestManager:
         finally:
             job.finished = time.time()
             self._proc = None
+            self._coordinator.release("ingest")
 
     async def wait(self) -> None:
         """Await the in-flight job (test/scheduler helper)."""
@@ -245,28 +251,105 @@ def load_schedules() -> list[dict]:
         return []
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-        return data if isinstance(data, list) else []
+        if isinstance(data, list) and all(isinstance(item, dict) for item in data):
+            return data
+        log.warning("gui-schedules.json has an invalid format — ignoring it.")
+        return []
     except (OSError, ValueError):
         log.warning("Unreadable gui-schedules.json — starting empty.")
         return []
 
 
+def _load_schedules_for_mutation(path: Path) -> list[dict]:
+    """Load schedules without converting persisted corruption into data loss."""
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(
+            f"Schedule catalog is unreadable; refusing to mutate {path}: {exc}"
+        ) from exc
+    if not isinstance(data, list) or not all(isinstance(item, dict) for item in data):
+        raise RuntimeError(
+            f"Schedule catalog has an invalid format; refusing to mutate {path}"
+        )
+    return data
+
+
 def save_schedules(schedules: list[dict]) -> None:
     p = schedules_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(schedules, indent=2), encoding="utf-8")
-    os.replace(tmp, p)
+    if not isinstance(schedules, list) or not all(
+        isinstance(item, dict) for item in schedules
+    ):
+        raise ValueError("Schedules must be a list of objects.")
+    with catalog_lock(p):
+        _load_schedules_for_mutation(p)
+        atomic_write_json(p, schedules)
 
 
 def schedule_due(sched: dict, now: float | None = None) -> bool:
-    """True when the schedule's interval has elapsed since last_run (or never ran)."""
+    """True when success interval or bounded failure-retry delay has elapsed."""
     now = time.time() if now is None else now
     interval_s = float(sched.get("interval_minutes", 0)) * 60.0
     if interval_s <= 0:
         return False
-    last = sched.get("last_run")
-    return last is None or (now - float(last)) >= interval_s
+    last_success = sched.get("last_success", sched.get("last_run"))
+    last_attempt = sched.get("last_attempt")
+    if last_attempt is not None and (
+        last_success is None or float(last_attempt) > float(last_success)
+    ):
+        return (now - float(last_attempt)) >= _SCHED_FAILURE_RETRY_S
+    return last_success is None or (now - float(last_success)) >= interval_s
+
+
+def _update_schedule(path: str, **fields) -> None:
+    catalog = schedules_path()
+    with catalog_lock(catalog):
+        schedules = _load_schedules_for_mutation(catalog)
+        for schedule in schedules:
+            if schedule.get("path") == path:
+                schedule.update(fields)
+                atomic_write_json(catalog, schedules)
+                return
+
+
+async def run_due_schedule_once(
+    manager: IngestManager, *, now: Optional[float] = None,
+) -> bool:
+    """Attempt at most one due job and persist attempt/success independently."""
+    if manager.busy:
+        return False
+    attempt_time = time.time() if now is None else now
+    for schedule in load_schedules():
+        if not schedule_due(schedule, attempt_time):
+            continue
+        path = str(schedule["path"])
+        log.info("Scheduled ingest firing for %s", path)
+        try:
+            await manager.start(path)
+        except GuiMutationBusy:
+            # Another GUI mutation is contention, not a failed build attempt.
+            return False
+        except Exception as exc:
+            _update_schedule(
+                path, last_attempt=attempt_time, last_error=str(exc)
+            )
+            return True
+        _update_schedule(path, last_attempt=attempt_time, last_error=None)
+        try:
+            await manager.wait()
+        except Exception as exc:
+            _update_schedule(path, last_error=str(exc))
+            return True
+        job = manager.job
+        if job is not None and job.state == "done" and job.returncode == 0:
+            _update_schedule(path, last_success=time.time(), last_error=None)
+        else:
+            status = job.returncode if job is not None else "unknown"
+            _update_schedule(path, last_error=f"build exited with status {status}")
+        return True
+    return False
 
 
 async def scheduler_loop(manager: IngestManager) -> None:
@@ -274,16 +357,7 @@ async def scheduler_loop(manager: IngestManager) -> None:
     while True:
         try:
             await asyncio.sleep(_SCHED_TICK_S)
-            if manager.busy:
-                continue
-            schedules = load_schedules()
-            for sched in schedules:
-                if schedule_due(sched):
-                    sched["last_run"] = time.time()
-                    save_schedules(schedules)
-                    log.info("Scheduled ingest firing for %s", sched["path"])
-                    await manager.start(sched["path"])
-                    break  # one at a time; others fire on later ticks
+            await run_due_schedule_once(manager)
         except asyncio.CancelledError:
             raise
         except Exception:  # keep the loop alive on transient errors
@@ -335,57 +409,56 @@ def clear_project(db_path: Path, project_id: str, include_notes: bool) -> dict:
     """
     import sqlite3
 
+    from .catalog_io import mutation_lock
     from .store import SqliteStore
 
-    store = SqliteStore(db_path)
-    try:
-        docs_removed = store.wipe_project_embeddings(project_id)
-    finally:
-        store.close()
-
-    notes_removed = 0
-    if include_notes:
-        cf = sqlite3.connect(str(db_path))
-        try:
-            cf.execute("PRAGMA busy_timeout=30000")
-            cf.execute("PRAGMA foreign_keys=ON")
-            ids = [r[0] for r in cf.execute(
-                "SELECT id FROM memory_notes WHERE project_id = ?", (project_id,)
-            ).fetchall()]
-            if ids:
-                ph = ",".join("?" * len(ids))
-                try:
-                    cf.execute(f"DELETE FROM memory_fts WHERE rowid IN ({ph})", ids)
-                except sqlite3.OperationalError:
-                    pass  # FTS5 unavailable
-                cf.execute(
-                    f"DELETE FROM bc_note_links WHERE src_id IN ({ph}) OR dst_id IN ({ph})",
-                    ids + ids,
-                )
-                # FK: clear inbound supersession pointers BEFORE the delete —
-                # with foreign keys enforced, removing a note that another row still
-                # references raises IntegrityError (rows are checked as they go).
-                cf.execute(
-                    f"UPDATE memory_notes SET superseded_by = NULL "
-                    f"WHERE superseded_by IN ({ph})", ids,
-                )
-                cf.execute(f"DELETE FROM memory_notes WHERE id IN ({ph})", ids)
-                notes_removed = len(ids)
-            cf.commit()
-        finally:
-            cf.close()
-
-    ledgers_removed = 0
-    for ledger in {
-        db_path.parent / _LEDGER_FILENAME,
-        config.get_db_path(project_id).parent / _LEDGER_FILENAME,
-    }:
-        try:
+    with mutation_lock(db_path, operation="clear"):
+        # Invalidate checkpoints before destructive commits. If DB clearing
+        # subsequently fails, the safe failure mode is a full retrying rebuild.
+        ledgers_removed = 0
+        for ledger in {
+            db_path.parent / _LEDGER_FILENAME,
+            config.get_db_path(project_id).parent / _LEDGER_FILENAME,
+        }:
             if ledger.exists():
                 ledger.unlink()
                 ledgers_removed += 1
-        except OSError:
-            pass
+
+        store = SqliteStore(db_path)
+        try:
+            docs_removed = store.wipe_project_embeddings(project_id)
+        finally:
+            store.close()
+
+        notes_removed = 0
+        if include_notes:
+            cf = sqlite3.connect(str(db_path))
+            try:
+                cf.execute("PRAGMA busy_timeout=30000")
+                cf.execute("PRAGMA foreign_keys=ON")
+                ids = [r[0] for r in cf.execute(
+                    "SELECT id FROM memory_notes WHERE project_id = ?", (project_id,)
+                ).fetchall()]
+                if ids:
+                    ph = ",".join("?" * len(ids))
+                    try:
+                        cf.execute(f"DELETE FROM memory_fts WHERE rowid IN ({ph})", ids)
+                    except sqlite3.OperationalError:
+                        pass  # FTS5 unavailable
+                    cf.execute(
+                        f"DELETE FROM bc_note_links WHERE src_id IN ({ph}) OR dst_id IN ({ph})",
+                        ids + ids,
+                    )
+                    cf.execute(
+                        f"UPDATE memory_notes SET superseded_by = NULL "
+                        f"WHERE superseded_by IN ({ph})", ids,
+                    )
+                    cf.execute(f"DELETE FROM memory_notes WHERE id IN ({ph})", ids)
+                    notes_removed = len(ids)
+                cf.commit()
+            finally:
+                cf.close()
+
     return {
         "docs_removed": docs_removed,
         "notes_removed": notes_removed,
@@ -401,9 +474,11 @@ def mount_ingest_api(
     db_path: Path,
     manager: IngestManager,
     connected_project_id: str,
+    coordinator: GuiMutationCoordinator | None = None,
     pick_folder: Callable[[], dict] | None = None,
 ) -> None:
     """Register connected-Project ingestion routes on *app*."""
+    mutation_coordinator = coordinator or manager._coordinator
 
     def _require_connected_project(project_id: str) -> None:
         if not connected_project_id:  # isolated factory compatibility for unit tests
@@ -460,9 +535,19 @@ def mount_ingest_api(
     async def api_clear(request: Request, body: ClearBody) -> dict:  # type: ignore[type-arg]
         _require_connected_project(body.project_id)
         import anyio
-        result = await anyio.to_thread.run_sync(
-            clear_project, db_path, body.project_id, body.include_notes
-        )
+        try:
+            mutation_coordinator.claim("clear")
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        try:
+            try:
+                result = await anyio.to_thread.run_sync(
+                    clear_project, db_path, body.project_id, body.include_notes
+                )
+            except RuntimeError as exc:
+                raise HTTPException(409, str(exc)) from exc
+        finally:
+            mutation_coordinator.release("clear")
         return {"ok": True, **result}
 
     @app.get("/api/schedule")
@@ -474,12 +559,19 @@ def mount_ingest_api(
         if body.interval_minutes < 0:
             raise HTTPException(400, "interval_minutes must be >= 0.")
         norm = str(_require_connected_path(body.path))
-        schedules = [s for s in load_schedules() if s.get("path") != norm]
-        if body.interval_minutes > 0:
-            schedules.append({
-                "path": norm,
-                "interval_minutes": body.interval_minutes,
-                "last_run": None,
-            })
-        save_schedules(schedules)
+        catalog = schedules_path()
+        with catalog_lock(catalog):
+            schedules = [
+                s for s in _load_schedules_for_mutation(catalog)
+                if s.get("path") != norm
+            ]
+            if body.interval_minutes > 0:
+                schedules.append({
+                    "path": norm,
+                    "interval_minutes": body.interval_minutes,
+                    "last_attempt": None,
+                    "last_success": None,
+                    "last_error": None,
+                })
+            atomic_write_json(catalog, schedules)
         return {"ok": True, "schedules": schedules}

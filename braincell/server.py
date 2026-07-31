@@ -273,7 +273,19 @@ async def search_hits(
     if k < 1 or k > 100:
         raise ValueError("k must be between 1 and 100.")
 
-    qvec = await embed_query_async(query)
+    if rank == "keyword":
+        return await store.search(None, query, _pin_project(project), k, rank)
+    if rank == "semantic":
+        qvec = await embed_query_async(query)
+        return await store.search(qvec, query, _pin_project(project), k, rank)
+    try:
+        qvec = await embed_query_async(query)
+    except Exception as exc:  # noqa: BLE001 - hybrid intentionally retains lexical availability.
+        log.warning(
+            "Hybrid search embedder unavailable; degrading to keyword ranking: %s",
+            exc,
+        )
+        return await store.search(None, query, _pin_project(project), k, "keyword")
     return await store.search(qvec, query, _pin_project(project), k, rank)
 
 
@@ -324,7 +336,20 @@ async def search(
             raise ValueError(f"Invalid rank '{rank}'. Must be hybrid|semantic|keyword.")
         if k < 1 or k > 100:
             raise ValueError("k must be between 1 and 100.")
-        qvec = await embed_query_async(query)
+        if rank == "keyword":
+            qvec = None
+        elif rank == "semantic":
+            qvec = await embed_query_async(query)
+        else:
+            try:
+                qvec = await embed_query_async(query)
+            except Exception as exc:  # noqa: BLE001 - hybrid retains lexical Pool availability.
+                log.warning(
+                    "Hybrid Pool search embedder unavailable; degrading to keyword: %s",
+                    exc,
+                )
+                rank = "keyword"
+                qvec = None
         hits = await federated_search(store, plan, qvec, query, k, rank)
     else:
         _pin_project(project)
