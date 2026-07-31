@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import stat
 import subprocess
+import sys
 import tomllib
 
 import pytest
@@ -186,7 +187,9 @@ def test_codex_config_preserves_unrelated_content_permissions_and_final_newline(
     # backslashes, so the raw path never appears verbatim in the rendered text.
     assert tomllib.loads(text)["mcp_servers"]["braincell"]["cwd"] == str(repo.resolve())
     assert not text.endswith("\n")
-    assert stat.S_IMODE(cfg.stat().st_mode) == 0o640
+    if sys.platform != "win32":
+        # Windows chmod only toggles the read-only bit; POSIX mode bits never stick.
+        assert stat.S_IMODE(cfg.stat().st_mode) == 0o640
     assert result["backup_path"]
 
 

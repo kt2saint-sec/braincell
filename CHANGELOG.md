@@ -24,7 +24,9 @@ details are intentionally excluded.
 - The test suite no longer assumes a Linux host. File reads and writes declare
   UTF-8 explicitly instead of relying on the platform default encoding, and
   checks that assert Linux-specific behaviour — XDG desktop launchers, display
-  detection, and POSIX file modes — now run only on Linux.
+  detection, and POSIX file modes — now run only on Linux. The repository
+  hygiene check no longer mistakes a directory prefix for an ignored path when
+  the working tree carries CRLF line endings.
 - Lint debt cleared: 286 findings under Ruff's stock rule set reduced to zero
   (mechanical annotation modernisation, import ordering, and stale-suppression
   cleanup; no runtime behaviour changed). The lint configuration now documents

@@ -90,7 +90,11 @@ def test_no_tracked_file_references_a_gitignored_path():
             continue
         for lineno, line in enumerate(text.splitlines(), 1):
             for match in _PATH_TOKEN.finditer(line):
-                token = match.group(1).rstrip(".,;:)`\"'")
+                # Strip a trailing "/" too: a glob-truncated token names a
+                # directory prefix, and check-ignore does not strip the slash —
+                # so the basename is "", which a CRLF .gitignore's blank line
+                # (a stored "\r" pattern) matches. Ask about the directory.
+                token = match.group(1).rstrip(".,;:)`\"'/")
                 candidates.setdefault(token, []).append((rel, lineno, line.strip()))
 
     violations = [
