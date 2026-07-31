@@ -45,3 +45,58 @@ context; severity reflects pre-fix impact.
 - **Medium — blocking reranker and embedder lifetime:** Sequential synchronous
   model calls blocked the event loop, while warm-up immediately unloaded the
   embedding model. (`braincell/rerank.py:48`, `braincell/embed.py:252`)
+
+## Remote comparison — 2026-07-31
+
+The public repository was checked over SSH at
+`git@github.com:kt2saint-sec/braincell.git`. The audit worktree's configured
+`origin` still points at the stale `braincell-mcp` URL, which explains the
+initial `Repository not found` response. The correct repository is accessible.
+
+The remote `ci/windows-macos-matrix` commit (`40d0a56`) changes only
+`.github/workflows/ci.yml`: it adds Windows and macOS CI runners and a
+cross-platform wheel smoke test. It does not implement native launcher support,
+consumer Windows/macOS GUI validation, ACL enforcement, or platform-specific
+storage paths.
+
+The remote `project-only-architecture` migration series adds read-only legacy
+inventory, verified backups, provenance-based migration, and WAL-safe recovery.
+It does not delete existing foreign-owned transcript rows. Its changes overlap
+the local audit in `cli.py`, GUI modules, registry/configuration, recovery,
+server code, documentation, and tests; merging the branches requires a manual
+conflict-aware review.
+
+The following remain open after comparing local commit `e2a1601` with those
+remote branches:
+
+- **High — foreign transcript cleanup:** future out-of-scope files are skipped,
+  but historical foreign-owned rows still need a preview-only migration or
+  reconciliation workflow. (`braincell/transcript_ingest.py:330`)
+- **High — cross-platform parent-death cleanup:** subprocess protection uses
+  Linux-only `prctl`; Windows and macOS lack an abrupt-parent-death equivalent.
+  (`braincell/gui_ingest.py:77`)
+- **High — native launcher platforms:** installation remains Linux/XDG-only.
+  (`braincell/gui.py:903`)
+- **High — safety-backup coverage:** consolidate/reflect require a successful
+  backup, but reembed and clear still need an explicit backup/override policy.
+  (`braincell/cli.py:214`, `braincell/gui_ingest.py:403`)
+- **Medium — stats/storage diagnostics:** `braincell stats` does not report
+  WAL/SHM, freelist, embedding, foreign-document, or orphan-database detail;
+  the separate storage report is not a complete replacement.
+  (`braincell/cli.py:590`, `braincell/storage_accounting.py:57`)
+- **Medium — orphan reconciliation:** deleted or moved Projects can leave
+  registry entries and databases without a preview/reassociate workflow.
+  (`braincell/project_registry.py:48`)
+- **Medium — token ACL parity:** token creation applies POSIX mode `0600`, but
+  Windows ACL equivalence is not validated. (`braincell/gui.py:799`)
+- **Medium — platform data roots:** default storage remains Linux-oriented
+  `~/.local/share`; macOS/Windows migration is not implemented.
+  (`braincell/config.py:33`)
+- **Medium — SQLite compaction/WAL diagnostics:** no authorized hard-prune plus
+  `VACUUM` workflow or WAL-starvation warning exists.
+  (`braincell/storage_accounting.py:57`)
+- **Low — logger fallback:** a failure constructing the rotating handler still
+  falls back to an ordinary potentially unbounded file handler.
+  (`braincell/log.py:68`)
+- **Later policy — storage budgets:** warnings, configurable budgets, and
+  explicit hard limits remain unimplemented and must not delete memory silently.
