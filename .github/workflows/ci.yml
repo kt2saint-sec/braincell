@@ -7,9 +7,11 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
+        os: [ubuntu-24.04, windows-latest, macos-latest]
         python-version: ['3.11', '3.12', '3.13']
     steps:
       - uses: actions/checkout@v4
@@ -23,6 +25,8 @@ jobs:
       - name: Ruff fatal correctness rules
         run: ruff check --select E9,F63,F7,F82 braincell tests
       - name: Ruff changed Python files
+        if: matrix.os == 'ubuntu-24.04'
+        shell: bash
         env:
           LINT_BASE_REF: ${{ github.base_ref || 'main' }}
         run: python scripts/lint_changed_python.py --base "origin/${LINT_BASE_REF}"
@@ -31,13 +35,20 @@ jobs:
       - run: python -m build
       - run: python -m twine check dist/*
       - run: python scripts/inspect_release_artifacts.py dist
-      - run: |
+      - name: Smoke test built wheel
+        shell: bash
+        run: |
           python -m venv /tmp/braincell-wheel
-          /tmp/braincell-wheel/bin/pip install dist/*.whl
-          /tmp/braincell-wheel/bin/braincell --help
-          /tmp/braincell-wheel/bin/braincell-mcp --help
-          /tmp/braincell-wheel/bin/braincell-map --help
-          /tmp/braincell-wheel/bin/braincell setup --help
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            BIN=/tmp/braincell-wheel/Scripts
+          else
+            BIN=/tmp/braincell-wheel/bin
+          fi
+          "$BIN/pip" install dist/*.whl
+          "$BIN/braincell" --help
+          "$BIN/braincell-mcp" --help
+          "$BIN/braincell-map" --help
+          "$BIN/braincell" setup --help
 
   lint-debt-report:
     runs-on: ubuntu-24.04
