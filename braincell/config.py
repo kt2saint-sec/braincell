@@ -1,38 +1,125 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (c) 2026 Karl Toussaint (kt2saint)
 """
-config.py — XDG path resolution for the standalone BrainCell MCP.
+config.py — platform-appropriate path resolution for the standalone BrainCell MCP.
 
 Path layout for the default ``braincell`` namespace:
 
-    ~/.local/share/braincell/projects/<ULID>/
+    <data home>/braincell/projects/<ULID>/
         └── braincell.db      (bc_documents / bc_chunks / bc_chunks_fts +
                                memory_notes / memory_fts + schema_version)
+
+``<data home>`` is platform-appropriate by default (see `_xdg_data_home`):
+Linux ``~/.local/share``, macOS ``~/Library/Application Support``, Windows
+``%LOCALAPPDATA%``. It is always overridable via ``XDG_DATA_HOME`` regardless
+of platform (the env var name is a holdover from the Linux-only original —
+kept as-is so an existing override on any platform keeps working unchanged).
 
 The data-dir namespace is configurable via ``BRAINCELL_DATA_NAMESPACE`` (default
 ``braincell``). A consumer that wants a FULLY ISOLATED store sets this to its own
 name — e.g. a second tool exports ``BRAINCELL_DATA_NAMESPACE=mytool`` so
-its brain lives at ``~/.local/share/mytool/projects/<ULID>/``.
-Override the XDG base separately via ``XDG_DATA_HOME``.
+its brain lives at ``<data home>/mytool/projects/<ULID>/``.
 
 This is the single source of truth for the namespace within this package — both
 the data dir and the per-project identity filename derive from it.
 """
 
 import os
+import sys
 from pathlib import Path
+
+from .log import get as _get_log
+
+log = _get_log("braincell.config")
 
 # ── Data-dir namespace (single source of truth) ───────────────────────────────
 # Default ``braincell``; a standalone consumer overrides it for an isolated store
 # (see module docstring).
 DATA_NAMESPACE = os.environ.get("BRAINCELL_DATA_NAMESPACE", "braincell")
 
-# ── XDG base directories ──────────────────────────────────────────────────────
+# ── XDG / platform base directories ───────────────────────────────────────────
+
+# Warn about a legacy-vs-platform data-home mismatch at most once per process
+# (see `_xdg_data_home`) — every project-path resolution calls this function,
+# and re-warning on every call would flood the log for no added information.
+_data_home_mismatch_warned = False
+
+
+def _legacy_linux_style_data_home() -> Path:
+    """``~/.local/share`` — every platform's default BEFORE this function
+    became platform-aware. Needed only to detect pre-existing data left there
+    by an older install on macOS/Windows (`_xdg_data_home`); on Linux this
+    already IS the platform default, so no separate detection is needed there.
+    """
+    return Path.home() / ".local" / "share"
+
+
+def _platform_data_home_default() -> Path:
+    """The platform-appropriate default data root when ``XDG_DATA_HOME`` is
+    unset: macOS ``~/Library/Application Support``, Windows ``%LOCALAPPDATA%``
+    (``~/AppData/Local`` if that variable is somehow unset), everything else
+    (Linux and other POSIX systems) ``~/.local/share``.
+    """
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support"
+    if sys.platform == "win32":
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        return Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local"
+    return _legacy_linux_style_data_home()
 
 
 def _xdg_data_home() -> Path:
-    """XDG_DATA_HOME (defaults to ~/.local/share)."""
-    return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+    """Resolve the data-home root.
+
+    Precedence: explicit ``XDG_DATA_HOME`` env override (any platform, always
+    wins, unconditionally) > an EXISTING populated legacy
+    ``~/.local/share/<namespace>`` root on macOS/Windows (versions before
+    platform-aware defaults used the Linux-style path unconditionally, so a
+    real user's brain can already live there) > the platform-appropriate
+    default from `_platform_data_home_default`.
+
+    No silent migration, ever: an existing legacy root is used AS-IS, never
+    copied or moved. If BOTH the legacy and the new platform-default root
+    already hold this namespace's data, the legacy root wins (it is the one
+    actually in use) and a warning is logged once per process — the owner
+    decides if/when to consolidate; this function never picks one over the
+    other by deleting or merging anything.
+    """
+    env = os.environ.get("XDG_DATA_HOME")
+    if env:
+        return Path(env)
+
+    platform_default = _platform_data_home_default()
+    if sys.platform not in ("darwin", "win32"):
+        return platform_default  # Linux: always was this default; nothing to detect
+
+    legacy = _legacy_linux_style_data_home()
+    if legacy == platform_default:
+        return platform_default  # never happens for darwin/win32; defensive only
+
+    legacy_populated = (legacy / DATA_NAMESPACE).is_dir()
+    if not legacy_populated:
+        return platform_default
+
+    global _data_home_mismatch_warned
+    platform_populated = (platform_default / DATA_NAMESPACE).is_dir()
+    if not _data_home_mismatch_warned:
+        if platform_populated:
+            log.warning(
+                "Both %s and %s hold existing '%s' data — using the legacy "
+                "%s root (no silent migration). Consolidate manually if this "
+                "is unintended.",
+                legacy, platform_default, DATA_NAMESPACE, legacy,
+            )
+        else:
+            log.warning(
+                "Using the legacy %s data root ('%s' predates platform-"
+                "appropriate defaults) instead of the current default %s. "
+                "No data was moved.",
+                legacy, DATA_NAMESPACE, platform_default,
+            )
+        _data_home_mismatch_warned = True
+    return legacy
 
 
 # ── Project identity ──────────────────────────────────────────────────────────

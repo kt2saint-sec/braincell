@@ -293,7 +293,7 @@ class Store(Protocol):
 
     async def search(
         self,
-        qvec: Optional[np.ndarray],
+        qvec: np.ndarray | None,
         qtext: str,
         project: str | None,
         k: int,
@@ -1195,7 +1195,7 @@ class SqliteStore:
 
     async def search(
         self,
-        qvec: Optional[np.ndarray],
+        qvec: np.ndarray | None,
         qtext: str,
         project: str | None,
         k: int,
@@ -2938,7 +2938,7 @@ class SqliteStore:
 
     async def document_metadata(
         self, project_id: str, doc_key: str,
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """Return one document's stored content hash and parsed metadata.
 
         ``{"content_hash": bytes | None, "metadata": dict}``; None when the
@@ -2992,9 +2992,9 @@ class SqliteStore:
         content_hash: bytes,
         content_type: str,
         chunks: Sequence[tuple[str, np.ndarray]],
-        commit_sha: Optional[str] = None,
-        run_id: Optional[str] = None,
-        metadata: Optional[dict] = None,
+        commit_sha: str | None = None,
+        run_id: str | None = None,
+        metadata: dict | None = None,
     ) -> tuple[int, bool]:
         """Atomically replace one document and its exact chunk/FTS set.
 

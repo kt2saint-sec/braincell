@@ -221,6 +221,183 @@ class TestInstallLauncherA3:
         assert run_gui_called == []
 
 
+# ── A3 cross-platform: macOS .app + Windows .lnk (BUGS.md: native launcher
+# platforms). Neither install_launcher_macos nor install_launcher_windows can
+# actually run their OS-native step on this Linux suite (Finder/LaunchServices,
+# PowerShell's WScript.Shell) — the macOS path needs none of that (pure file
+# writes), and the Windows path mocks subprocess.run to verify the exact
+# PowerShell invocation without a real Windows host. ──────────────────────────
+
+class TestInstallLauncherMacOS:
+    def test_writes_app_bundle_under_home_applications(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        home.mkdir()
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: home)
+        from braincell.gui import _install_launcher_macos
+
+        icon, app = _install_launcher_macos(proj)
+        assert app == home / "Applications" / "BrainCell.app"
+        assert icon == app / "Contents" / "Resources" / "braincell.svg"
+        assert icon.exists()
+        assert icon.read_bytes().startswith(b"<?xml") or icon.read_text().startswith("<?xml")
+
+        plist = (app / "Contents" / "Info.plist").read_text(encoding="utf-8")
+        assert "CFBundleExecutable" in plist
+        assert "braincell-launch" in plist
+
+        script = app / "Contents" / "MacOS" / "braincell-launch"
+        assert script.exists()
+        content = script.read_text(encoding="utf-8")
+        assert content.startswith("#!/bin/sh")
+        assert "start" in content
+        assert str(proj.resolve()) in content
+        # Executable bit set — Finder/LaunchServices exec this file directly.
+        import stat
+        mode = script.stat().st_mode
+        assert mode & stat.S_IXUSR
+
+    def test_default_project_path_is_cwd(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        home.mkdir()
+        cwd = tmp_path / "here"
+        cwd.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: home)
+        monkeypatch.chdir(cwd)
+        from braincell.gui import _install_launcher_macos
+
+        _icon, app = _install_launcher_macos()
+        script = (app / "Contents" / "MacOS" / "braincell-launch").read_text(encoding="utf-8")
+        assert str(cwd.resolve()) in script
+
+    def test_idempotent(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: home)
+        from braincell.gui import _install_launcher_macos
+
+        _install_launcher_macos(tmp_path)
+        _icon, app = _install_launcher_macos(tmp_path)  # second run must not error
+        assert app.is_dir()
+
+    def test_dispatches_to_macos_on_darwin(self, tmp_path, monkeypatch):
+        import braincell.gui as gui_module
+
+        monkeypatch.setattr(sys, "platform", "darwin")
+        calls = []
+        monkeypatch.setattr(
+            gui_module, "_install_launcher_macos",
+            lambda project_path=None: calls.append(project_path) or (Path("icon"), Path("app")),
+        )
+        assert gui_module.install_launcher(tmp_path) == (Path("icon"), Path("app"))
+        assert calls == [tmp_path]
+
+
+class TestInstallLauncherWindows:
+    def _run(self, monkeypatch, tmp_path, *, returncode=0):
+        appdata = tmp_path / "AppData" / "Roaming"
+        monkeypatch.setenv("APPDATA", str(appdata))
+        proj = tmp_path / "proj"
+        proj.mkdir()
+
+        calls = []
+
+        class _Result:
+            def __init__(self):
+                self.returncode = returncode
+                self.stdout = ""
+                self.stderr = "" if returncode == 0 else "boom"
+
+        def _fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return _Result()
+
+        import braincell.gui as gui_module
+        monkeypatch.setattr("subprocess.run", _fake_run)
+
+        icon, lnk = gui_module._install_launcher_windows(proj)
+        return appdata, proj, icon, lnk, calls
+
+    def test_writes_icon_and_invokes_powershell_with_expected_shortcut_fields(
+        self, tmp_path, monkeypatch,
+    ):
+        appdata, proj, icon, lnk, calls = self._run(monkeypatch, tmp_path)
+
+        start_menu = appdata / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+        assert lnk == start_menu / "BrainCell Map.lnk"
+        assert icon == start_menu / "braincell.ico"
+        assert icon.exists()
+        assert icon.read_bytes()  # non-empty packaged .ico
+
+        assert len(calls) == 1
+        cmd, kwargs = calls[0]
+        assert cmd[0] == "powershell"
+        script = cmd[-1]
+        assert "WScript.Shell" in script
+        assert str(lnk) in script
+        assert f'start "{proj.resolve()}"' in script
+        assert str(icon) in script
+        assert kwargs["capture_output"] is True
+
+    def test_default_project_path_is_cwd(self, tmp_path, monkeypatch):
+        appdata = tmp_path / "AppData" / "Roaming"
+        monkeypatch.setenv("APPDATA", str(appdata))
+        cwd = tmp_path / "here"
+        cwd.mkdir()
+        monkeypatch.chdir(cwd)
+
+        import braincell.gui as gui_module
+        calls = []
+
+        class _Result:
+            returncode = 0
+            stderr = ""
+
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda cmd, **kw: calls.append(cmd) or _Result(),
+        )
+        gui_module._install_launcher_windows()
+        assert str(cwd.resolve()) in calls[0][-1]
+
+    def test_powershell_failure_logs_and_still_returns_paths(self, tmp_path, monkeypatch, caplog):
+        import logging
+        with caplog.at_level(logging.WARNING, logger="braincell.gui"):
+            appdata, _proj, icon, lnk, _calls = self._run(monkeypatch, tmp_path, returncode=1)
+        assert icon.exists()  # the icon copy still happened before the failed call
+        assert lnk == appdata / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "BrainCell Map.lnk"
+        assert any("PowerShell" in record.message for record in caplog.records)
+
+    def test_falls_back_to_appdata_home_when_env_unset(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("APPDATA", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        import braincell.gui as gui_module
+
+        class _Result:
+            returncode = 0
+            stderr = ""
+
+        monkeypatch.setattr("subprocess.run", lambda cmd, **kw: _Result())
+        _icon, lnk = gui_module._install_launcher_windows(tmp_path)
+        assert lnk == (
+            tmp_path / "AppData" / "Roaming" / "Microsoft" / "Windows"
+            / "Start Menu" / "Programs" / "BrainCell Map.lnk"
+        )
+
+    def test_dispatches_to_windows_on_win32(self, tmp_path, monkeypatch):
+        import braincell.gui as gui_module
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        calls = []
+        monkeypatch.setattr(
+            gui_module, "_install_launcher_windows",
+            lambda project_path=None: calls.append(project_path) or (Path("icon"), Path("lnk")),
+        )
+        assert gui_module.install_launcher(tmp_path) == (Path("icon"), Path("lnk"))
+        assert calls == [tmp_path]
+
+
 # ── A4: optional GUI token ────────────────────────────────────────────────────
 
 class TestGuiTokenA4:

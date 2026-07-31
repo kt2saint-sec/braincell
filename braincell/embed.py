@@ -284,7 +284,7 @@ def unload_embed_model() -> bool:
     if embed_spec.PROVIDER != "ollama":
         return True
     try:
-        import ollama  # noqa: PLC0415
+        import ollama
 
         client = ollama.Client(timeout=embed_spec.OLLAMA_TIMEOUT)
         client.generate(model=embed_spec.MODEL, prompt="", keep_alive=0)

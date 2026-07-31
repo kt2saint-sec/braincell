@@ -188,6 +188,56 @@ def resolve_ulid_to_path(ulid: str, registry: dict[str, str] | None = None) -> P
     return Path(min(paths)) if paths else None
 
 
+# ── Orphan reconciliation (READ-ONLY inventory) ───────────────────────────────
+
+def find_orphans() -> dict[str, list[dict[str, str]]]:
+    """Preview-only inventory of two independent orphan classes.
+
+    - ``orphaned_registry_entries``: path-registry rows whose registered path
+      no longer exists on disk — the repo was deleted or moved without
+      ``braincell project reassociate``. Memory for that ULID is untouched and
+      still reachable by ULID; only the path mapping is stale.
+    - ``orphaned_project_databases``: a ``projects/<ulid>/braincell.db`` on
+      disk with no path-registry row naming that ULID — the registry entry was
+      lost or never written for an existing brain.
+
+    Detection only: this never deletes a registry row, a database, or any
+    memory, and never reassociates a path (that is
+    ``reassociate_project_path``, already live via `braincell project
+    reassociate`). Callers decide what — if anything — to do with the list.
+    """
+    from . import config
+
+    registry = load_path_registry()
+    registered_ulids: set[str] = set(registry.values())
+    orphaned_paths = sorted(
+        (
+            {"path": path_str, "project_id": ulid}
+            for path_str, ulid in registry.items()
+            if not Path(path_str).exists()
+        ),
+        key=lambda item: item["path"],
+    )
+
+    projects_root = config._xdg_data_home() / config.DATA_NAMESPACE / "projects"
+    orphaned_databases: list[dict[str, str]] = []
+    if projects_root.is_dir():
+        for entry in projects_root.iterdir():
+            if not entry.is_dir() or entry.name in registered_ulids:
+                continue
+            db_path = entry / "braincell.db"
+            if db_path.is_file():
+                orphaned_databases.append(
+                    {"project_id": entry.name, "database": str(db_path)}
+                )
+    orphaned_databases.sort(key=lambda item: item["project_id"])
+
+    return {
+        "orphaned_registry_entries": orphaned_paths,
+        "orphaned_project_databases": orphaned_databases,
+    }
+
+
 # ── Pools (ULID membership only) ────────────────────────────────────────────
 
 def normalize_pool_name(name: str) -> str:

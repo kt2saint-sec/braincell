@@ -171,7 +171,7 @@ async def reflect(
 
     # Complete fallible model work before taking a backup or opening an
     # operation. A no-op apply therefore creates neither history nor snapshots.
-    prepared: list[tuple[list[int], str, Optional[np.ndarray]]] = []
+    prepared: list[tuple[list[int], str, np.ndarray | None]] = []
     for cluster in selected:
         by_id = await _cluster_contents(store, cluster)
         contents = [by_id.get(nid, "") for nid in cluster]

@@ -20,8 +20,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .config import DATA_NAMESPACE, get_db_path
 from .catalog_io import MutationBusyError, mutation_lock
+from .config import DATA_NAMESPACE, get_db_path
 from .project_registry import load_path_registry
 from .schema import MEMORY_SCHEMA_VERSION
 from .store import SqliteStore

@@ -155,9 +155,11 @@ def test_destination_mutation_lock_has_one_owner_and_deterministic_busy_result(
     try:
         import pytest
 
-        with pytest.raises(MutationBusyError, match="another mutation already owns"):
-            with mutation_lock(destination, operation="second-build"):
-                pass
+        with (
+            pytest.raises(MutationBusyError, match="another mutation already owns"),
+            mutation_lock(destination, operation="second-build"),
+        ):
+            pass
     finally:
         release.set()
         process.join(timeout=20)

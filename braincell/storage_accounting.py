@@ -33,10 +33,12 @@ def _category(path: Path) -> str:
     name = path.name
     if name.endswith(".db") and (
         "backup" in name
-        or name.startswith("braincell-preconsolidate-")
-        or name.startswith("braincell-prereflect-")
-        or name.startswith("legacy-")
-        or name.startswith("destination-")
+        or name.startswith((
+            "braincell-preconsolidate-",
+            "braincell-prereflect-",
+            "legacy-",
+            "destination-",
+        ))
     ):
         return "backups"
     if name == "braincell.db" or name in {"braincell.db-wal", "braincell.db-shm"}:
@@ -72,6 +74,88 @@ def _row_counts(database: Path) -> dict[str, int]:
         return counts
     finally:
         connection.close()
+
+
+# WAL-starvation: the `-wal` file growing far past the database it belongs to
+# means checkpoints aren't running (a long-lived reader, or nothing ever
+# calling PRAGMA wal_checkpoint) — a warning-only signal; this module never
+# executes VACUUM or a forced checkpoint (BUGS.md: SQLite compaction/WAL
+# diagnostics stays an authorized, unimplemented workflow).
+_WAL_STARVATION_RATIO = 2.0
+_WAL_STARVATION_MIN_BYTES = 10 * 1024 * 1024  # ignore noise on small/fresh databases
+
+
+def _db_diagnostics(database: Path, project_id: str) -> dict[str, Any]:
+    """Read-only residual-state detail for one project database: SQLite
+    freelist pages, embedding-storage footprint, foreign-owned document rows,
+    and WAL-starvation. Detection only — never VACUUMs, checkpoints, or deletes.
+    """
+    diagnostics: dict[str, Any] = {
+        "freelist_pages": None,
+        "freelist_bytes": None,
+        "page_count": None,
+        "page_size": None,
+        "embedding": {
+            "chunks_embedded": 0,
+            "chunks_null_embedding": 0,
+            "embedding_bytes": 0,
+        },
+        "foreign_documents": 0,
+        "wal": {"wal_bytes": 0, "db_bytes": 0, "starved": False},
+    }
+    if not database.is_file():
+        return diagnostics
+
+    connection = _readonly_connection(database)
+    try:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        page_count = connection.execute("PRAGMA page_count").fetchone()[0]
+        page_size = connection.execute("PRAGMA page_size").fetchone()[0]
+        freelist = connection.execute("PRAGMA freelist_count").fetchone()[0]
+        diagnostics["page_count"] = int(page_count)
+        diagnostics["page_size"] = int(page_size)
+        diagnostics["freelist_pages"] = int(freelist)
+        diagnostics["freelist_bytes"] = int(freelist) * int(page_size)
+
+        if "bc_chunks" in tables:
+            row = connection.execute(
+                "SELECT "
+                "SUM(CASE WHEN embedding IS NOT NULL THEN 1 ELSE 0 END), "
+                "SUM(CASE WHEN embedding IS NULL THEN 1 ELSE 0 END), "
+                "SUM(LENGTH(embedding)) "
+                "FROM bc_chunks"
+            ).fetchone()
+            diagnostics["embedding"] = {
+                "chunks_embedded": int(row[0] or 0),
+                "chunks_null_embedding": int(row[1] or 0),
+                "embedding_bytes": int(row[2] or 0),
+            }
+        if "bc_documents" in tables:
+            row = connection.execute(
+                "SELECT COUNT(*) FROM bc_documents WHERE project_id != ?",
+                (project_id,),
+            ).fetchone()
+            diagnostics["foreign_documents"] = int(row[0] or 0)
+    finally:
+        connection.close()
+
+    wal_path = database.with_name(database.name + "-wal")
+    wal_bytes = wal_path.stat().st_size if wal_path.is_file() else 0
+    db_bytes = database.stat().st_size
+    diagnostics["wal"] = {
+        "wal_bytes": wal_bytes,
+        "db_bytes": db_bytes,
+        "starved": bool(
+            wal_bytes > _WAL_STARVATION_MIN_BYTES
+            and wal_bytes > db_bytes * _WAL_STARVATION_RATIO
+        ),
+    }
+    return diagnostics
 
 
 def referenced_backup_paths(database: Path) -> frozenset[str]:
@@ -241,12 +325,16 @@ def storage_report(
         expire_tombstones_days=expire_tombstones_days,
     )
 
+    from .project_registry import find_orphans
+
     return {
         "namespace_root": str(root),
         "scanned_roots": [str(item) for item in roots],
         "project_id": project_id,
         "project_database": str(database),
         "project_rows": _row_counts(database),
+        "database_diagnostics": _db_diagnostics(database, project_id),
+        "orphans": find_orphans(),
         "totals": {
             "files": len(entries),
             "bytes": sum(entry["bytes"] for entry in entries),

@@ -294,6 +294,51 @@ class TestClear:
         assert r.status_code == 200
         assert not ledger.exists()
 
+    def test_clear_creates_a_pre_wipe_backup(self, tmp_path):
+        """BUGS.md safety-backup coverage: clear must snapshot before wiping."""
+        pid = "01TESTPROJECTDDDDDDDDDDDDD"
+        self._seed(tmp_path, pid)
+        with TestClient(_app(tmp_path)) as client:
+            r = client.post("/api/clear", json={"project_id": pid})
+        assert r.status_code == 200
+        backup = r.json()["backup"]
+        assert backup is not None
+        assert Path(backup).is_file()
+
+    def test_clear_fails_closed_when_backup_fails(self, tmp_path, monkeypatch):
+        """Fault injection: VACUUM INTO fails -> clear refuses, memory untouched."""
+        pid = "01TESTPROJECTEEEEEEEEEEEEE"
+        self._seed(tmp_path, pid)
+
+        def _boom(src, dest):
+            raise RuntimeError("simulated disk-full during VACUUM INTO")
+
+        monkeypatch.setattr("braincell.cli._vacuum_into", _boom)
+        with TestClient(_app(tmp_path)) as client:
+            r = client.post("/api/clear", json={"project_id": pid})
+            assert r.status_code == 409
+            projs = client.get("/api/projects").json()
+        me = next(p for p in projs if p["project_id"] == pid)
+        assert me["docs"] == 1 and me["chunks"] == 1  # the wipe never ran
+
+    def test_clear_skip_backup_bypasses_the_snapshot(self, tmp_path, monkeypatch):
+        """skip_backup is the explicit, off-by-default escape hatch."""
+        pid = "01TESTPROJECTFFFFFFFFFFFFF"
+        self._seed(tmp_path, pid)
+
+        def _boom(src, dest):
+            raise RuntimeError("simulated disk-full during VACUUM INTO")
+
+        monkeypatch.setattr("braincell.cli._vacuum_into", _boom)
+        with TestClient(_app(tmp_path)) as client:
+            r = client.post(
+                "/api/clear", json={"project_id": pid, "skip_backup": True}
+            )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["backup"] is None
+        assert body["docs_removed"] == 1  # the wipe proceeded despite no snapshot
+
 
 # ── /api/schedule ─────────────────────────────────────────────────────────────
 
@@ -339,7 +384,7 @@ class TestSchedule:
     def test_failed_scheduled_ingest_updates_attempt_not_success(
         self, tmp_path, monkeypatch
     ):
-        import braincell.gui_ingest as gui_ingest
+        from braincell import gui_ingest
 
         path = str((tmp_path / "project").resolve())
         gui_ingest.save_schedules([
@@ -373,7 +418,7 @@ class TestSchedule:
         assert not gui_ingest.schedule_due(schedule, now + 60)
 
     def test_gui_mutation_contention_does_not_advance_attempt(self, tmp_path):
-        import braincell.gui_ingest as gui_ingest
+        from braincell import gui_ingest
         from braincell.gui_mutation import GuiMutationBusy
 
         path = str((tmp_path / "project").resolve())

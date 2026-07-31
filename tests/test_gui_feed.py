@@ -166,6 +166,7 @@ class TestTailSince:
 
         async def _run():
             import hashlib
+
             from tests.conftest import fake_vec
             await store.replace_document(
                 project_id=PID_A, doc_key="multi", title="multi",

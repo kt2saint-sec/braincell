@@ -202,9 +202,11 @@ class TestExplicitRetentionApply:
         from braincell.storage_accounting import apply_retention
 
         project_id, database = _bootstrapped_project(tmp_path)
-        with mutation_lock(database, operation="test-holder"):
-            with pytest.raises(MutationBusyError):
-                apply_retention(project_id, keep_backups=0)
+        with (
+            mutation_lock(database, operation="test-holder"),
+            pytest.raises(MutationBusyError),
+        ):
+            apply_retention(project_id, keep_backups=0)
 
     def test_operation_expiry_removes_rows_but_not_the_snapshot_this_run(
         self, tmp_path
@@ -284,3 +286,106 @@ class TestExplicitRetentionApply:
         # A large window keeps even the 2020 tombstone out of the plan.
         plan = storage_report(project_id, expire_tombstones_days=36500)
         assert plan["retention_plan"]["history"]["tombstoned_notes"] == []
+
+
+class TestDatabaseDiagnostics:
+    """BUGS.md stats/storage diagnostics: freelist, embedding, foreign-document,
+    and WAL-starvation detail, all read-only additions to storage_report()."""
+
+    def test_reports_freelist_and_embedding_detail(self, tmp_path):
+        import asyncio
+
+        from braincell.storage_accounting import storage_report
+        from braincell.store import SqliteStore
+        from tests.conftest import _insert_doc_and_chunk
+
+        project_id, database = _bootstrapped_project(tmp_path)
+        store = SqliteStore(database)
+
+        async def _seed():
+            await _insert_doc_and_chunk(
+                store, project=project_id, doc_key="d1", text="hello"
+            )
+            await store.aclose()
+
+        asyncio.run(_seed())
+
+        report = storage_report(project_id)
+        diag = report["database_diagnostics"]
+        assert diag["page_count"] is not None
+        assert diag["freelist_pages"] is not None
+        assert diag["embedding"]["chunks_embedded"] == 1
+        assert diag["embedding"]["embedding_bytes"] > 0
+        assert diag["foreign_documents"] == 0
+
+    def test_foreign_owned_documents_are_counted_not_deleted(self, tmp_path):
+        """A doc row whose project_id differs from the report's project is
+        surfaced as a count only — storage_report never touches rows."""
+        from braincell.storage_accounting import storage_report
+
+        project_id, database = _bootstrapped_project(tmp_path)
+        con = sqlite3.connect(str(database))
+        try:
+            con.execute(
+                "INSERT INTO bc_documents(project_id, doc_key, title, "
+                "content_hash, content_type) VALUES ('other-project', 'k', "
+                "'t', X'00', 'cell')"
+            )
+            con.commit()
+        finally:
+            con.close()
+
+        report = storage_report(project_id)
+        assert report["database_diagnostics"]["foreign_documents"] == 1
+
+        # Read-only: the foreign row is still there afterward.
+        con = sqlite3.connect(str(database))
+        try:
+            count = con.execute(
+                "SELECT COUNT(*) FROM bc_documents WHERE project_id='other-project'"
+            ).fetchone()[0]
+        finally:
+            con.close()
+        assert count == 1
+
+    def test_wal_starvation_flagged_past_the_ratio_and_floor(self, tmp_path):
+        from braincell.storage_accounting import storage_report
+
+        project_id, database = _bootstrapped_project(tmp_path)
+        wal = database.parent / (database.name + "-wal")
+        # Small WAL relative to a tiny db: below the byte floor, never flagged.
+        wal.write_bytes(b"0" * (1024 * 1024))
+        assert storage_report(project_id)["database_diagnostics"]["wal"]["starved"] is False
+
+        # Past both the floor and the ratio against the tiny bootstrapped db.
+        wal.write_bytes(b"0" * (11 * 1024 * 1024))
+        report = storage_report(project_id)
+        assert report["database_diagnostics"]["wal"]["starved"] is True
+        assert report["database_diagnostics"]["wal"]["wal_bytes"] == 11 * 1024 * 1024
+
+    def test_missing_database_returns_empty_diagnostics_not_a_crash(self, tmp_path):
+        from braincell.storage_accounting import storage_report
+
+        project_id = "01NEVERBUILTAAAAAAAAAAAAAA"
+        report = storage_report(project_id)
+        diag = report["database_diagnostics"]
+        assert diag["page_count"] is None
+        assert diag["embedding"]["chunks_embedded"] == 0
+        assert diag["wal"]["starved"] is False
+
+
+class TestOrphansSurfacedInStorageReport:
+    def test_storage_report_includes_the_orphan_inventory(self, tmp_path):
+        from braincell.project_registry import register_path
+        from braincell.storage_accounting import storage_report
+
+        project_id, _database = _bootstrapped_project(tmp_path)
+
+        stale_root = tmp_path / "deleted-repo"
+        stale_root.mkdir()
+        register_path(str(stale_root), "01ORPHANAAAAAAAAAAAAAAAAAA")
+        stale_root.rmdir()
+
+        report = storage_report(project_id)
+        orphaned = report["orphans"]["orphaned_registry_entries"]
+        assert {"path": str(stale_root), "project_id": "01ORPHANAAAAAAAAAAAAAAAAAA"} in orphaned

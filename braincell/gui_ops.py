@@ -299,8 +299,8 @@ def run_reembed_notes(db_path: Path, project_id: str) -> dict | None:
 
 
 def _run_locked(
-    db_path: Path, operation: str, worker: Callable[[], Optional[dict]],
-) -> Optional[dict]:
+    db_path: Path, operation: str, worker: Callable[[], dict | None],
+) -> dict | None:
     """Run a maintenance worker under the cross-process destination lock."""
     from .catalog_io import mutation_lock
 
@@ -313,7 +313,7 @@ def _run_locked(
 def mount_ops_api(
     app: FastAPI, *, db_path: Path, manager: OpsJobManager,
     connected_project_id: str,
-    coordinator: Optional[GuiMutationCoordinator] = None,
+    coordinator: GuiMutationCoordinator | None = None,
 ) -> None:
     """Register the maintenance-command routes on *app*."""
 

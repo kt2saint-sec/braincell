@@ -15,8 +15,6 @@ import pytest
 
 from tests.conftest import fake_vec, make_store
 
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECTION 1: _file_sha — streaming vs. whole-file equivalence
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -302,7 +300,7 @@ class TestIngestCheckpointing:
         old_hash = hashlib.sha256(b"old state").digest()
 
         monkeypatch.setattr(ingest, "_TRANSCRIPT_ROOTS", [transcript_root])
-        monkeypatch.setattr(ingest, "load_path_registry", lambda: {})
+        monkeypatch.setattr(ingest, "load_path_registry", dict)
         monkeypatch.setattr(
             ingest, "resolve_family_ulids", lambda _project_id, registry: {"source-1"}
         )
@@ -462,7 +460,7 @@ class TestSkillAuthority:
 
     def _patch_ingest(self, monkeypatch, ingest, transcript_root):
         monkeypatch.setattr(ingest, "_TRANSCRIPT_ROOTS", [transcript_root])
-        monkeypatch.setattr(ingest, "load_path_registry", lambda: {})
+        monkeypatch.setattr(ingest, "load_path_registry", dict)
         monkeypatch.setattr(
             ingest, "resolve_family_ulids", lambda _project_id, registry: {"source-1"}
         )
@@ -512,7 +510,7 @@ class TestSkillAuthority:
             store = make_store(store_dir)
             self._patch_ingest(monkeypatch, ingest, root)
 
-            async def _run(root=root, store=store, order=order):
+            async def _run(root=root, store=store, order=order, store_dir=store_dir):
                 first, second = (
                     (("session-old", old_body, 1_000), ("session-new", new_body, 2_000))
                     if order == "old-first"
@@ -555,7 +553,7 @@ class TestSkillAuthority:
             store = make_store(store_dir)
             self._patch_ingest(monkeypatch, ingest, root)
 
-            async def _run(root=root, store=store, bodies=bodies, order=order):
+            async def _run(root=root, store=store, bodies=bodies, order=order, store_dir=store_dir):
                 self._write_session(root, f"session-one-{order}", bodies[0], 5_000)
                 await ingest.ingest_transcripts(
                     store, "source-1", ledger_path=store_dir / "ledger.json"

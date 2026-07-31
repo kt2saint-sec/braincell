@@ -913,7 +913,6 @@ class TestDocumentWriteGuards:
 
     def test_wrong_dim_raises_value_error(self, tmp_path):
         from braincell import embed_spec
-        from braincell.store import upsert_chunk, upsert_document
 
         wrong_dim_vec = np.ones(embed_spec.DIM + 1, dtype=np.float32)
 

@@ -172,6 +172,7 @@ def _run_build(
     reembed: bool,
     verbose: bool,
     mode: str | None = None,
+    no_backup: bool = False,
 ) -> None:
     root = root.resolve()
     project_id = get_project_id(root)  # resolves via path-registry; mints + registers a new ULID if absent
@@ -196,6 +197,7 @@ def _run_build(
                 skip_transcripts=skip_transcripts,
                 reembed=reembed,
                 verbose=verbose,
+                no_backup=no_backup,
             )
     except MutationBusyError as exc:
         raise SystemExit(f"braincell build: {exc}") from exc
@@ -208,8 +210,25 @@ def _execute_build(
     skip_transcripts: bool,
     reembed: bool,
     verbose: bool,
+    no_backup: bool = False,
 ) -> None:
     """Run one build while the caller owns the destination mutation lock."""
+    if reembed and db_path.is_file():
+        # --reembed always ends in a full wipe of docs/chunks (either via the
+        # dimension-mismatch reset below or via _reembed_wipe further down) —
+        # require the same safety snapshot consolidate/reflect require before
+        # any destructive --apply. --no-backup is an explicit, off-by-default
+        # escape hatch for callers who have their own backup story (mirrors
+        # the loud-warning convention used elsewhere in this CLI).
+        if no_backup:
+            print(
+                "WARNING: --no-backup set — proceeding with --reembed with NO "
+                "safety snapshot. This wipe cannot be undone if it goes wrong.",
+                file=sys.stderr,
+            )
+        else:
+            _required_auto_backup(db_path, "reembed")
+
     store = SqliteStore(db_path)
     unload_after_build = False
     try:
@@ -278,7 +297,8 @@ def cmd_build(args: argparse.Namespace) -> None:
               file=sys.stderr)
         raise SystemExit(1)
     _run_build(root, skip_transcripts=args.skip_transcripts, reembed=args.reembed,
-               verbose=args.verbose, mode=args.mode)
+               verbose=args.verbose, mode=args.mode,
+               no_backup=getattr(args, "no_backup", False))
 
 
 def cmd_sync(args: argparse.Namespace) -> None:
@@ -616,6 +636,11 @@ def cmd_storage(args: argparse.Namespace) -> None:
     """
     import json
 
+    if getattr(args, "list_orphans", False):
+        from .project_registry import find_orphans
+        print(json.dumps(find_orphans(), indent=2, sort_keys=True))
+        return
+
     root = Path(args.path).resolve()
     project_id = resolve_project_id_readonly(root)
     if project_id is None:
@@ -629,7 +654,7 @@ def cmd_storage(args: argparse.Namespace) -> None:
         storage_report,
     )
 
-    retention_kwargs = dict(
+    retention_kwargs = dict(  # noqa: C408 — keyword form mirrors apply_retention()'s signature at the call site
         keep_backups=args.keep_backups,
         backup_roots=[Path(item) for item in args.backup_root],
         expire_operations_days=args.expire_operations_days,
@@ -644,6 +669,26 @@ def cmd_storage(args: argparse.Namespace) -> None:
         return
     report = storage_report(project_id, **retention_kwargs)
     print(json.dumps(report, indent=2, sort_keys=True))
+
+    wal = report["database_diagnostics"]["wal"]
+    if wal["starved"]:
+        print(
+            f"WARNING: WAL file is {wal['wal_bytes']} bytes against a "
+            f"{wal['db_bytes']}-byte database — checkpoints are not keeping up. "
+            "(Detection only; this CLI does not force a checkpoint or VACUUM.)",
+            file=sys.stderr,
+        )
+    orphans = report["orphans"]
+    n_paths = len(orphans["orphaned_registry_entries"])
+    n_dbs = len(orphans["orphaned_project_databases"])
+    if n_paths or n_dbs:
+        print(
+            f"WARNING: {n_paths} orphaned registry path(s), {n_dbs} orphaned "
+            "project database(s) found across the namespace (see 'orphans' "
+            "above, or `braincell storage --list-orphans`). Preview only — "
+            "nothing was changed.",
+            file=sys.stderr,
+        )
 
 
 def cmd_reflect(args: argparse.Namespace) -> None:
@@ -1702,6 +1747,42 @@ def cmd_legacy_recovery(args: argparse.Namespace) -> None:
     print(json.dumps(result, indent=2, sort_keys=True))
 
 
+def cmd_reconcile_foreign(args: argparse.Namespace) -> None:
+    """Preview, or explicitly apply, migration of one Project's foreign-owned
+    `bc_documents` rows into their true owners' own databases."""
+    import json
+
+    from .catalog_io import MutationBusyError
+    from .transcript_ingest import (
+        ForeignDocumentReconciliationError,
+        apply_foreign_document_migration,
+        preview_foreign_documents,
+    )
+
+    root = Path(args.path).resolve()
+    project_id = resolve_project_id_readonly(root)
+    if project_id is None:
+        raise SystemExit(
+            f"No BrainCell Project registered for {root}; reconciliation never mints."
+        )
+    try:
+        if args.reconcile_foreign_action == "preview":
+            result = preview_foreign_documents(project_id)
+        else:
+            result = apply_foreign_document_migration(
+                project_id,
+                owner_project_ids=args.owner,
+                approval_digest=args.approve,
+                backup_dir=(
+                    Path(args.backup_dir).expanduser().resolve()
+                    if args.backup_dir else None
+                ),
+            )
+    except (ForeignDocumentReconciliationError, MutationBusyError) as exc:
+        raise SystemExit(f"braincell reconcile-foreign-documents: {exc}") from exc
+    print(json.dumps(result, indent=2, sort_keys=True))
+
+
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="braincell", description="Standalone BrainCell memory CLI.")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -1712,6 +1793,9 @@ def main(argv: list[str] | None = None) -> None:
                     help="Skip transcript ingestion (register + embed-safety checks only).")
     pb.add_argument("--reembed", action="store_true",
                     help="Wipe embeddings first (required when changing embed provider/dim).")
+    pb.add_argument("--no-backup", action="store_true",
+                    help="Skip the mandatory pre-wipe safety snapshot for --reembed "
+                         "(off by default; only for callers with their own backup story).")
     pb.add_argument("--no-mint", action="store_true",
                     help="Fail instead of registering/minting a new project ULID if unregistered.")
     pb.add_argument("-v", "--verbose", action="store_true")
@@ -2050,6 +2134,41 @@ def main(argv: list[str] | None = None) -> None:
     )
     precovery_apply.set_defaults(func=cmd_legacy_recovery)
 
+    precon = sub.add_parser(
+        "reconcile-foreign-documents",
+        help="Preview or migrate bc_documents rows owned by a different "
+             "Project out of this Project's database (BUGS.md: foreign "
+             "transcript cleanup).",
+    )
+    precon.add_argument(
+        "path", nargs="?", default=".", help="Registered Project path (default: cwd)."
+    )
+    reconsub = precon.add_subparsers(
+        dest="reconcile_foreign_action", required=True
+    )
+    precon_preview = reconsub.add_parser(
+        "preview", help="List foreign-owned rows without writing anything."
+    )
+    precon_preview.set_defaults(func=cmd_reconcile_foreign)
+    precon_apply = reconsub.add_parser(
+        "apply",
+        help="Migrate selected owners' rows into their own databases after "
+             "exact preview approval.",
+    )
+    precon_apply.add_argument(
+        "--owner", action="append", required=True,
+        help="Owner Project ULID to migrate; repeat for multiple owners.",
+    )
+    precon_apply.add_argument(
+        "--approve", required=True,
+        help="Exact approval_digest from the current preview.",
+    )
+    precon_apply.add_argument(
+        "--backup-dir",
+        help="Directory for the retained pre-migration source-database backup.",
+    )
+    precon_apply.set_defaults(func=cmd_reconcile_foreign)
+
     pst = sub.add_parser(
         "stats",
         help="Show store size + a vector-search p95 benchmark (backend decision).",
@@ -2102,6 +2221,14 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Execute the printed plan (refused with no retention option "
              "configured; undo-referenced snapshots are never deleted).",
+    )
+    pstorage.add_argument(
+        "--list-orphans",
+        action="store_true",
+        help="Only print the read-only orphan inventory (registry entries whose "
+             "path no longer exists; project databases with no registry entry) "
+             "for the whole namespace. Detection only — no path argument needed, "
+             "nothing is repaired or deleted.",
     )
     pstorage.set_defaults(func=cmd_storage)
 

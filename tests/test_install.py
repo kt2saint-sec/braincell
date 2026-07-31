@@ -171,6 +171,15 @@ def test_portable_command_refuses_absolute_fallback(monkeypatch):
 
 
 def test_codex_config_preserves_unrelated_content_permissions_and_final_newline(tmp_path):
+    """BUGS.md "Windows POSIX-mode test-scoping": the `chmod(0o640)` / `S_IMODE`
+    round-trip below is a POSIX-only contract. Windows' `chmod` cannot express
+    arbitrary POSIX mode bits (it only toggles the read-only attribute, coming
+    back as something like 0o666 regardless of what was requested), and
+    `_atomic_write_text` here has no ACL-preservation step of its own to assert
+    in its place (unlike the GUI token's `_windows_restrict_token_acl` —
+    there is nothing to mock). The content/backup/newline assertions below are
+    genuinely platform-agnostic and stay unconditional.
+    """
     repo = _codex_repo(tmp_path)
     cfg = repo / ".codex" / "config.toml"
     cfg.parent.mkdir()

@@ -86,7 +86,7 @@ async def _order_by_score(
     fn = score_fn or (lambda q, t: _ollama_score(q, t))
     semaphore = asyncio.Semaphore(_RERANK_CONCURRENCY)
 
-    async def _score(idx: int, text: str) -> tuple[int, Optional[float]]:
+    async def _score(idx: int, text: str) -> tuple[int, float | None]:
         async with semaphore:
             if asyncio.iscoroutinefunction(fn):
                 value = await fn(query, text)
