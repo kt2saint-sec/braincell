@@ -25,10 +25,11 @@ import re
 import sqlite3
 import sys
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Protocol, Sequence, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 import aiosqlite
 import numpy as np
@@ -41,9 +42,9 @@ from .schema import (
     MEMORY_SCHEMA_VERSION,
     NOTE_LINKS_DDL,
     NOTE_LINKS_IDX_DDL,
-    OPERATIONS_DDL,
     OPERATION_NOTES_DDL,
     OPERATION_NOTES_IDX_DDL,
+    OPERATIONS_DDL,
 )
 
 log = _get_log("braincell.store")
@@ -189,14 +190,14 @@ class Hit:
     title: str
     snippet: str
     score: float
-    source_path: Optional[str] = None
-    metadata: Optional[dict] = None
+    source_path: str | None = None
+    metadata: dict | None = None
     # Interpretable relevance, surfaced alongside `score` so an LLM consumer can judge
     # match quality. In hybrid mode `score` is an RRF rank-fusion value (~1/(60+rank),
     # rank-only — carries NO magnitude signal); `cosine` is the raw vector similarity
     # in [-1,1] (None when the hit came only from the keyword/FTS list, no vector rank),
     # and `fts_matched` flags chunks that also matched full-text search.
-    cosine: Optional[float] = None
+    cosine: float | None = None
     fts_matched: bool = False
 
 
@@ -207,11 +208,11 @@ class Doc:
     doc_key: str
     title: str
     content_type: str
-    commit_sha: Optional[str]
+    commit_sha: str | None
     created_at: str
-    updated_at: Optional[str]
+    updated_at: str | None
     chunks: list[dict] = field(default_factory=list)
-    metadata: Optional[dict] = None
+    metadata: dict | None = None
 
 
 @dataclass
@@ -220,8 +221,8 @@ class Status:
     indexed: bool
     doc_count: int
     chunk_count: int
-    last_ingest_ts: Optional[str]
-    head_sha: Optional[str]
+    last_ingest_ts: str | None
+    head_sha: str | None
     stale: bool = False
 
 
@@ -247,9 +248,9 @@ class Note:
     kind: str
     content: str
     tags: list[str]
-    confidence: Optional[float]
-    source_hint: Optional[str]
-    superseded_by: Optional[int]
+    confidence: float | None
+    source_hint: str | None
+    superseded_by: int | None
     created_at: str
     # Liveness authority ('active' | 'superseded' | 'tombstoned'). Recall
     # returns 'active' notes (or resolves to them); other values appear only in
@@ -267,11 +268,11 @@ class Note:
     #                it resolves to (``resolved_from`` / ``history`` say what it replaced)
     #   'linked'   — pulled in by graph expansion from ``linked_from``
     retrieval_origin: str = "direct"
-    resolved_from: Optional[int] = None
+    resolved_from: int | None = None
     history: list[dict] = field(default_factory=list)
-    linked_from: Optional[int] = None
-    relation: Optional[str] = None
-    relation_weight: Optional[float] = None
+    linked_from: int | None = None
+    relation: str | None = None
+    relation_weight: float | None = None
 
 
 # ── Store Protocol ────────────────────────────────────────────────────────────
@@ -292,7 +293,7 @@ class Store(Protocol):
         self,
         qvec: np.ndarray,
         qtext: str,
-        project: Optional[str],
+        project: str | None,
         k: int,
         mode: str,
     ) -> list[Hit]:
@@ -308,12 +309,12 @@ class Store(Protocol):
         ...
 
     async def get_document(
-        self, doc_id_or_key: str | int, project: Optional[str]
-    ) -> Optional[Doc]:
+        self, doc_id_or_key: str | int, project: str | None
+    ) -> Doc | None:
         """Return full document with chunk texts."""
         ...
 
-    async def ingest_status(self, project: Optional[str]) -> Status:
+    async def ingest_status(self, project: str | None) -> Status:
         """Return indexed/doc_count/last_ingest_ts for this project."""
         ...
 
@@ -322,9 +323,9 @@ class Store(Protocol):
         text: str,
         kind: str,
         project: str,
-        tags: Optional[list[str]],
-        confidence: Optional[float],
-        embedding: Optional[np.ndarray] = None,
+        tags: list[str] | None,
+        confidence: float | None,
+        embedding: np.ndarray | None = None,
     ) -> str:
         """Persist a curated memory note. Returns the note id as string.
 
@@ -348,20 +349,20 @@ class Store(Protocol):
         note_id: int,
         new_content: str,
         project_id: str,
-        kind: Optional[str] = None,
-        tags: Optional[list[str]] = None,
-        confidence: Optional[float] = None,
+        kind: str | None = None,
+        tags: list[str] | None = None,
+        confidence: float | None = None,
     ) -> int:
         """Supersede a note with new content; returns the new note id."""
         ...
 
     async def recall(
         self,
-        qvec: Optional[np.ndarray],
-        project: Optional[str | Sequence[str]],
+        qvec: np.ndarray | None,
+        project: str | Sequence[str] | None,
         k: int,
         qtext: str = "",
-        min_cosine: Optional[float] = None,
+        min_cosine: float | None = None,
         dedup: bool = True,
         include_superseded: bool = False,
     ) -> list[Note]:
@@ -387,8 +388,8 @@ class Store(Protocol):
 
     async def list_documents(
         self,
-        project: Optional[str],
-        filter: Optional[str],
+        project: str | None,
+        filter: str | None,
         limit: int,
     ) -> list[dict]:
         """List ingested documents, capped at 200 rows. SQL parameterized."""
@@ -413,7 +414,7 @@ _MAX_NOTE_CHARS = 100_000
 # entropy check, so this is a guardrail against accidental pastes, not a
 # guarantee. Covers the common cloud / AI / VCS credential formats + PEM keys.
 _SECRET_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(r"[A-Z_]{6,}=(?!false|true|none|null)[A-Za-z0-9+/]{16,}", re.I),
+    re.compile(r"[A-Z_]{6,}=(?!false|true|none|null)[A-Za-z0-9+/]{16,}", re.IGNORECASE),
     re.compile(r"sk-ant-[A-Za-z0-9_-]{20,}"),                  # Anthropic
     re.compile(r"sk-(?:proj-|prod-|test-)?[A-Za-z0-9]{20,}"),  # OpenAI (incl. sk-proj-)
     re.compile(r"(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{20,}"),   # Stripe secret/restricted
@@ -430,7 +431,7 @@ _SECRET_PATTERNS: list[re.Pattern[str]] = [
 ]
 
 
-def _secret_scan(text: str) -> Optional[str]:
+def _secret_scan(text: str) -> str | None:
     """Return the first matching pattern description, or None if clean."""
     for pat in _SECRET_PATTERNS:
         m = pat.search(text)
@@ -613,7 +614,7 @@ def _recency_decay(age_days: float, half_life_days: float = _HALFLIFE_DAYS) -> f
 
 def _blend_score(
     fused_score: float,
-    confidence: Optional[float],
+    confidence: float | None,
     created_at: str,
     now: datetime,
 ) -> float:
@@ -655,7 +656,8 @@ def _project_clause(project) -> tuple[str, list]:
     ids = [project] if isinstance(project, str) else list(project)
     if not ids:
         return "", []
-    return "d.project_id IN (%s)" % ",".join("?" * len(ids)), ids
+    placeholders = ",".join("?" * len(ids))
+    return f"d.project_id IN ({placeholders})", ids
 
 
 def _notes_project_clause(project, prefix: str = "") -> tuple[str, list]:
@@ -840,7 +842,7 @@ class SqliteStore:
         # read_only=True opens a federated sibling brain non-mutating (mode=ro).
         self._read_only = read_only
         # single aiosqlite connection (opened lazily on first async call)
-        self._conn: Optional[aiosqlite.Connection] = None
+        self._conn: aiosqlite.Connection | None = None
         # FTS5 availability (probed in assert_schema_version)
         self._fts5_ok: bool = True
         # Instrumentation: rolling window of _vector_search decode+matmul times
@@ -1144,7 +1146,7 @@ class SqliteStore:
         self,
         qvec: np.ndarray,
         qtext: str,
-        project: Optional[str],
+        project: str | None,
         k: int,
         mode: str,
         rerank: bool = True,
@@ -1196,7 +1198,7 @@ class SqliteStore:
         self,
         cf: aiosqlite.Connection,
         qvec: np.ndarray,
-        project: Optional[str],
+        project: str | None,
         k: int,
     ) -> list[tuple[int, float]]:
         """Fetch all chunks with embeddings, compute NumPy cosine, return top-k."""
@@ -1232,20 +1234,20 @@ class SqliteStore:
         if len(self._vec_search_ms) > 1000:
             self._vec_search_ms = self._vec_search_ms[-1000:]
 
-    def vec_search_p95_ms(self) -> Optional[float]:
+    def vec_search_p95_ms(self) -> float | None:
         """p95 of this session's vector-search timings (ms), or None if unused."""
         samples = self._vec_search_ms
         if not samples:
             return None
         ordered = sorted(samples)
-        idx = min(len(ordered) - 1, int(round(0.95 * (len(ordered) - 1))))
+        idx = min(len(ordered) - 1, round(0.95 * (len(ordered) - 1)))
         return ordered[idx]
 
     async def _fts_search(
         self,
         cf: aiosqlite.Connection,
         qtext: str,
-        project: Optional[str],
+        project: str | None,
         k: int,
     ) -> list[tuple[int, float]]:
         """FTS5 full-text search; LIKE fallback when FTS5 is unavailable."""
@@ -1289,7 +1291,7 @@ class SqliteStore:
         self,
         cf: aiosqlite.Connection,
         qtext: str,
-        project: Optional[str],
+        project: str | None,
         k: int,
     ) -> list[tuple[int, float]]:
         """LIKE-based fallback when FTS5 is absent."""
@@ -1313,8 +1315,8 @@ class SqliteStore:
         self,
         cf: aiosqlite.Connection,
         ranked: list[tuple[int, float]],
-        vec_cosine: Optional[dict[int, float]] = None,
-        fts_ids: Optional[set[int]] = None,
+        vec_cosine: dict[int, float] | None = None,
+        fts_ids: set[int] | None = None,
     ) -> list[Hit]:
         """Fetch doc metadata for top-k chunk ids and build Hit objects.
 
@@ -1357,8 +1359,8 @@ class SqliteStore:
     # ── get_document ──────────────────────────────────────────────────────────
 
     async def get_document(
-        self, doc_id_or_key: str | int, project: Optional[str]
-    ) -> Optional[Doc]:
+        self, doc_id_or_key: str | int, project: str | None
+    ) -> Doc | None:
         cf = await self._conn_get()
         if isinstance(doc_id_or_key, int):
             row = await (await cf.execute(
@@ -1407,7 +1409,7 @@ class SqliteStore:
 
     # ── ingest_status ─────────────────────────────────────────────────────────
 
-    async def ingest_status(self, project: Optional[str]) -> Status:
+    async def ingest_status(self, project: str | None) -> Status:
         cf = await self._conn_get()
         if project:
             doc_row = await (await cf.execute(
@@ -1482,7 +1484,7 @@ class SqliteStore:
         *,
         note_after: int,
         doc_after: int,
-        projects: Optional[list[str]] = None,
+        projects: list[str] | None = None,
         limit: int = 30,
     ) -> dict:
         """Rows newer than a per-table id cursor, for the GUI activity feed.
@@ -1500,7 +1502,7 @@ class SqliteStore:
         """
         cf = await self._conn_get()
 
-        def _clip(text: Optional[str], limit: int = 280) -> str:
+        def _clip(text: str | None, limit: int = 280) -> str:
             if not text:
                 return ""
             return text if len(text) <= limit else text[:limit] + "…"
@@ -1571,9 +1573,9 @@ class SqliteStore:
         text: str,
         kind: str,
         project: str,
-        tags: Optional[list[str]] = None,
-        confidence: Optional[float] = None,
-        embedding: Optional[np.ndarray] = None,
+        tags: list[str] | None = None,
+        confidence: float | None = None,
+        embedding: np.ndarray | None = None,
     ) -> str:
         """Persist a curated memory note. Secret-scans text AND tags before write.
 
@@ -1640,8 +1642,8 @@ class SqliteStore:
         kind: str,
         content: str,
         tags_json: str,
-        confidence: Optional[float],
-        emb_blob: Optional[bytes],
+        confidence: float | None,
+        emb_blob: bytes | None,
     ) -> int:
         """INSERT a note row + its FTS entry. No commit; returns the new id."""
         cursor = await mem.execute(
@@ -1746,10 +1748,10 @@ class SqliteStore:
         note_id: int,
         new_content: str,
         project_id: str,
-        kind: Optional[str] = None,
-        tags: Optional[list[str]] = None,
-        confidence: Optional[float] = None,
-        embedding: Optional[np.ndarray] = None,
+        kind: str | None = None,
+        tags: list[str] | None = None,
+        confidence: float | None = None,
+        embedding: np.ndarray | None = None,
     ) -> int:
         """Replace a note's content with a new note and mark the old one superseded.
 
@@ -1851,7 +1853,7 @@ class SqliteStore:
     # That ordering is what makes undo exact rather than a guess — see schema.py.
 
     async def begin_operation(
-        self, kind: str, project_id: str, backup_path: Optional[str] = None,
+        self, kind: str, project_id: str, backup_path: str | None = None,
     ) -> int:
         """Open a merge operation and return its id (the `<op#>` users pass to undo)."""
         if kind not in ("consolidate", "reflect"):
@@ -1910,8 +1912,8 @@ class SqliteStore:
         project_id: str,
         cluster_ids: list[int],
         representative_id: int,
-        merged_content: Optional[str] = None,
-    ) -> Optional[int]:
+        merged_content: str | None = None,
+    ) -> int | None:
         """Atomically merge one near-duplicate cluster under operation `op_id`.
 
         Deterministic path (merged_content=None): snapshot + tombstone every
@@ -1939,7 +1941,7 @@ class SqliteStore:
 
         mem = await self._conn_get()
         await mem.execute("BEGIN IMMEDIATE")
-        new_id: Optional[int] = None
+        new_id: int | None = None
         try:
             if merged_content is None:
                 for nid in cluster_ids:
@@ -1992,8 +1994,8 @@ class SqliteStore:
         project_id: str,
         cluster_ids: list[int],
         content: str,
-        embedding: Optional[np.ndarray] = None,
-        confidence: Optional[float] = 0.8,
+        embedding: np.ndarray | None = None,
+        confidence: float | None = 0.8,
         kind: str = "note",
     ) -> int:
         """Atomically apply one reflect synthesis under operation `op_id`.
@@ -2067,7 +2069,7 @@ class SqliteStore:
         return count
 
     async def list_operations(
-        self, project_id: Optional[str] = None, limit: int = 20,
+        self, project_id: str | None = None, limit: int = 20,
     ) -> list[dict]:
         """Most-recent-first merge operations, for `braincell memory log`."""
         mem = await self._conn_get()
@@ -2199,7 +2201,7 @@ class SqliteStore:
         mem: aiosqlite.Connection,
         note_id: int,
         project_id: str,
-        vec: Optional[np.ndarray],
+        vec: np.ndarray | None,
     ) -> None:
         """Auto-create ``related`` links from a freshly-written note to similar ones.
 
@@ -2246,7 +2248,7 @@ class SqliteStore:
         self,
         mem: aiosqlite.Connection,
         notes: list[Note],
-        project: Optional[str | Sequence[str]],
+        project: str | Sequence[str] | None,
     ) -> list[Note]:
         """Append up to ``_LINK_EXPAND`` graph-linked notes after the ranked set.
 
@@ -2272,7 +2274,7 @@ class SqliteStore:
             return notes
         seen = set(present)
         want: list[int] = []
-        edge: dict[int, tuple[int, str, Optional[float]]] = {}  # dst -> (src, kind, weight)
+        edge: dict[int, tuple[int, str, float | None]] = {}  # dst -> (src, kind, weight)
         for src, dst, kind, weight in link_rows:
             if dst not in seen:
                 seen.add(dst)
@@ -2396,7 +2398,7 @@ class SqliteStore:
         self,
         mem: aiosqlite.Connection,
         rows: Sequence,
-        resolved_from: Optional[dict[int, list[int]]] = None,
+        resolved_from: dict[int, list[int]] | None = None,
     ) -> list[Note]:
         """Build ``Note`` objects from ``_SELECT``-shaped rows.
 
@@ -2436,11 +2438,11 @@ class SqliteStore:
 
     async def recall(
         self,
-        qvec: Optional[np.ndarray],
-        project: Optional[str | Sequence[str]],
+        qvec: np.ndarray | None,
+        project: str | Sequence[str] | None,
         k: int,
         qtext: str = "",
-        min_cosine: Optional[float] = None,
+        min_cosine: float | None = None,
         dedup: bool = True,
         rerank: bool = True,
         include_superseded: bool = False,
@@ -2681,7 +2683,7 @@ class SqliteStore:
 
     async def reembed_notes(
         self,
-        project: Optional[str],
+        project: str | None,
         embed_fn,
         batch_size: int = 32,
     ) -> int:
@@ -2739,9 +2741,9 @@ class SqliteStore:
     async def find_conflicts(
         self,
         project: str,
-        embedding: Optional[np.ndarray],
-        k: Optional[int] = None,
-        threshold: Optional[float] = None,
+        embedding: np.ndarray | None,
+        k: int | None = None,
+        threshold: float | None = None,
     ) -> list[ConflictCandidate]:
         """ACTIVE same-project notes whose cosine to *embedding* ≥ threshold.
 
@@ -2776,7 +2778,7 @@ class SqliteStore:
 
     async def find_note_clusters(
         self,
-        project: Optional[str],
+        project: str | None,
         threshold: float = 0.9,
     ) -> list[list[int]]:
         """Find clusters of near-duplicate memory notes by embedding similarity.
@@ -2876,8 +2878,8 @@ class SqliteStore:
 
     async def list_documents(
         self,
-        project: Optional[str] = None,
-        filter: Optional[str] = None,
+        project: str | None = None,
+        filter: str | None = None,
         limit: int = 200,
     ) -> list[dict]:
         """List ingested documents with name/title/content_type summary.
@@ -2930,7 +2932,7 @@ class SqliteStore:
         if self._conn is not None:
             try:
                 await self._conn.close()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 — close is best-effort teardown; the handle is dropped regardless
                 log.warning("Error closing braincell.db connection: %s", exc)
             self._conn = None
 
@@ -2966,9 +2968,9 @@ async def upsert_document(
     title: str,
     content_hash: bytes,
     content_type: str = "cell",
-    commit_sha: Optional[str] = None,
-    run_id: Optional[str] = None,
-    metadata: Optional[dict] = None,
+    commit_sha: str | None = None,
+    run_id: str | None = None,
+    metadata: dict | None = None,
 ) -> tuple[int, bool]:
     """Upsert a document row. Returns (doc_id, was_changed).
 
@@ -3019,8 +3021,8 @@ async def upsert_chunk(
     document_id: int,
     chunk_index: int,
     chunk_text: str,
-    embedding: Optional[np.ndarray],
-    run_id: Optional[str] = None,
+    embedding: np.ndarray | None,
+    run_id: str | None = None,
 ) -> None:
     """Upsert a chunk + its embedding BLOB (idempotent by document_id + index).
 
@@ -3091,8 +3093,8 @@ async def upsert_chunk(
 
 def open_store(
     *,
-    project_id: Optional[str] = None,
-    db_path: Optional[Path] = None,
+    project_id: str | None = None,
+    db_path: Path | None = None,
 ) -> SqliteStore:
     """Open the BrainCell SqliteStore.
 

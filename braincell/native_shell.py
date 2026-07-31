@@ -21,9 +21,9 @@ import signal
 import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
 
 log = logging.getLogger("braincell.native")
 
@@ -60,7 +60,7 @@ def native_available() -> bool:
 @dataclass
 class _PickerRequest:
     done: threading.Event
-    result: Optional[dict] = None
+    result: dict | None = None
 
     def finish(self, result: dict) -> None:
         self.result = result
@@ -72,8 +72,8 @@ class NativeBridge:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._activate: Optional[Callable[[], None]] = None
-        self._pick: Optional[Callable[[object], None]] = None
+        self._activate: Callable[[], None] | None = None
+        self._pick: Callable[[object], None] | None = None
 
     def attach(
         self,
@@ -177,7 +177,7 @@ def open_window(
     url: str,
     *,
     title: str = WINDOW_TITLE,
-    bridge: Optional[NativeBridge] = None,
+    bridge: NativeBridge | None = None,
 ) -> int:
     """Open the BrainCell window at *url* and block until it closes."""
     from PySide6.QtCore import QObject, QTimer, QUrl, Signal, Slot
@@ -270,7 +270,7 @@ def alert(message: str, *, title: str = WINDOW_TITLE) -> bool:
         if native_available():
             show_error(message, title=title)
             return True
-    except Exception:  # noqa: BLE001 — Qt broken ≠ stay silent; fall through
+    except Exception:  # Qt broken ≠ stay silent; fall through to notify-send
         log.exception("Qt error dialog failed — falling back to notify-send")
     try:
         import subprocess
@@ -280,7 +280,7 @@ def alert(message: str, *, title: str = WINDOW_TITLE) -> bool:
             check=False, timeout=10,
         )
         return True
-    except Exception:  # noqa: BLE001 — last resort exhausted; caller printed to stderr
+    except Exception:  # last resort exhausted; caller printed to stderr
         log.exception("notify-send fallback failed")
         return False
 
@@ -298,7 +298,7 @@ def serve_native(
     *,
     port: int,
     url: str,
-    bridge: Optional[NativeBridge] = None,
+    bridge: NativeBridge | None = None,
     startup_timeout: float = 20.0,
 ) -> None:
     """Serve *app* on a background uvicorn thread and front it with a Qt window.

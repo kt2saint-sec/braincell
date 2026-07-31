@@ -24,8 +24,8 @@ from functools import lru_cache
 
 import numpy as np
 
-from .log import get as _get_log
 from . import embed_spec
+from .log import get as _get_log
 
 log = _get_log("braincell.embed")
 
@@ -119,8 +119,9 @@ def _embed_ollama(texts: list[str]) -> list:
     with exponential backoff. After retries exhausted, re-raises as a
     branded BrainCell RuntimeError naming the host, model, and remediation hint.
     """
-    import ollama  # noqa: PLC0415 — lazy import mirrors the sync ollama path
-    import httpx   # noqa: PLC0415
+    # Lazy import mirrors the sync ollama path — do not hoist to module scope.
+    import httpx
+    import ollama
 
     client = ollama.Client(timeout=embed_spec.OLLAMA_TIMEOUT)
     _host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
@@ -196,7 +197,8 @@ def _embed_openai(texts: list[str]) -> list:
     input/token cap, and sorts each response by .index so order matches input
     order regardless of the API's response ordering.
     """
-    from openai import OpenAI  # noqa: PLC0415 — lazy, mirrors the sync openai path
+    # Lazy import, mirrors the sync openai path — do not hoist to module scope.
+    from openai import OpenAI
 
     client = OpenAI()  # base_url + OPENAI_API_KEY from env
     # Pass dimensions= for text-embedding-3-* which supports per-request
@@ -261,7 +263,7 @@ def prewarm_embed_model() -> bool:
     if embed_spec.PROVIDER != "ollama":
         return True
     try:
-        import ollama  # noqa: PLC0415
+        import ollama  # lazy, as in _embed_ollama
         client = ollama.Client(timeout=embed_spec.OLLAMA_TIMEOUT)
         client.embed(
             model=embed_spec.MODEL,
@@ -312,7 +314,7 @@ def embedder_status(timeout: float = 2.0) -> dict:
             ),
         }
     try:
-        import ollama  # noqa: PLC0415 — lazy import mirrors _embed_ollama
+        import ollama  # lazy import mirrors _embed_ollama
         client = ollama.Client(timeout=timeout)
         listed = client.list()
     except Exception as exc:  # noqa: BLE001 — a probe reports, never raises

@@ -77,7 +77,7 @@ def _close_stores_after_test():
         store = _OPEN_TEST_STORES.pop()
         try:
             store.close()
-        except Exception:  # noqa: BLE001 — teardown must never mask a test failure
+        except Exception:  # noqa: BLE001, S110 — teardown must never mask a test failure
             pass
 
 
@@ -111,8 +111,9 @@ def fake_vec(seed: int = 0) -> np.ndarray:
 async def _insert_doc_and_chunk(store, *, project: str, doc_key: str, text: str,
                                  seed: int = 0):
     """Insert one document + one chunk with a fake embedding (helper for tests)."""
-    from braincell.store import upsert_document, upsert_chunk
     import hashlib
+
+    from braincell.store import upsert_chunk, upsert_document
 
     cf = await store._conn_get()
     content_hash = hashlib.sha256(text.encode()).digest()

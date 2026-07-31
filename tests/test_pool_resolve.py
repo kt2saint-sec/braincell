@@ -25,7 +25,6 @@ from braincell.project_registry import add_family_members, register_path
 from braincell.store import SqliteStore
 from tests.conftest import _insert_doc_and_chunk, fake_vec
 
-
 # ── shared helpers ────────────────────────────────────────────────────────────
 
 

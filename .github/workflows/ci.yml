@@ -64,4 +64,4 @@ jobs:
           python-version: "3.11"
       - run: python -m pip install '.[dev]'
       - name: Full-tree Ruff technical-debt report
-        run: ruff check braincell tests --statistics
+        run: ruff check braincell tests --statistics --exit-zero

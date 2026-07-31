@@ -25,6 +25,12 @@ details are intentionally excluded.
   UTF-8 explicitly instead of relying on the platform default encoding, and
   checks that assert Linux-specific behaviour — XDG desktop launchers, display
   detection, and POSIX file modes — now run only on Linux.
+- Lint debt cleared: 286 findings under Ruff's stock rule set reduced to zero
+  (mechanical annotation modernisation, import ordering, and stale-suppression
+  cleanup; no runtime behaviour changed). The lint configuration now documents
+  which rules are deliberately ignored, and every remaining broad-exception and
+  configuration-error boundary carries a justification naming why it is
+  deliberate. The advisory lint-debt CI job reports without failing the run.
 
 ### Known limitations
 

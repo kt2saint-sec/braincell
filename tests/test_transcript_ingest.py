@@ -12,7 +12,6 @@ import json
 
 import pytest
 
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECTION 1: _file_sha — streaming vs. whole-file equivalence
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -286,7 +285,7 @@ class TestGetProjectId:
     def test_fresh_dir_mints_ulid_no_in_repo_file(self, tmp_path, monkeypatch):
         """A completely fresh directory gets a new ULID; no .project.json is written
         into the directory itself."""
-        from braincell.config import get_project_id, DATA_NAMESPACE
+        from braincell.config import DATA_NAMESPACE, get_project_id
 
         project_root = tmp_path / "fresh_project"
         project_root.mkdir()
@@ -317,7 +316,9 @@ class TestGetProjectId:
         with a leftover in-repo file must raise on create=False (the file is
         ignored, never adopted)."""
         from braincell.config import (
-            get_project_id, ProjectIdentityMissing, DATA_NAMESPACE,
+            DATA_NAMESPACE,
+            ProjectIdentityMissing,
+            get_project_id,
         )
 
         project_root = tmp_path / "legacy_project"
@@ -335,7 +336,7 @@ class TestGetProjectId:
     def test_create_false_unregistered_raises(self, tmp_path):
         """create=False on a directory not in the registry must raise
         ProjectIdentityMissing."""
-        from braincell.config import get_project_id, ProjectIdentityMissing
+        from braincell.config import ProjectIdentityMissing, get_project_id
 
         unregistered = tmp_path / "unknown_project"
         unregistered.mkdir()

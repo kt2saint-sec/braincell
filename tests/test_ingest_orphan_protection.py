@@ -75,8 +75,9 @@ class TestHardParentDeath:
         all, so only PR_SET_PDEATHSIG can save it. On pre-fix code the sleep
         child survives its dead parent and this test fails at the deadline.
         """
-        import braincell
         from pathlib import Path
+
+        import braincell
 
         parent = subprocess.Popen(
             [sys.executable, "-c", _PARENT_SCRIPT],

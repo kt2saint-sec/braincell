@@ -23,6 +23,6 @@ if __name__ == "__main__":
         main()
     except SystemExit:
         raise
-    except Exception:
+    except Exception:  # noqa: BLE001 — last-resort fail-quiet boundary; see comment below
         # Last-resort fail-quiet: no hook error may ever surface to the user.
         print("{}")

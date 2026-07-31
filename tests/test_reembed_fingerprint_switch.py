@@ -9,6 +9,8 @@ that build --reembed can recover from a fingerprint mismatch.
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import sqlite3
 
 import pytest
@@ -16,8 +18,6 @@ import pytest
 from braincell.cli import _run_build
 from braincell.store import EmbedderMismatchError, SqliteStore
 from tests.conftest import fake_vec
-import asyncio
-import hashlib
 
 
 class TestResetEmbeddingSpace:
@@ -34,7 +34,7 @@ class TestResetEmbeddingSpace:
         # Insert one document and one chunk with embedding.
         async def _seed():
             cf = await store._conn_get()
-            from braincell.store import upsert_document, upsert_chunk
+            from braincell.store import upsert_chunk, upsert_document
 
             project_id = "test-proj"
             doc_key = "doc-1"
@@ -140,8 +140,7 @@ class TestResetEmbeddingSpace:
         )
 
         # Stomp the fingerprint to simulate a mismatch.
-        from braincell.config import get_db_path
-        from braincell.config import get_project_id
+        from braincell.config import get_db_path, get_project_id
 
         project_id = get_project_id(root)
         db_path = get_db_path(project_id)

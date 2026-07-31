@@ -41,7 +41,6 @@ from braincell.project_registry import add_family_members
 from braincell.store import Hit, Note, SqliteStore
 from tests.conftest import _insert_doc_and_chunk, fake_vec
 
-
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _make_member(root: Path, notes: list[str]) -> str:

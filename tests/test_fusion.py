@@ -13,7 +13,6 @@ import pytest
 from braincell import store
 from braincell.store import _cc_fuse, _fuse_hits, _rrf_fuse
 
-
 # ── _cc_fuse edge cases ───────────────────────────────────────────────────────
 
 def test_cc_empty_both():

@@ -14,8 +14,7 @@ import sqlite3
 import numpy as np
 import pytest
 
-from tests.conftest import fake_vec, make_store, _insert_doc_and_chunk
-
+from tests.conftest import _insert_doc_and_chunk, fake_vec, make_store
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECTION 1: aclose / close lifecycle
@@ -665,8 +664,8 @@ class TestUpsertChunk:
     """upsert_chunk: a wrong-dim embedding raises ValueError("write refused")."""
 
     def test_wrong_dim_raises_value_error(self, tmp_path):
-        from braincell.store import upsert_document, upsert_chunk
         from braincell import embed_spec
+        from braincell.store import upsert_chunk, upsert_document
 
         wrong_dim_vec = np.ones(embed_spec.DIM + 1, dtype=np.float32)
 
@@ -685,7 +684,7 @@ class TestUpsertChunk:
 
     def test_correct_dim_succeeds(self, tmp_path):
         """Sanity: a correct-dim vector must not raise."""
-        from braincell.store import upsert_document, upsert_chunk
+        from braincell.store import upsert_chunk, upsert_document
 
         async def _run():
             store = make_store(tmp_path)
@@ -753,8 +752,8 @@ class TestAssertSchemaVersion:
         store.assert_schema_version()
 
     def test_version_mismatch_raises_runtime_error(self, tmp_path):
-        from braincell.store import SqliteStore
         from braincell.schema import MEMORY_SCHEMA_VERSION
+        from braincell.store import SqliteStore
 
         db_path = tmp_path / "braincell.db"
         store = SqliteStore(db_path)

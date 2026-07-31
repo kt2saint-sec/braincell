@@ -24,9 +24,9 @@ Design:
 from __future__ import annotations
 
 import os
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Awaitable, Callable, Optional
 
 import numpy as np
 
@@ -38,7 +38,7 @@ log = _get_log("braincell.reflect")
 _DATETIME_FMT = "%Y-%m-%d %H:%M:%S"
 
 # Type aliases for the injectable seams.
-SynthFn = Callable[[list[str]], Optional[str]]
+SynthFn = Callable[[list[str]], str | None]
 EmbedFn = Callable[[str], Awaitable[np.ndarray]]
 
 
@@ -55,8 +55,8 @@ def _default_model() -> str:
     return os.environ.get("BRAINCELL_LLM_MODEL", "qwen2.5:7b")
 
 
-def ollama_synthesize(contents: list[str], model: Optional[str] = None,
-                      verbose: bool = False) -> Optional[str]:
+def ollama_synthesize(contents: list[str], model: str | None = None,
+                      verbose: bool = False) -> str | None:
     """Best-effort Ollama synthesis of one higher-level note. Never raises.
 
     Returns the synthesized note text, or None on any failure (model missing,
@@ -82,12 +82,12 @@ def ollama_synthesize(contents: list[str], model: Optional[str] = None,
         )
         body = resp.message.content.strip()
         return body or None
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — a synthesis outage skips one cluster, never aborts reflection
         log.warning("reflect synthesis failed (%r) — skipping cluster.", exc)
         return None
 
 
-async def _cluster_created_at(store: SqliteStore, note_id: int) -> Optional[str]:
+async def _cluster_created_at(store: SqliteStore, note_id: int) -> str | None:
     mem = await store._conn_get()
     row = await (await mem.execute(
         "SELECT created_at FROM memory_notes WHERE id = ?", (note_id,)
@@ -95,7 +95,7 @@ async def _cluster_created_at(store: SqliteStore, note_id: int) -> Optional[str]
     return row[0] if row else None
 
 
-def _within_days(created_at: Optional[str], since_days: Optional[int], now: datetime) -> bool:
+def _within_days(created_at: str | None, since_days: int | None, now: datetime) -> bool:
     if since_days is None:
         return True
     if not created_at:
@@ -121,14 +121,14 @@ async def reflect(
     project_id: str,
     *,
     threshold: float = 0.85,
-    since_days: Optional[int] = None,
+    since_days: int | None = None,
     apply: bool = False,
-    model: Optional[str] = None,
-    synth_fn: Optional[SynthFn] = None,
-    embed_fn: Optional[EmbedFn] = None,
-    now: Optional[datetime] = None,
+    model: str | None = None,
+    synth_fn: SynthFn | None = None,
+    embed_fn: EmbedFn | None = None,
+    now: datetime | None = None,
     verbose: bool = False,
-    backup_path: Optional[str] = None,
+    backup_path: str | None = None,
 ) -> ReflectResult:
     """Run a reflection pass over clusters of related notes.
 
@@ -182,11 +182,11 @@ async def reflect(
                 print(f"  [reflect] cluster {cluster} skipped (no synthesis).")
             continue
 
-        embedding: Optional[np.ndarray] = None
+        embedding: np.ndarray | None = None
         if embed_fn is not None:
             try:
                 embedding = await embed_fn(text)
-            except Exception as exc:  # embedder down → store FTS-only, still works
+            except Exception as exc:  # noqa: BLE001 — embedder down → store FTS-only, still works
                 log.warning("reflect embed failed (%r) — storing note without vector.", exc)
                 embedding = None
 
