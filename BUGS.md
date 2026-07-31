@@ -352,14 +352,20 @@ in Python 3.13.
 
 Not defects, recorded to stop them being re-reported: `prctl` use is already
 guarded (`braincell/gui_ingest.py:92`); `os.replace` itself is Windows-safe;
-`lint-debt-report` carries `continue-on-error: true` and has failed on `main`
-since `d817fce` — its 301 findings are pre-existing debt, not a PR #4
-regression, and the job should get `--exit-zero` so it stops reporting red.
-Per the follow-up CI review (PR #4, head `5920eea`): the atomic-write,
-xfail-scoping, encoding, and CRLF fixes described above have landed and
-pushed on `ci/windows-macos-matrix` — macOS is fully green and Windows is
-down to the two entries just above (the `test_install.py` one is now fixed
-here too; the `git check-ignore` one is recorded only).
+`lint-debt-report` carried `continue-on-error: true` and had failed on `main`
+since `d817fce` with 301 pre-existing findings, not a PR #4 regression.
+**Resolved in `78510a7`:** Ruff stock-rule findings reduced 286→0 and the job
+gained `--exit-zero`, so it no longer reports red.
+
+**Confirmed 2026-07-31 via `gh pr view 4`:** PR #4 went fully green — all 10
+checks (`test` × ubuntu/windows/macos × 3.11/3.12/3.13, plus
+`lint-debt-report`) reported `SUCCESS` at head `129ce65` — and **merged to
+`main` as `471bc71`** (`mergedAt: 2026-07-31T16:22:26Z`). Windows and macOS
+CI, the atomic-write fix, and the cleared lint debt are now on `main`, not
+just on a topic branch. This supersedes the earlier "expected to go green"
+framing. The Windows token-ACL fix (`icacls`) is NOT part of that merge — it
+arrives with this branch, rebased onto `471bc71`, along with the rest of the
+cross-platform audit work.
 
 ## Archived
 

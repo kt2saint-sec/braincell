@@ -23,6 +23,17 @@ details are intentionally excluded.
 - Retention plans mark backup snapshots referenced by undo history as
   **protected** rather than as removal candidates, and re-verify that protection
   at delete time. Active and superseded memory is never a candidate.
+- Read-only foreign-document reconciliation: `braincell reconcile-foreign-documents
+  preview|apply` finds `bc_documents` rows attributed to a Project other than the
+  database they live in and migrates them into their true owner's database only
+  after a source backup, full verification, and a whole-selection commit; it
+  refuses the entire selection if any owner is unattributable or conflicted.
+- Read-only orphan detection: `braincell storage --list-orphans` and a new
+  `orphans` key in the storage report surface path-registry rows with no
+  matching directory and Project databases with no registry row. Detection
+  only — no deletion or auto-repair.
+- `braincell storage` now also reports freelist/page detail, embedding
+  coverage, a count of foreign-document rows, and a WAL-starvation warning.
 
 ### Fixed
 
@@ -63,6 +74,25 @@ details are intentionally excluded.
 - Changed Ollama embedding warm-up to use a Build-scoped keep-alive followed by
   an explicit unload, and moved synchronous reranking calls off the async event
   loop with bounded concurrency.
+- Gave the Memory Map a cross-platform build lifecycle: a killed or crashed
+  Memory Map no longer orphans a running Build indefinitely on Windows (a Job
+  Object with kill-on-close) or macOS (a detached watchdog process); Linux
+  keeps its existing `prctl` guard unchanged.
+- Extended native launcher installation to macOS (a minimal `.app` wrapper
+  under `~/Applications`) and Windows (a Start Menu `.lnk`); all platforms
+  launch the same single-command, per-project preflight path.
+- Gave the Memory Map auth token real ACL restriction on Windows via `icacls`;
+  previously `os.chmod` there only toggled the read-only bit.
+- Resolved platform-appropriate default data roots on macOS
+  (`~/Library/Application Support`) and Windows (`%LOCALAPPDATA%`), while an
+  already-populated legacy `~/.local/share`-style root always wins and nothing
+  is ever migrated automatically.
+- Required the same safety backup `consolidate`/`reflect` already required
+  before `build --reembed` and the Memory Map's clear operation, each with an
+  explicit, loudly-logged override (`--no-backup`, `skip_backup`).
+- Made a failed rotating-file-handler construction retry once with
+  conservative defaults, then disable file logging rather than ever falling
+  back to an unbounded file handler.
 
 ### Changed
 
@@ -84,17 +114,10 @@ details are intentionally excluded.
 - BrainCell never expires anything on its own. Retention runs only when you pass
   an explicit window and `--apply`; there is no default retention age, and
   indexed transcripts and curated memory are never expiry candidates.
-- `braincell storage` does not report freelist, embedding, foreign-document, or
-  orphan-database detail, and there is no authorized compaction (`VACUUM`)
-  workflow or WAL-starvation warning.
-- Deleted or moved Projects can still leave orphaned registry entries and
-  databases with no read-only orphan inventory. Reassociating a moved Project is
-  supported.
-- `consolidate` and `reflect` require a successful safety backup; `--reembed`
-  and Memory Map clear do not yet have an equivalent backup/override policy.
-- Native launcher installation, the desktop entry, and the default data root
-  remain Linux/XDG-oriented. The Memory Map auth token relies on default
-  per-user ACLs on Windows rather than an enforced mode.
+- There is still no authorized compaction (`VACUUM`) or hard-prune execution
+  workflow; `braincell storage` only detects and warns.
+- Storage budgets, configurable warnings, and hard limits remain unimplemented;
+  BrainCell does not delete memory to enforce them.
 
 ## v0.4.0 - 2026-07-27
 

@@ -1,7 +1,11 @@
 # BrainCell architecture
 
-`last_verified: 2026-07-31` against worktree `fix/audit-2026-07-31` (base
-`d817fce`, HEAD `d02b04b`).
+`last_verified: 2026-07-31` against `audit/persistence-mutation-hardening`,
+rebased onto `main` at `471bc71` (the merge of PR #4's Windows/macOS CI
+matrix and lint pass). The branch closes the five remaining fault-ledger
+entries — foreign-transcript reconciliation, cross-platform parent-death
+cleanup, native launchers, Windows token ACL, and platform data roots — see
+`BUGS.md`'s "Resolved in Unreleased". Not yet merged to `main`.
 
 The cross-repo map: where each concern lives, what the CLI surface is, what the
 database schema holds, and which on-disk files are state. Product language is
@@ -104,10 +108,16 @@ These are not reachable from the CLI parser and must not be re-exposed:
   `:1414`) — likewise unwired.
 - `federate.py` — opt-in family recall behind `BRAINCELL_FEDERATE`.
 - `family_hook.py` — the retired global hook entry point; fails quiet.
+
+These two ARE reachable — via explicit, one-purpose subcommands only (see CLI
+command map below) — not ordinary product surfaces:
+
 - `legacy_service.py` — one-release cleanup bridge for the retired
-  `braincell-map.service` unit.
+  `braincell-map.service` unit; reachable only via `legacy-service`, an
+  explicit-removal command.
 - `legacy_recovery.py` — the only runtime consumer of legacy pooled rows.
-  Preview-first, approval-digest-gated, WAL-aware (`apply`, `:417`).
+  Preview-first, approval-digest-gated, WAL-aware (`apply`, `:417`); reachable
+  only via `legacy-recovery preview|apply`.
 
 ## CLI command map
 
