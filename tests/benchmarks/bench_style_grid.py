@@ -127,7 +127,7 @@ def main() -> int:
         tag = f"{model}@{dim}"
         try:
             scored[tag] = _score_config(passages, queries, model, dim)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — record the failure per config and score the rest
             print(f"  {tag}: ERROR {type(exc).__name__}: {exc}", file=sys.stderr)
             scored[tag] = None
 

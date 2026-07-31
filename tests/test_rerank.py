@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
-
 from braincell import rerank as rr
 
 

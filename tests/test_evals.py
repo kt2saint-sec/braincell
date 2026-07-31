@@ -20,7 +20,11 @@ from datetime import datetime, timedelta
 import numpy as np
 import pytest
 
-from braincell.project_registry import register_path, resolve_family_ulids, save_families
+from braincell.project_registry import (
+    register_path,
+    resolve_family_ulids,
+    save_families,
+)
 from tests.conftest import _insert_doc_and_chunk, fake_vec, make_store
 
 # ── Project constants ─────────────────────────────────────────────────────────
@@ -207,7 +211,7 @@ class TestE2ExplicitProjectsListUnion:
     """
 
     def test_projects_ab_returns_notes_from_both_projects(self, pooled_store):
-        store, ids, _ = pooled_store
+        store, _ids, _ = pooled_store
         notes = asyncio.run(store.recall(Q_VEC, [ULID_A, ULID_B], k=10, dedup=False))
         pids = {n.project_id for n in notes}
         assert ULID_A in pids and ULID_B in pids, (

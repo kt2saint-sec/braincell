@@ -18,8 +18,9 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from typing import Optional
 
+from .compaction import compact_pages
+from .embed import embed_texts, prewarm_embed_model
 from .log import get as _get_log
 from .project_registry import (
     load_path_registry,
@@ -27,11 +28,8 @@ from .project_registry import (
     resolve_family_ulids,
     resolve_path_to_ulid,
 )
-from .compaction import compact_pages
 from .skill_tag import is_skill_body, skill_name_from_body
-from .store import SqliteStore, upsert_chunk, upsert_document
-from .embed import embed_texts, prewarm_embed_model
-from .store import _secret_scan
+from .store import SqliteStore, _secret_scan, upsert_chunk, upsert_document
 
 
 def _compaction_enabled() -> bool:
@@ -67,7 +65,7 @@ def _load_ledger(ledger_path: Path) -> dict[str, str]:
         return {}
     try:
         return json.loads(ledger_path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception:  # noqa: BLE001 — an unreadable or corrupt ledger degrades to a first run, never a crash
         return {}
 
 
@@ -114,7 +112,7 @@ def _coerce_content(content: object) -> str:
     return ""
 
 
-def _text_from_record(obj: dict) -> Optional[str]:
+def _text_from_record(obj: dict) -> str | None:
     """Pull a text string from one JSON record's common fields (Claude/raw).
     Returns the stripped text, or None if there's nothing usable.
 
@@ -197,7 +195,7 @@ def _is_codex_path(fpath: Path) -> bool:
     return ".codex" in fpath.parts
 
 
-def _codex_session_cwd(path: Path) -> Optional[str]:
+def _codex_session_cwd(path: Path) -> str | None:
     """The working dir a codex session ran in, from session_meta.payload.cwd (the
     first record; also early turn_context records). Reads only the first few records
     — no full-file scan. None if absent/malformed."""
@@ -221,7 +219,7 @@ def _codex_session_cwd(path: Path) -> Optional[str]:
     return None
 
 
-def _resolve_source_ulid(fpath: Path, registry: dict[str, str]) -> Optional[str]:
+def _resolve_source_ulid(fpath: Path, registry: dict[str, str]) -> str | None:
     """Resolve the SOURCE project ULID for a transcript file.
 
     - codex (~/.codex): session_meta.payload.cwd → path-registry.
@@ -249,8 +247,8 @@ async def ingest_transcripts(
     project_id: str,
     *,
     incremental: bool = True,
-    ledger_path: Optional[Path] = None,
-    progress_cb: Optional[callable] = None,
+    ledger_path: Path | None = None,
+    progress_cb: callable | None = None,
 ) -> dict:
     """Walk transcript roots, embed pages, upsert into braincell tables.
 
@@ -300,11 +298,9 @@ async def ingest_transcripts(
     for root in _TRANSCRIPT_ROOTS:
         if not root.exists():
             continue
-        for fpath in root.rglob("*.jsonl"):
-            candidates.append(fpath)
+        candidates.extend(root.rglob("*.jsonl"))
         # Also try plain .json files in session dirs.
-        for fpath in root.rglob("*.json"):
-            candidates.append(fpath)
+        candidates.extend(root.rglob("*.json"))
 
     if not candidates:
         log.info("No transcript files found in: %s", _TRANSCRIPT_ROOTS)
@@ -345,7 +341,7 @@ async def ingest_transcripts(
 
         try:
             pages = _extract_text_from_jsonl(fpath)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — one malformed transcript is skipped, not ledgered, retried next run
             log.warning(
                 "Extraction failed for %s: %s — skipped (not ledgered; retried next run)",
                 fpath, exc,
@@ -436,7 +432,7 @@ async def ingest_transcripts(
             # New or changed skill body — embed and store.
             try:
                 skill_embeddings = embed_texts([skill_page])
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 — embedder outage skips this skill body, never writes null vectors
                 log.warning(
                     "Embed failed for skill '%s' from %s: %s — skipped",
                     skill_name, fpath.name, exc,
@@ -486,7 +482,7 @@ async def ingest_transcripts(
         # NOT ledger this file — it's retried next run (no permanent null rows).
         try:
             embeddings = embed_texts(content_pages)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — upholds checkpoint-on-success: no null chunks, no ledger entry
             log.warning(
                 "Embed failed for %s: %s — skipped (not ledgered; retried next run)",
                 fpath, exc,

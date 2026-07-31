@@ -24,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
@@ -68,7 +68,7 @@ class AutomaticPoolRecallBody(BaseModel):
     path: str
     action: Literal["enable", "disable", "status"]
     scope: Literal["local", "project"] = "local"
-    pool: Optional[str] = None
+    pool: str | None = None
     acknowledge_home: bool = False
     acknowledge_non_git: bool = False
     allow_privileged: bool = False
@@ -97,7 +97,7 @@ def _resolve_dir(raw: str) -> Path:
 
 # ── Route mounting (called by gui.create_app when allow_writes=True) ──────────
 
-def mount_install_api(app: FastAPI, *, restart_argv: Optional[list[str]] = None) -> None:
+def mount_install_api(app: FastAPI, *, restart_argv: list[str] | None = None) -> None:
     """Register the install/uninstall/hook/skills/restart routes on *app*.
 
     ``restart_argv`` is the server-recorded argv POST /api/restart re-execs
@@ -202,13 +202,14 @@ def mount_install_api(app: FastAPI, *, restart_argv: Optional[list[str]] = None)
         body: AutomaticPoolRecallBody,
     ) -> dict:  # type: ignore[type-arg]
         """Manage only the selected Project's Claude hook configuration."""
+        import anyio
+
         from .automatic_pool_recall import (
             disable_automatic_pool_recall,
             enable_automatic_pool_recall,
             status_automatic_pool_recall,
         )
         from .project_target import ProjectTargetError, validate_project_target
-        import anyio
 
         try:
             target = validate_project_target(

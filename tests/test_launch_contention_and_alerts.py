@@ -35,7 +35,6 @@ import pytest
 from braincell import native_shell
 from braincell.store import SqliteStore
 
-
 # ── 1. Store open must not need the write lock ────────────────────────────────
 
 class TestOpenCurrentStoreUnderWriteLock:
@@ -68,7 +67,7 @@ class TestOpenCurrentStoreUnderWriteLock:
                     store.assert_schema_version()
                     result["elapsed"] = time.monotonic() - t0
                     result["fts5_ok"] = store._fts5_ok
-                except Exception as exc:  # pragma: no cover — fail the assert below
+                except Exception as exc:  # noqa: BLE001 — pragma: no cover — captured for the assert on the main thread
                     result["error"] = exc
 
             th = threading.Thread(target=reopen, daemon=True)
@@ -144,7 +143,7 @@ class TestAlert:
 # ── 3. cmd_start: a failing launch must be visible, never a dead click ────────
 
 def _start_args(path, **kw):
-    defaults = dict(path=str(path), port=8765, global_brain=False)
+    defaults = {"path": str(path), "port": 8765, "global_brain": False}
     defaults.update(kw)
     return argparse.Namespace(**defaults)
 

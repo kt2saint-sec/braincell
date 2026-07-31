@@ -101,7 +101,7 @@ class TestOpsGating:
     def test_busy_409(self, tmp_path, monkeypatch):
         pid = "01OPSBUSYAAAAAAAAAAAAAAAAA"
         _register(tmp_path, pid)
-        import braincell.gui_ops as gui_ops
+        from braincell import gui_ops
         monkeypatch.setattr(
             gui_ops, "run_consolidate",
             lambda *a, **k: time.sleep(0.8) or {"slow": True},
@@ -221,7 +221,7 @@ class TestOpsReembed:
         pid = "01OPSREEMAAAAAAAAAAAAAAAAA"
         _register(tmp_path, pid)
         _seed_notes(tmp_path, pid, ["no vector 1", "no vector 2"])  # NULL embeddings
-        import braincell.gui_ops as gui_ops
+        from braincell import gui_ops
         monkeypatch.setattr(
             gui_ops, "embed_texts", lambda texts: [fake_vec(3) for _ in texts]
         )

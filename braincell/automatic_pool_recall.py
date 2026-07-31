@@ -52,7 +52,9 @@ def _load_settings(path: Path) -> tuple[dict[str, Any], str | None]:
     except (OSError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"Cannot parse {path}; BrainCell left it unchanged. ({exc})") from exc
     if not isinstance(data, dict):
-        raise RuntimeError(f"{path} must contain a JSON object; BrainCell left it unchanged.")
+        raise RuntimeError(  # noqa: TRY004 — user-facing config error, not a programming type error; contract with install.py:558
+            f"{path} must contain a JSON object; BrainCell left it unchanged."
+        )
     return data, raw
 
 
@@ -92,10 +94,10 @@ def _iter_inner_hooks(settings: dict[str, Any]):
     if hooks is None:
         return
     if not isinstance(hooks, dict):
-        raise RuntimeError("Claude hooks must be a JSON object.")
+        raise RuntimeError("Claude hooks must be a JSON object.")  # noqa: TRY004 — user-facing config error; see module contract
     entries = hooks.get("UserPromptSubmit") or []
     if not isinstance(entries, list):
-        raise RuntimeError("Claude UserPromptSubmit hooks must be a list.")
+        raise RuntimeError("Claude UserPromptSubmit hooks must be a list.")  # noqa: TRY004 — user-facing config error; see module contract
     for entry in entries:
         if not isinstance(entry, dict):
             continue
@@ -151,10 +153,14 @@ def enable_automatic_pool_recall(
 
     hooks = settings.setdefault("hooks", {})
     if not isinstance(hooks, dict):
-        raise RuntimeError(f"{path} has a non-object hooks value; BrainCell left it unchanged.")
+        raise RuntimeError(  # noqa: TRY004 — user-facing config error, not a programming type error
+            f"{path} has a non-object hooks value; BrainCell left it unchanged."
+        )
     entries = hooks.setdefault("UserPromptSubmit", [])
     if not isinstance(entries, list):
-        raise RuntimeError(f"{path} has invalid UserPromptSubmit hooks; BrainCell left it unchanged.")
+        raise RuntimeError(  # noqa: TRY004 — user-facing config error, not a programming type error
+            f"{path} has invalid UserPromptSubmit hooks; BrainCell left it unchanged."
+        )
     entries.append({"hooks": [canonical]})
     rendered = json.dumps(settings, indent=2, ensure_ascii=False)
     if raw is None or raw.endswith("\n"):
@@ -257,7 +263,7 @@ def _recall_from_pool(pool_name: str, root: Path, query: str, k: int) -> list[di
     plan = plan_for_pool(pool_name, project_id)
     try:
         vector = asyncio.run(embed_query_async(query)) if query.strip() else None
-    except Exception:
+    except Exception:  # noqa: BLE001 — embedder outage degrades to keyword-only recall
         vector = None
     notes = asyncio.run(federated_recall(None, plan, vector, k, qtext=query))
     return [
@@ -305,7 +311,7 @@ def run_hook(
                 "additionalContext": "\n".join(lines),
             }
         }
-    except Exception:
+    except Exception:  # noqa: BLE001 — a hook must never surface an error into the user's prompt
         return {}
 
 
@@ -314,6 +320,6 @@ def hook_main(pool_name: str, project_id: str) -> None:
         payload = json.loads(sys.stdin.read() or "{}")
         if not isinstance(payload, dict):
             payload = {}
-    except Exception:
+    except Exception:  # noqa: BLE001 — unreadable or malformed stdin degrades to an empty payload
         payload = {}
     print(json.dumps(run_hook(payload, pool_name=pool_name, project_id=project_id)))

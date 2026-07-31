@@ -30,6 +30,7 @@ def _systemctl(args: list[str]) -> tuple[int, str]:
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
     return proc.returncode, (proc.stdout + proc.stderr).strip()
 

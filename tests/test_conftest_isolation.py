@@ -17,7 +17,7 @@ This test FAILS if that guard is ever removed and PASSES with it in place,
 regardless of file ordering.
 """
 
-from braincell import config  # noqa: F401 — module-scope import is the point
+from braincell import config
 
 
 def test_data_namespace_frozen_to_test_namespace_at_collection():

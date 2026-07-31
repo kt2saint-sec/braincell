@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Optional
 
 from fastapi.testclient import TestClient
 
@@ -29,7 +28,7 @@ PID_B = "01FEEDPROJBBBBBBBBBBBBBBBB"
 
 
 def _app(tmp_path: Path, *, allow_writes: bool = False,
-         auth_token: Optional[str] = None):
+         auth_token: str | None = None):
     from braincell.gui import create_app
     return create_app(
         db_path=tmp_path / "braincell.db",

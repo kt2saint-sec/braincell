@@ -7,10 +7,12 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ['3.11', '3.12', '3.13']
+        os: [ubuntu-24.04, windows-latest, macos-latest]
+        python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -23,6 +25,8 @@ jobs:
       - name: Ruff fatal correctness rules
         run: ruff check --select E9,F63,F7,F82 braincell tests
       - name: Ruff changed Python files
+        if: matrix.os == 'ubuntu-24.04'
+        shell: bash
         env:
           LINT_BASE_REF: ${{ github.base_ref || 'main' }}
         run: python scripts/lint_changed_python.py --base "origin/${LINT_BASE_REF}"
@@ -31,13 +35,24 @@ jobs:
       - run: python -m build
       - run: python -m twine check dist/*
       - run: python scripts/inspect_release_artifacts.py dist
-      - run: |
-          python -m venv /tmp/braincell-wheel
-          /tmp/braincell-wheel/bin/pip install dist/*.whl
-          /tmp/braincell-wheel/bin/braincell --help
-          /tmp/braincell-wheel/bin/braincell-mcp --help
-          /tmp/braincell-wheel/bin/braincell-map --help
-          /tmp/braincell-wheel/bin/braincell setup --help
+      - name: Smoke test built wheel
+        shell: bash
+        run: |
+          # RUNNER_TEMP, not /tmp: on Windows the (native) python resolves /tmp
+          # to C:\tmp while Git-Bash maps it to the MSYS mount — two different
+          # directories. Backslashes are normalized so bash and python agree.
+          VENV="${RUNNER_TEMP//\\//}/braincell-wheel"
+          python -m venv "$VENV"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            BIN="$VENV/Scripts"
+          else
+            BIN="$VENV/bin"
+          fi
+          "$BIN/pip" install dist/*.whl
+          "$BIN/braincell" --help
+          "$BIN/braincell-mcp" --help
+          "$BIN/braincell-map" --help
+          "$BIN/braincell" setup --help
 
   lint-debt-report:
     runs-on: ubuntu-24.04
@@ -46,7 +61,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
       - run: python -m pip install '.[dev]'
       - name: Full-tree Ruff technical-debt report
-        run: ruff check braincell tests --statistics
+        run: ruff check braincell tests --statistics --exit-zero

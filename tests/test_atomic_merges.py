@@ -15,8 +15,8 @@ import asyncio
 
 import pytest
 
-from tests.conftest import fake_vec, make_store
 from braincell.store import SupersedeConflict
+from tests.conftest import fake_vec, make_store
 
 
 class _InjectedCrash(RuntimeError):
@@ -65,7 +65,7 @@ class TestReflectClusterAtomic:
             return a, b, op, synth, await _snapshot_notes(store), \
                 await _op_note_count(store, op)
 
-        a, b, op, synth, notes, op_rows = asyncio.run(_run())
+        a, b, _op, synth, notes, op_rows = asyncio.run(_run())
         # Sources: superseded_by → synth, tombstoned (tombstone dominates).
         for src in (a, b):
             status, sup, deleted = notes[src]
@@ -90,7 +90,7 @@ class TestReflectClusterAtomic:
             return op, before, await _snapshot_notes(store), \
                 await _op_note_count(store, op)
 
-        op, before, after, op_rows = asyncio.run(_run())
+        _op, before, after, op_rows = asyncio.run(_run())
         # The whole cluster reverted: no synthesis row, source A NOT superseded,
         # and — the pre-v6 failure mode — no orphaned op-log rows either.
         assert after == before
@@ -113,7 +113,7 @@ class TestConsolidateClusterAtomic:
             return op, before, await _snapshot_notes(store), \
                 await _op_note_count(store, op)
 
-        op, before, after, op_rows = asyncio.run(_run())
+        _op, before, after, op_rows = asyncio.run(_run())
         assert after == before  # d1 was NOT tombstoned despite preceding d2
         assert op_rows == 0
 
@@ -134,7 +134,7 @@ class TestConsolidateClusterAtomic:
             return op, before, await _snapshot_notes(store), \
                 await _op_note_count(store, op)
 
-        op, before, after, op_rows = asyncio.run(_run())
+        _op, before, after, op_rows = asyncio.run(_run())
         assert after == before  # no merged note persisted, d1 still active
         assert op_rows == 0
 

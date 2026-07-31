@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 
-
 from braincell import store as store_mod
 from tests.conftest import fake_vec, make_store
 
@@ -123,7 +122,7 @@ class TestExpandOnRead:
         return s, a, b, vA
 
     def test_expansion_off_by_default(self, tmp_path, monkeypatch):
-        s, a, b, vA = self._seed_with_manual_link(tmp_path, monkeypatch)
+        s, a, _b, vA = self._seed_with_manual_link(tmp_path, monkeypatch)
         # _LINK_EXPAND defaults to 0
         assert store_mod._LINK_EXPAND == 0
 

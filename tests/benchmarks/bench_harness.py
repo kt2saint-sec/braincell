@@ -134,13 +134,13 @@ def main():
     for model, dim in CONFIGS:
         try:
             results.append(_score_config(passages, queries, model, dim))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — record the failure per config and benchmark the rest
             results.append({"model": model, "dim": dim, "error": f"{type(exc).__name__}: {exc}"})
 
     # Persist EVERY run durably — keep every benchmark, no matter what (outside
     # the session scratchpad so it survives cleanup).
-    import os as _os
     import datetime as _dt
+    import os as _os
     _bench_dir = _os.path.expanduser("~/braincell-benchmarks")
     _os.makedirs(_bench_dir, exist_ok=True)
     _stamp = _dt.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")

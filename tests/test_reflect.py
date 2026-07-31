@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 
-
 from braincell.reflect import reflect
 from tests.conftest import fake_vec, make_store
 

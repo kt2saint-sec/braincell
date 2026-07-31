@@ -6,7 +6,40 @@ details are intentionally excluded.
 
 ## Unreleased
 
-- No unreleased changes.
+### Added
+
+- Windows and macOS test runners alongside Linux in continuous integration,
+  with a cross-platform wheel smoke test.
+
+### Fixed
+
+- Configuration files are now written atomically on Windows. The previous
+  implementation used a POSIX-only call unavailable before Python 3.13, left the
+  temporary file's handle open when that call failed, and then reported the
+  resulting cleanup error in place of the original cause. Permissions are now
+  applied after the file is closed, which works on every supported platform.
+
+### Changed
+
+- The test suite no longer assumes a Linux host. File reads and writes declare
+  UTF-8 explicitly instead of relying on the platform default encoding, and
+  checks that assert Linux-specific behaviour — XDG desktop launchers, display
+  detection, and POSIX file modes — now run only on Linux. The repository
+  hygiene check no longer mistakes a directory prefix for an ignored path when
+  the working tree carries CRLF line endings.
+- Lint debt cleared: 286 findings under Ruff's stock rule set reduced to zero
+  (mechanical annotation modernisation, import ordering, and stale-suppression
+  cleanup; no runtime behaviour changed). The lint configuration now documents
+  which rules are deliberately ignored, and every remaining broad-exception and
+  configuration-error boundary carries a justification naming why it is
+  deliberate. The advisory lint-debt CI job reports without failing the run.
+
+### Known limitations
+
+- The Memory Map authentication token is created with POSIX mode `0600`. No
+  equivalent restriction is applied on Windows; the file inherits the
+  permissions of the user configuration directory, which is user-scoped by
+  default.
 
 ## v0.4.0 - 2026-07-27
 

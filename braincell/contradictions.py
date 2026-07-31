@@ -19,18 +19,18 @@ discipline: best-effort, injectable judge, never raises out of the audit loop.
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable, Optional
 
 import numpy as np
 
 from .log import get as _get_log
-from .store import SqliteStore, _CONFLICT_COS, _blob_to_vec
+from .store import _CONFLICT_COS, SqliteStore, _blob_to_vec
 
 log = _get_log("braincell.contradictions")
 
 # judge_fn(content_a, content_b) -> verdict string or None (judge unavailable).
-JudgeFn = Callable[[str, str], Optional[str]]
+JudgeFn = Callable[[str, str], str | None]
 
 _VERDICTS = ("contradicts", "duplicate", "consistent")
 
@@ -64,7 +64,7 @@ def _default_model() -> str:
 
 
 def ollama_judge(content_a: str, content_b: str,
-                 model: Optional[str] = None) -> Optional[str]:
+                 model: str | None = None) -> str | None:
     """Best-effort single-pair judgment via local Ollama. Never raises.
 
     Returns a verdict in ``_VERDICTS`` or None when the model is unavailable or
@@ -94,7 +94,7 @@ def ollama_judge(content_a: str, content_b: str,
             if word.startswith(verdict[:8]):
                 return verdict
         return None
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — any judge outage leaves the pair unjudged, never fails the caller
         log.warning("ollama judge unavailable (%r) — pair left unjudged.", exc)
         return None
 
@@ -103,9 +103,9 @@ async def find_contradictions(
     store: SqliteStore,
     project_id: str,
     *,
-    threshold: Optional[float] = None,
+    threshold: float | None = None,
     limit: int = 50,
-    judge_fn: Optional[JudgeFn] = None,
+    judge_fn: JudgeFn | None = None,
 ) -> ContradictionReport:
     """Pair up embedding-close ACTIVE notes and judge each pair.
 

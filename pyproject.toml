@@ -79,6 +79,20 @@ braincell = [
 # invite "cleanups" that silently change what the eval measures.
 extend-exclude = ["evals/task-ab/tasks/*/repo"]
 
+[tool.ruff.lint]
+# Scoped opt-outs from Ruff's stock defaults (2026-07-31 lint-debt pass).
+# Deliberately NOT ignored: BLE001/TRY004/S110 — broad-except at boundaries is a
+# per-site convention with justified `# noqa` directives (see the existing ones
+# in install.py, embed.py, native_shell.py); TRY004 sites implement a documented
+# cross-module RuntimeError contract (install.py ↔ automatic_pool_recall.py).
+ignore = [
+    "DTZ005", # naive datetimes are stored/compared deliberately; tz-aware would change persisted values
+    "DTZ007", # same timestamp semantics as DTZ005
+    "SIM115", # long-lived handles in tests/benchmarks scripts are intentional
+    "SIM103", # explicit branch returns preferred over condensed booleans here
+    "EXE001", # no .py in this repo is mode 755; shebangs in benchmarks are documentation
+]
+
 [tool.pytest.ini_options]
 # Starlette 1.3+ TestClient prefers the Pydantic-maintained `httpx2`; with plain
 # `httpx` installed it emits a one-shot StarletteDeprecationWarning (a

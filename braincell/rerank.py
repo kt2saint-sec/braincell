@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-from typing import Awaitable, Callable, Optional, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 
 from .log import get as _get_log
 
@@ -31,7 +31,7 @@ except ValueError:
 _RERANK_MODEL: str = os.environ.get("BRAINCELL_RERANK_MODEL", "qwen2.5:7b")
 
 # score_fn: (query, text) -> float | None (None = unavailable for this item).
-ScoreFn = Callable[[str, str], "float | None | Awaitable[Optional[float]]"]
+ScoreFn = Callable[[str, str], "float | None | Awaitable[float | None]"]
 
 
 def rerank_enabled() -> bool:
@@ -45,7 +45,7 @@ def rerank_window() -> int:
 _SCORE_RE = re.compile(r"-?\d+(?:\.\d+)?")
 
 
-def _ollama_score(query: str, text: str, model: str = _RERANK_MODEL) -> Optional[float]:
+def _ollama_score(query: str, text: str, model: str = _RERANK_MODEL) -> float | None:
     """Score one (query, text) pair in [0,100] via Ollama. None on any failure."""
     try:
         import ollama
@@ -61,7 +61,7 @@ def _ollama_score(query: str, text: str, model: str = _RERANK_MODEL) -> Optional
         )
         m = _SCORE_RE.search(resp.message.content or "")
         return float(m.group(0)) if m else None
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — any scorer outage keeps the fused order, never fails Search
         log.warning("rerank score failed (%r) — keeping fused order.", exc)
         return None
 
@@ -69,8 +69,8 @@ def _ollama_score(query: str, text: str, model: str = _RERANK_MODEL) -> Optional
 async def _order_by_score(
     query: str,
     items: Sequence[tuple[int, str]],
-    score_fn: Optional[ScoreFn],
-) -> Optional[list[int]]:
+    score_fn: ScoreFn | None,
+) -> list[int] | None:
     """Return item indices reordered by descending score, or None if unavailable.
 
     ``items`` is a sequence of (index, text). If ANY item scores None the whole
@@ -90,7 +90,7 @@ async def _order_by_score(
     return [idx for idx, _ in scored]
 
 
-async def rerank_hits(query, hits, *, top_k, score_fn: Optional[ScoreFn] = None):
+async def rerank_hits(query, hits, *, top_k, score_fn: ScoreFn | None = None):
     """Rerank a list of search Hits; return the top_k. Fused order on failure."""
     if not hits or not query:
         return hits[:top_k]
@@ -101,7 +101,7 @@ async def rerank_hits(query, hits, *, top_k, score_fn: Optional[ScoreFn] = None)
     return [hits[i] for i in order][:top_k]
 
 
-async def rerank_notes(query, notes, *, top_k, score_fn: Optional[ScoreFn] = None):
+async def rerank_notes(query, notes, *, top_k, score_fn: ScoreFn | None = None):
     """Rerank a list of Notes; return the top_k. Fused order on failure."""
     if not notes or not query:
         return notes[:top_k]

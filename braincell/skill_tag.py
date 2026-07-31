@@ -16,7 +16,6 @@ concern from transcript docs; nothing here touches storage.
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 # ── Detection ──────────────────────────────────────────────────────────────────
 
@@ -58,7 +57,7 @@ def is_skill_body(page: str) -> bool:
     return False
 
 
-def skill_name_from_body(page: str) -> Optional[str]:
+def skill_name_from_body(page: str) -> str | None:
     """Extract the skill name from a skill-body page.
 
     Priority order:

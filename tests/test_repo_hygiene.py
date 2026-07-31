@@ -19,6 +19,7 @@ check-ignore`, so this stays correct automatically when `.gitignore` changes.
 
 from __future__ import annotations
 
+import ast
 import re
 import subprocess
 from pathlib import Path
@@ -49,16 +50,30 @@ def _tracked_text_files() -> list[str]:
     return [f for f in out if Path(f).suffix not in _BINARY_SUFFIXES]
 
 
+def _unquote(name: str) -> str:
+    """Undo git's C-style quoting (`"a\\r"` → `a\r`) so names match our tokens."""
+    if len(name) >= 2 and name.startswith('"') and name.endswith('"'):
+        try:
+            name = ast.literal_eval(name)
+        except (SyntaxError, ValueError):
+            name = name[1:-1]
+    return name
+
+
 def _ignored(paths: set[str]) -> set[str]:
     """Return the subset of *paths* that git ignores (authoritative, batched)."""
     if not paths:
         return set()
     ordered = sorted(paths)
+    # Bytes stdin, not text=True: text mode translates "\n" to os.linesep, and a
+    # CRLF-fed git on Windows echoes back C-quoted names with a literal \r.
     proc = subprocess.run(
         ["git", "check-ignore", "--stdin"],
-        cwd=REPO, input="\n".join(ordered), capture_output=True, text=True,
+        cwd=REPO, input="\n".join(ordered).encode("utf-8"), capture_output=True,
+        check=False,
     )
-    return {line.strip() for line in proc.stdout.splitlines() if line.strip()}
+    stdout = proc.stdout.decode("utf-8", errors="replace")
+    return {_unquote(line.strip()) for line in stdout.splitlines() if line.strip()}
 
 
 def test_no_tracked_file_references_a_gitignored_path():
@@ -75,13 +90,19 @@ def test_no_tracked_file_references_a_gitignored_path():
             continue
         for lineno, line in enumerate(text.splitlines(), 1):
             for match in _PATH_TOKEN.finditer(line):
-                token = match.group(1).rstrip(".,;:)`\"'")
+                # Strip a trailing "/" too: a glob-truncated token names a
+                # directory prefix, and check-ignore does not strip the slash —
+                # so the basename is "", which a CRLF .gitignore's blank line
+                # (a stored "\r" pattern) matches. Ask about the directory.
+                token = match.group(1).rstrip(".,;:)`\"'/")
                 candidates.setdefault(token, []).append((rel, lineno, line.strip()))
 
     violations = [
         f"{rel}:{lineno} references gitignored {token!r}\n      {line[:110]}"
         for token in _ignored(set(candidates)) - _ALLOWED_GENERATED_PATHS
-        for rel, lineno, line in candidates[token]
+        # .get, not [..]: a name git quoted in a way _unquote cannot reverse
+        # must not crash the test with a KeyError.
+        for rel, lineno, line in candidates.get(token, [(token, 0, "")])
     ]
     assert not violations, (
         "Tracked files reference gitignored (never-published) paths — these are dead "

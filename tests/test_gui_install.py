@@ -223,7 +223,7 @@ def test_uninstall_vscode_409_manual_instructions(tmp_path, monkeypatch):
 
 def test_uninstall_happy_path_claude_leaves_legacy_hook_state_untouched(tmp_path, monkeypatch):
     settings_path = _settings(tmp_path, monkeypatch)
-    settings_path.write_text('{"hooks":{"UserPromptSubmit":[{"hooks":[{"command":"legacy"}]}]}}')
+    settings_path.write_text('{"hooks":{"UserPromptSubmit":[{"hooks":[{"command":"legacy"}]}]}}', encoding="utf-8")
     fake_cls, calls = _fake_client()
     monkeypatch.setitem(inst.CLIENTS, "claude", fake_cls)
     repo = tmp_path / "repo"
@@ -238,7 +238,7 @@ def test_uninstall_happy_path_claude_leaves_legacy_hook_state_untouched(tmp_path
     assert body["mcp_removed"] is True
     assert "hook_removed" not in body
     assert calls[-1]["op"] == "remove" and calls[-1]["name"] == "braincell"
-    assert '"legacy"' in settings_path.read_text()
+    assert '"legacy"' in settings_path.read_text(encoding="utf-8")
 
 
 # ── /api/hook ─────────────────────────────────────────────────────────────────

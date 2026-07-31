@@ -16,7 +16,8 @@ import stat
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timezone
+from contextlib import suppress
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -284,7 +285,7 @@ class ClaudeCodeClient:
 
     def _run(self, args: list[str], cwd: str | None) -> subprocess.CompletedProcess:
         return subprocess.run(
-            [self._claude, *args], cwd=cwd, capture_output=True, text=True,
+            [self._claude, *args], cwd=cwd, capture_output=True, text=True, check=False,
         )
 
     def mcp_remove(self, name: str, scope: str, cwd: str | None = None) -> None:
@@ -401,7 +402,7 @@ def _plain(value: Any) -> Any:
 
 
 def _backup_path(path: Path) -> Path:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S-%f")
     return path.with_name(f"{path.name}.braincell.bak.{stamp}")
 
 
@@ -415,15 +416,25 @@ def _atomic_write_text(path: Path, text: str, mode: int | None) -> Path | None:
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temp_path = Path(temporary)
     try:
-        if mode is not None:
-            os.fchmod(fd, stat.S_IMODE(mode))
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+        try:
+            handle = os.fdopen(fd, "w", encoding="utf-8", newline="")
+        except Exception:
+            os.close(fd)
+            raise
+        with handle:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
+        # Permissions are applied by path after the descriptor is closed:
+        # os.fchmod is absent on Windows before 3.13, and a live descriptor
+        # would block the unlink below on Windows.
+        if mode is not None:
+            os.chmod(temp_path, stat.S_IMODE(mode))
         os.replace(temp_path, path)
     except Exception:
-        temp_path.unlink(missing_ok=True)
+        # Cleanup must never replace the exception that caused it.
+        with suppress(OSError):
+            temp_path.unlink(missing_ok=True)
         raise
     return backup
 
@@ -543,7 +554,12 @@ def _read_json_object(path: Path) -> tuple[dict[str, Any], str | None]:
     except (OSError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"Cannot parse {path}; BrainCell left it unchanged. ({exc})") from exc
     if not isinstance(data, dict):
-        raise RuntimeError(f"{path} must contain a JSON object; BrainCell left it unchanged.")
+        # Suppression rationale: this is a user-facing configuration error, not a
+        # programming type error. Matches automatic_pool_recall.py:55; raising
+        # TypeError here would break that contract.
+        raise RuntimeError(  # noqa: TRY004
+            f"{path} must contain a JSON object; BrainCell left it unchanged."
+        )
     return data, path.read_text(encoding="utf-8")
 
 

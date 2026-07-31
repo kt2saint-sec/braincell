@@ -71,5 +71,5 @@ def _rotating_file_handler(path: Path) -> logging.Handler:
         return RotatingFileHandler(
             path, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 — logging setup must never crash startup, whatever the cause
         return logging.FileHandler(path, encoding="utf-8")

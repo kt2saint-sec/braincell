@@ -16,8 +16,10 @@ All offline (TestClient), no real uvicorn, Qt window, or Ollama.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 
@@ -85,7 +87,15 @@ class TestProjectOnlyStatusA2:
 
 # ── A3: launcher ──────────────────────────────────────────────────────────────
 
+# Only the install_launcher tests are XDG-bound; the main_map wiring tests below
+# stub out run_gui entirely and must keep running on every platform.
+_xdg_only = pytest.mark.skipif(
+    sys.platform != "linux", reason="install_launcher is Linux/XDG-only (gui.py A3)"
+)
+
+
 class TestInstallLauncherA3:
+    @_xdg_only
     def test_writes_icon_and_desktop(self, tmp_path, monkeypatch):
         xdg = tmp_path / "xdg"
         proj = tmp_path / "proj"
@@ -99,7 +109,7 @@ class TestInstallLauncherA3:
         # desktop-file id, so a rename would silently unpin the icon.
         assert desktop == xdg / "applications" / "braincell-map.desktop"
         assert icon.exists() and desktop.exists()
-        content = desktop.read_text()
+        content = desktop.read_text(encoding="utf-8")
         # Exec must run the full launcher (`braincell start <project>`), via an
         # ABSOLUTE console-script path — a bare name fails when a desktop
         # environment launches the entry without the venv on PATH. It must NOT
@@ -113,13 +123,14 @@ class TestInstallLauncherA3:
         assert exec_target.split(" start ")[0].strip('"').endswith("/braincell")
         assert "Icon=braincell" in content
         assert "Name=BrainCell Map" in content
-        assert icon.read_text().startswith("<?xml")
+        assert icon.read_text(encoding="utf-8").startswith("<?xml")
         # hicolor theme tree — the path GNOME/KDE resolve Icon=braincell from
         hicolor = xdg / "icons" / "hicolor"
         assert (hicolor / "scalable" / "apps" / "braincell.svg").exists()
         for size in (48, 128, 256, 512):
             assert (hicolor / f"{size}x{size}" / "apps" / "braincell.png").exists(), size
 
+    @_xdg_only
     def test_default_project_path_is_cwd(self, tmp_path, monkeypatch):
         xdg = tmp_path / "xdg"
         cwd = tmp_path / "here"
@@ -130,10 +141,11 @@ class TestInstallLauncherA3:
 
         _, desktop = install_launcher()
         exec_line = next(
-            ln for ln in desktop.read_text().splitlines() if ln.startswith("Exec=")
+            ln for ln in desktop.read_text(encoding="utf-8").splitlines() if ln.startswith("Exec=")
         )
         assert f'start "{cwd.resolve()}"' in exec_line
 
+    @_xdg_only
     def test_idempotent(self, tmp_path, monkeypatch):
         xdg = tmp_path / "xdg"
         monkeypatch.setenv("XDG_DATA_HOME", str(xdg))

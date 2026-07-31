@@ -213,7 +213,7 @@ class TestPoolIdRemapping:
             _pool(PA)
             return old, new_local, uid_row[0]
 
-        old_local, new_local, new_uid = asyncio.run(go())
+        _old_local, new_local, new_uid = asyncio.run(go())
 
         global_new_id = _global_query(
             "SELECT id FROM memory_notes WHERE note_uid = ?", (new_uid,)

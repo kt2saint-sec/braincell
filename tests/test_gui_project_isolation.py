@@ -14,7 +14,6 @@ from unittest.mock import Mock, patch
 
 from fastapi.testclient import TestClient
 
-
 PROJECT_A = "GUIISOLATIONA01"
 PROJECT_B = "GUIISOLATIONB02"
 
@@ -82,11 +81,10 @@ class TestNormalGuiProjectIsolation:
         with patch(
             "braincell.config.get_global_db_path",
             side_effect=AssertionError("normal GUI touched legacy global database"),
-        ):
-            with TestClient(_app(tmp_path)) as client:
-                assert client.get("/api/status").status_code == 200
-                assert client.get("/api/notes").status_code == 200
-                assert client.get("/api/search?q=connected").status_code == 200
+        ), TestClient(_app(tmp_path)) as client:
+            assert client.get("/api/status").status_code == 200
+            assert client.get("/api/notes").status_code == 200
+            assert client.get("/api/search?q=connected").status_code == 200
 
     def test_sqlite_open_sentinel_allows_only_connected_then_explicit_pool_members(self, tmp_path):
         """Record every SQLite target opened by GUI startup and query operations."""
@@ -110,17 +108,19 @@ class TestNormalGuiProjectIsolation:
                 opened.add(Path(database[5:].split("?", 1)[0]).resolve())
             return real_connect(database, *args, **kwargs)
 
-        with patch("braincell.gui.SqliteStore", side_effect=record_store), patch(
-            "braincell.federate.SqliteStore", side_effect=record_store
-        ), patch("braincell.federate.sqlite3.connect", side_effect=record_connect):
-            with TestClient(app) as client:
-                assert client.get("/api/status").status_code == 200
-                assert client.get("/api/notes").status_code == 200
-                assert client.get("/api/search?q=connected").status_code == 200
-                assert _db(PROJECT_B).resolve() not in opened
+        with (
+            patch("braincell.gui.SqliteStore", side_effect=record_store),
+            patch("braincell.federate.SqliteStore", side_effect=record_store),
+            patch("braincell.federate.sqlite3.connect", side_effect=record_connect),
+            TestClient(app) as client,
+        ):
+            assert client.get("/api/status").status_code == 200
+            assert client.get("/api/notes").status_code == 200
+            assert client.get("/api/search?q=connected").status_code == 200
+            assert _db(PROJECT_B).resolve() not in opened
 
-                response = client.post("/api/pools/recall", json={"pool": "Shared"})
-                assert response.status_code == 200
+            response = client.post("/api/pools/recall", json={"pool": "Shared"})
+            assert response.status_code == 200
 
         assert _db(PROJECT_A).resolve() in opened
         assert _db(PROJECT_B).resolve() in opened
@@ -132,7 +132,11 @@ class TestNormalGuiProjectIsolation:
             assert client.post("/api/pool", json={}).status_code == 404
 
     def test_decouple_and_readd_change_live_pool_results_without_copying_memory(self, tmp_path):
-        from braincell.project_registry import add_to_pool, create_pool, decouple_from_pool
+        from braincell.project_registry import (
+            add_to_pool,
+            create_pool,
+            decouple_from_pool,
+        )
 
         app = _app(tmp_path)
         create_pool("Shared")

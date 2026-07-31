@@ -381,7 +381,7 @@ def resolve_pool_sources(
     skipped: list[str] = []
 
     if include_all:
-        for _path, pid in registry.items():
+        for pid in registry.values():
             chosen.setdefault(pid, None)
 
     if family is not None:

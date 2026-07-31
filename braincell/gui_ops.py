@@ -29,11 +29,11 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from contextlib import redirect_stdout
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
@@ -63,19 +63,19 @@ class ReflectBody(BaseModel):
 
     project_id: str
     threshold: float = 0.85
-    since_days: Optional[int] = None
+    since_days: int | None = None
     apply: bool = False
-    model: Optional[str] = None
+    model: str | None = None
 
 
 class ContradictionsBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     project_id: str
-    threshold: Optional[float] = None
+    threshold: float | None = None
     limit: int = 50
     no_llm: bool = False
-    model: Optional[str] = None
+    model: str | None = None
 
 
 class ReembedBody(BaseModel):
@@ -98,9 +98,9 @@ class OpsJob:
     name: str
     state: str = "running"            # running | done | error
     log: list[str] = field(default_factory=list)
-    result: Optional[dict] = None     # structured outcome (op-specific)
+    result: dict | None = None     # structured outcome (op-specific)
     started: float = field(default_factory=time.time)
-    finished: Optional[float] = None
+    finished: float | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -138,14 +138,14 @@ class OpsJobManager:
     """Runs one maintenance worker at a time in a thread; keeps the last job."""
 
     def __init__(self) -> None:
-        self.job: Optional[OpsJob] = None
-        self._task: Optional[asyncio.Task] = None
+        self.job: OpsJob | None = None
+        self._task: asyncio.Task | None = None
 
     @property
     def busy(self) -> bool:
         return self.job is not None and self.job.state == "running"
 
-    async def start(self, name: str, worker: Callable[[], Optional[dict]]) -> OpsJob:
+    async def start(self, name: str, worker: Callable[[], dict | None]) -> OpsJob:
         if self.busy:
             raise RuntimeError("A maintenance job is already running.")
         job = OpsJob(name=name)
@@ -153,18 +153,18 @@ class OpsJobManager:
         self._task = asyncio.ensure_future(self._run(job, worker))
         return job
 
-    async def _run(self, job: OpsJob, worker: Callable[[], Optional[dict]]) -> None:
+    async def _run(self, job: OpsJob, worker: Callable[[], dict | None]) -> None:
         try:
             job.result = await asyncio.to_thread(self._captured, job, worker)
             job.state = "done"
-        except Exception as exc:  # worker failure — never crash the GUI
+        except Exception as exc:  # noqa: BLE001 — worker failure — never crash the GUI
             job.log.append(f"{job.name} failed: {exc!r}")
             job.state = "error"
         finally:
             job.finished = time.time()
 
     @staticmethod
-    def _captured(job: OpsJob, worker: Callable[[], Optional[dict]]) -> Optional[dict]:
+    def _captured(job: OpsJob, worker: Callable[[], dict | None]) -> dict | None:
         """Run *worker* with stdout captured into the job log.
 
         redirect_stdout swaps the process-wide sys.stdout, but only one job runs
@@ -186,11 +186,11 @@ class OpsJobManager:
 
 def run_consolidate(
     db_path: Path, project_id: str, threshold: float, apply: bool, llm: bool,
-) -> Optional[dict]:
+) -> dict | None:
     """`braincell consolidate` core (cli._consolidate_async + auto-backup)."""
     from .cli import _auto_backup, _consolidate_async
 
-    backup: Optional[str] = None
+    backup: str | None = None
     if apply:
         bp = _auto_backup(db_path, "consolidate")
         if bp is not None:
@@ -213,14 +213,14 @@ def run_consolidate(
 
 def run_reflect(
     db_path: Path, project_id: str, threshold: float,
-    since_days: Optional[int], apply: bool, model: Optional[str],
-) -> Optional[dict]:
+    since_days: int | None, apply: bool, model: str | None,
+) -> dict | None:
     """`braincell reflect` core (reflect.reflect + auto-backup)."""
     from .cli import _auto_backup
     from .embed import embed_query_async
     from .reflect import reflect
 
-    backup: Optional[str] = None
+    backup: str | None = None
     if apply:
         bp = _auto_backup(db_path, "reflect")
         if bp is not None:
@@ -250,15 +250,15 @@ def run_reflect(
 
 
 def run_contradictions(
-    db_path: Path, project_id: str, threshold: Optional[float],
-    limit: int, no_llm: bool, model: Optional[str],
-) -> Optional[dict]:
+    db_path: Path, project_id: str, threshold: float | None,
+    limit: int, no_llm: bool, model: str | None,
+) -> dict | None:
     """`braincell contradictions` core — READ-ONLY by design (no apply exists)."""
     from .contradictions import find_contradictions, ollama_judge, print_report
 
     judge = None
     if not no_llm:
-        judge = lambda a, b: ollama_judge(a, b, model=model)  # noqa: E731
+        judge = lambda a, b: ollama_judge(a, b, model=model)
 
     store = SqliteStore(db_path)
     store.assert_schema_version()
@@ -283,7 +283,7 @@ def run_contradictions(
     }
 
 
-def run_reembed_notes(db_path: Path, project_id: str) -> Optional[dict]:
+def run_reembed_notes(db_path: Path, project_id: str) -> dict | None:
     """`braincell reembed-notes` core (store.reembed_notes + embed_texts)."""
     store = SqliteStore(db_path)
     store.assert_schema_version()
@@ -311,7 +311,7 @@ def mount_ops_api(
         if project_id != connected_project_id:
             raise HTTPException(409, "This operation is limited to the connected Project.")
 
-    async def _start(name: str, worker: Callable[[], Optional[dict]]) -> dict:
+    async def _start(name: str, worker: Callable[[], dict | None]) -> dict:
         try:
             job = await manager.start(name, worker)
         except RuntimeError as exc:
@@ -368,12 +368,12 @@ def mount_ops_api(
         from .cli import _vacuum_into
         if not db_path.exists():
             raise HTTPException(409, "No brain built yet — nothing to back up.")
-        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         dest = db_path.parent / f"braincell-backup-{ts}.db"
         import anyio
         try:
             await anyio.to_thread.run_sync(_vacuum_into, db_path, dest)
-        except Exception as exc:  # disk full / locked — surface, never 500-trace
+        except Exception as exc:  # noqa: BLE001 — disk full / locked — surface, never 500-trace
             raise HTTPException(409, f"Backup failed: {exc}")
         return {"ok": True, "path": str(dest)}
 

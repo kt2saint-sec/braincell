@@ -39,8 +39,9 @@ def test_search_records_timing(tmp_path):
 
     async def go():
         await _insert_doc_and_chunk(s, project="P", doc_key="d1", text="alpha beta", seed=1)
-        from braincell import embed_spec
         import numpy as np
+
+        from braincell import embed_spec
         v = np.zeros(embed_spec.DIM, dtype=np.float32)
         v[0] = 1.0
         await s.search(v, "", None, 5, "semantic")

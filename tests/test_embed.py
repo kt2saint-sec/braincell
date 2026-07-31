@@ -24,7 +24,7 @@ import numpy as np
 import pytest
 
 from braincell import embed_spec
-from braincell.embed import _batched_by_size, embed_texts, embed_query
+from braincell.embed import _batched_by_size, embed_query, embed_texts
 
 
 def _reload_embed_spec():
@@ -248,9 +248,11 @@ class TestOllamaRetry:
         mock_ol = _mock_ollama_module(client)
         mock_hx = _mock_httpx_module()
 
-        with patch.dict(sys.modules, {"ollama": mock_ol, "httpx": mock_hx}):
-            with pytest.raises(ValueError, match="embed dimension mismatch"):
-                embed_texts(["hello"])
+        with (
+            patch.dict(sys.modules, {"ollama": mock_ol, "httpx": mock_hx}),
+            pytest.raises(ValueError, match="embed dimension mismatch"),
+        ):
+            embed_texts(["hello"])
 
         # Only one attempt — dimension mismatch is NOT retried.
         assert client.embed.call_count == 1
@@ -486,9 +488,11 @@ class TestOllamaDimGuardWithConfiguredDim:
             mock_ol = _mock_ollama_module(client)
             mock_hx = _mock_httpx_module()
 
-            with patch.dict(sys.modules, {"ollama": mock_ol, "httpx": mock_hx}):
-                with pytest.raises(ValueError, match="embed dimension mismatch"):
-                    embed_texts(["hello"])
+            with (
+                patch.dict(sys.modules, {"ollama": mock_ol, "httpx": mock_hx}),
+                pytest.raises(ValueError, match="embed dimension mismatch"),
+            ):
+                embed_texts(["hello"])
 
             assert client.embed.call_count == 1, "mismatch must not be retried"
         finally:
@@ -500,8 +504,10 @@ class TestOllamaDimGuardWithConfiguredDim:
 # SECTION 8: P0-2 asymmetric query/document prefix injection
 # ═══════════════════════════════════════════════════════════════════════════════
 
-import hashlib  # noqa: E402 — grouped with the P0-2 section it supports
-from braincell import embed as _embmod  # noqa: E402
+# Deliberately mid-file: grouped with the P0-2 section these imports support.
+import hashlib
+
+from braincell import embed as _embmod
 
 
 def _configure(monkeypatch, model: str, dim: int):
@@ -575,7 +581,7 @@ class TestPrefixRegistryResolution:
             mod = _configure(monkeypatch, "nomic-embed-text", 768)
             assert mod.QUERY_PREFIX == "search_query: "
             assert mod.DOC_PREFIX == "search_document: "
-            expect = hashlib.sha256("search_document: ".encode()).hexdigest()[:8]
+            expect = hashlib.sha256(b"search_document: ").hexdigest()[:8]
             assert mod.FINGERPRINT == f"ollama:nomic-embed-text:768:dp={expect}"
         finally:
             monkeypatch.undo()
@@ -600,7 +606,7 @@ class TestPrefixRegistryResolution:
             mod = _configure(monkeypatch, "nomic-embed-text", 768)
             assert mod.QUERY_PREFIX == "Q: "
             assert mod.DOC_PREFIX == "D: "
-            expect = hashlib.sha256("D: ".encode()).hexdigest()[:8]
+            expect = hashlib.sha256(b"D: ").hexdigest()[:8]
             assert mod.FINGERPRINT == f"ollama:nomic-embed-text:768:dp={expect}"
 
             # Explicit empty doc-prefix override disables the doc prefix entirely.

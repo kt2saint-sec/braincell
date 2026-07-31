@@ -29,9 +29,9 @@ import json
 import os
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
@@ -97,7 +97,7 @@ def _pdeathsig_preexec(parent_pid: int):
             libc.prctl(1, _signal.SIGKILL, 0, 0, 0)  # 1 = PR_SET_PDEATHSIG
             if os.getppid() != parent_pid:
                 os._exit(112)  # parent died before prctl armed
-        except Exception:  # noqa: BLE001 — never abort the spawn from preexec
+        except Exception:  # noqa: BLE001, S110 — never abort the spawn from preexec; logging is unsafe post-fork
             pass
 
     return _preexec
@@ -108,8 +108,8 @@ class IngestJob:
     state: str = "running"           # running | done | error
     log: list[str] = field(default_factory=list)
     started: float = field(default_factory=time.time)
-    finished: Optional[float] = None
-    returncode: Optional[int] = None
+    finished: float | None = None
+    returncode: int | None = None
     mode: str = "project"
     reembed: bool = False
 
@@ -130,9 +130,9 @@ class IngestManager:
     """Runs one build subprocess at a time; keeps the last job for polling."""
 
     def __init__(self) -> None:
-        self.job: Optional[IngestJob] = None
-        self._proc: Optional[asyncio.subprocess.Process] = None
-        self._task: Optional[asyncio.Task] = None
+        self.job: IngestJob | None = None
+        self._proc: asyncio.subprocess.Process | None = None
+        self._task: asyncio.Task | None = None
 
     # Overridable seam (tests swap in a trivial command).
     def command_for(self, path: str) -> list[str]:
@@ -184,7 +184,7 @@ class IngestManager:
                 del job.log[:-_LOG_TAIL or None]
             job.returncode = await proc.wait()
             job.state = "done" if job.returncode == 0 else "error"
-        except Exception as exc:  # spawn failure etc. — never crash the GUI
+        except Exception as exc:  # noqa: BLE001 — spawn failure etc. — never crash the GUI
             job.log.append(f"ingest failed to run: {exc!r}")
             job.state = "error"
         finally:
@@ -221,7 +221,7 @@ class IngestManager:
                 pass
             try:
                 await asyncio.wait_for(proc.wait(), _SHUTDOWN_GRACE_S)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 proc.kill()
                 await proc.wait()
         if self._task is not None and not self._task.done():
@@ -229,7 +229,7 @@ class IngestManager:
             # bound it anyway so shutdown can never hang the lifespan.
             try:
                 await asyncio.wait_for(self._task, _SHUTDOWN_GRACE_S)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 self._task.cancel()
 
 
@@ -259,7 +259,7 @@ def save_schedules(schedules: list[dict]) -> None:
     os.replace(tmp, p)
 
 
-def schedule_due(sched: dict, now: Optional[float] = None) -> bool:
+def schedule_due(sched: dict, now: float | None = None) -> bool:
     """True when the schedule's interval has elapsed since last_run (or never ran)."""
     now = time.time() if now is None else now
     interval_s = float(sched.get("interval_minutes", 0)) * 60.0
@@ -401,7 +401,7 @@ def mount_ingest_api(
     db_path: Path,
     manager: IngestManager,
     connected_project_id: str,
-    pick_folder: Optional[Callable[[], dict]] = None,
+    pick_folder: Callable[[], dict] | None = None,
 ) -> None:
     """Register connected-Project ingestion routes on *app*."""
 

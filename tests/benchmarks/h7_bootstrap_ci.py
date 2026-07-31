@@ -36,8 +36,12 @@ import numpy as np
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
-# noqa: E402 — MUST follow the sys.path.insert above; hoisting this breaks the import.
-from validate_h7_leakage import BM25, content_words  # noqa: E402  (tokenizer/stemmer/BM25)
+
+# MUST follow the sys.path.insert above; hoisting this breaks the import.
+from validate_h7_leakage import (
+    BM25,
+    content_words,
+)
 
 # Resolved relative to THIS file (_THIS_DIR, already computed above): the previous
 # absolute path only existed on the original author's machine, so the default
@@ -62,7 +66,7 @@ def _embed_all(texts):
     importlib.reload(embmod)
     try:
         vecs = embmod.embed_texts(texts)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — script surfaces any embedder failure as actionable advice, then exits 2
         print(f"ERROR: embedding failed ({type(exc).__name__}: {exc}).")
         print(f"Pull {MODEL} first: `ollama pull {MODEL}` (and confirm Ollama is running).")
         sys.exit(2)

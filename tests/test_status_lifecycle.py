@@ -16,7 +16,6 @@ from pathlib import Path
 
 from tests.conftest import fake_vec, make_store
 
-
 # v5-shaped memory_notes: the v6 column list minus `status` (see schema.py — v6
 # appends status last, so this is byte-what-a-v5-store-holds).
 _V5_MEMORY_NOTES_DDL = """
@@ -202,7 +201,7 @@ class TestPoolStatusConvergence:
                                          embedding=fake_vec(2))
             return nid, new_id
 
-        nid, new_id = asyncio.run(_seed())
+        _nid, new_id = asyncio.run(_seed())
         src.close()
 
         global_db = glob_dir / "braincell.db"

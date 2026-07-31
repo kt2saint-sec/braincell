@@ -33,8 +33,9 @@ import sys
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
-# noqa: E402 — MUST follow the sys.path.insert above; hoisting this breaks the import.
-from validate_h7_leakage import content_words  # noqa: E402  (shared tokenizer/stemmer)
+
+# MUST follow the sys.path.insert above; hoisting this breaks the import.
+from validate_h7_leakage import content_words
 
 H7_EVAL = os.path.join(_THIS_DIR, "eval-H7-vocab-divergence-2026-07-08.json")
 SEEDS = os.path.join(_THIS_DIR, "style-grid-seeds.json")

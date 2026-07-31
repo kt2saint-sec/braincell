@@ -357,10 +357,14 @@ async def _seed_and_close(db):
 # rewinding a v4 store) because the table REBUILD is the risky part of the upgrade
 # and only a genuinely-old table exercises it.
 _V3_DDL = [
-    "CREATE TABLE schema_version (version INTEGER NOT NULL, "
-    "applied_at TEXT NOT NULL DEFAULT (datetime('now')))",
-    "CREATE TABLE embed_fingerprint (fingerprint TEXT NOT NULL, "
-    "applied_at TEXT NOT NULL DEFAULT (datetime('now')))",
+    (
+        "CREATE TABLE schema_version (version INTEGER NOT NULL, "
+        "applied_at TEXT NOT NULL DEFAULT (datetime('now')))"
+    ),
+    (
+        "CREATE TABLE embed_fingerprint (fingerprint TEXT NOT NULL, "
+        "applied_at TEXT NOT NULL DEFAULT (datetime('now')))"
+    ),
     """CREATE TABLE memory_notes (
         id              INTEGER PRIMARY KEY,
         project_id      TEXT    NOT NULL,
