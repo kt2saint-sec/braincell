@@ -9,14 +9,12 @@ Linux systemd specifics are here for backward-compatible test monkeypatching
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 
 from .platform import (
     UNIT_NAME,
     _linux_unit_path,
-    remove_legacy_service,
 )
 
 unit_path = _linux_unit_path
@@ -49,11 +47,10 @@ def status() -> dict:
 def remove() -> dict:
     """Disable, stop, and remove the retired GUI unit.
 
-    For non-Linux platforms, delegates to ``platform.remove_legacy_service()``.
+    On platforms without systemctl, ``_systemctl`` returns gracefully and the
+    removal is a no-op (unit file won't exist). Tests monkeypatch ``_systemctl``
+    for cross-platform coverage.
     """
-    if os.sys.platform not in ("linux",):
-        return remove_legacy_service()
-
     path = unit_path()
     was_present = path.exists()
     details: list[str] = []

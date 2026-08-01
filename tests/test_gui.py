@@ -16,9 +16,11 @@ from __future__ import annotations
 import asyncio
 import inspect
 import sqlite3
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from tests.conftest import _insert_doc_and_chunk, fake_vec, make_store
@@ -310,6 +312,7 @@ class TestApiProjects:
             data = client.get("/api/projects").json()
         assert any(p["project_id"] == "TESTULID0001" for p in data)
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Unix paths invalid on Windows")
     def test_projects_sorted_by_path(self, tmp_path):
         from braincell.project_registry import register_path
         register_path("/zzz/project", "ZZZULID")

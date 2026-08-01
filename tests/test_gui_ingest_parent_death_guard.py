@@ -21,6 +21,8 @@ import sys
 import threading
 import time
 
+import pytest
+
 
 def _reap_in_background(proc: subprocess.Popen) -> threading.Thread:
     """`_run_parent_death_watchdog`'s `os.kill(pid, 0)` sees a zombie as alive
@@ -49,6 +51,7 @@ class TestPidAlive:
             proc.kill()
             proc.wait()
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="_pid_alive is POSIX-only; Windows uses Job Objects")
     def test_false_for_a_reaped_process(self):
         from braincell.gui_ingest import _pid_alive
 

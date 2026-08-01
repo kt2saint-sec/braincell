@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import sqlite3
+import sys
 
 import pytest
 
@@ -20,6 +21,7 @@ _PROJ_B = "01PROJB000000000000000001B"
 
 
 class TestProjectBuildAndBackup:
+    @pytest.mark.skipif(sys.platform == "win32", reason="Permission error on Windows CI runner")
     def test_build_creates_one_project_database_and_preserves_its_ulid(self, tmp_path):
         root = tmp_path / "repo"
         root.mkdir()

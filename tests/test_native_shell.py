@@ -289,6 +289,7 @@ class TestServeNative:
 # ── launcher Exec uses the native-by-default command ──────────────────────────
 
 class TestLauncherNativeExec:
+    @pytest.mark.skipif(sys.platform != "linux", reason="reads .desktop file (Linux launcher)")
     def test_desktop_exec_needs_no_mode_flag(self, tmp_path, monkeypatch):
         xdg = tmp_path / "xdg"
         proj = tmp_path / "proj"
