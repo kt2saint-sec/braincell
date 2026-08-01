@@ -24,8 +24,8 @@ and code identifiers.
   Project's searchable memory. `sync` is a documented compatibility alias for
   Build during the transition period.
 - **Connect BrainCell** — configure BrainCell for a selected client in one
-  Project. Prefer **Connect to Codex**, **Connect to Claude**, or **Connect to
-  VS Code**.
+  Project. Prefer **Connect to Codex**, **Connect to Claude**, **Connect to
+  OpenCode**, or **Connect to VS Code**.
 - **Disconnect BrainCell** — remove one Project's client connection without
   deleting its memory. Prefer client-specific labels.
 - **Memory Map** — the BrainCell desktop application. “Native GUI” belongs only
