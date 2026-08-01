@@ -34,6 +34,34 @@ from .log import get as _get_log
 log = _get_log("braincell.project_registry")
 
 
+def is_safe_project_id(value: object) -> bool:
+    """Return whether *value* is a safe opaque on-disk Project identifier.
+
+    Historical test/install catalogs contain pre-ULID identifiers, so this
+    deliberately validates the filesystem security boundary rather than
+    rejecting those existing catalogs: one non-empty path component, never an
+    absolute path, traversal, or a value containing a path separator.
+    """
+    if not isinstance(value, str) or not value or value in {".", ".."}:
+        return False
+    return (
+        not Path(value).is_absolute()
+        and Path(value).name == value
+        and "/" not in value
+        and "\\" not in value
+        and "\x00" not in value
+    )
+
+
+def _valid_registry(data: object) -> bool:
+    return isinstance(data, dict) and all(
+        isinstance(key, str)
+        and Path(key).is_absolute()
+        and is_safe_project_id(value)
+        for key, value in data.items()
+    )
+
+
 # ── Path normalisation (the registry KEY) ─────────────────────────────────────
 
 def normalize_path(path: str | Path) -> str:
@@ -52,29 +80,79 @@ def load_path_registry() -> dict[str, str]:
         return {}
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
+        if _valid_registry(data):
+            return data
+        log.warning(
+            "path-registry.json has unsafe or invalid entries — treating as empty"
+        )
+        return {}
     except (json.JSONDecodeError, OSError) as exc:
         log.warning("path-registry.json unreadable (%s) — treating as empty", exc)
         return {}
 
 
+def _load_path_registry_for_mutation(path: Path) -> dict[str, str]:
+    """Load a registry for RMW, refusing to reinterpret corruption as empty."""
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise RuntimeError(
+            f"Path registry is unreadable; refusing to mutate {path}: {exc}"
+        ) from exc
+    if not _valid_registry(data):
+        raise RuntimeError(
+            f"Path registry has an invalid format; refusing to mutate {path}"
+        )
+    return data
+
+
 def save_path_registry(registry: dict[str, str]) -> None:
     """Persist a complete registry under the catalog lock."""
+    if not _valid_registry(registry):
+        raise ValueError("Refusing to save an unsafe or invalid path registry.")
     p = get_path_registry_path()
     with catalog_lock(p):
+        _load_path_registry_for_mutation(p)
         atomic_write_json(p, registry, sort_keys=True)
 
 
 def register_path(path: str | Path, ulid: str) -> None:
     """Upsert one `abs_path → ULID` mapping (no-op if already current)."""
+    if not is_safe_project_id(ulid):
+        raise ValueError(f"Unsafe Project identity: {ulid!r}")
     key = normalize_path(path)
     catalog = get_path_registry_path()
     with catalog_lock(catalog):
-        registry = load_path_registry()
-        if registry.get(key) == ulid:
+        registry = _load_path_registry_for_mutation(catalog)
+        owner = registry.get(key)
+        if owner == ulid:
             return
+        if owner is not None:
+            raise ValueError(
+                f"Path {key} is already owned by Project {owner}; "
+                "use Project reassociation to change identity."
+            )
         registry[key] = ulid
         atomic_write_json(catalog, registry, sort_keys=True)
+
+
+def get_or_create_project_id(path: str | Path, factory) -> str:
+    """Atomically resolve or mint one stable identity for a normalized path."""
+    key = normalize_path(path)
+    catalog = get_path_registry_path()
+    with catalog_lock(catalog):
+        registry = _load_path_registry_for_mutation(catalog)
+        existing = registry.get(key)
+        if existing is not None:
+            return existing
+        project_id = str(factory())
+        if not is_safe_project_id(project_id):
+            raise ValueError("Project identity factory returned an unsafe value.")
+        registry[key] = project_id
+        atomic_write_json(catalog, registry, sort_keys=True)
+        return project_id
 
 
 def reassociate_project_path(ulid: str, path: str | Path) -> tuple[Path, Path]:
@@ -82,7 +160,7 @@ def reassociate_project_path(ulid: str, path: str | Path) -> tuple[Path, Path]:
     key = normalize_path(path)
     catalog = get_path_registry_path()
     with catalog_lock(catalog):
-        registry = load_path_registry()
+        registry = _load_path_registry_for_mutation(catalog)
         old_paths = sorted(
             existing_path for existing_path, existing_id in registry.items()
             if existing_id == ulid
@@ -108,6 +186,56 @@ def resolve_ulid_to_path(ulid: str, registry: dict[str, str] | None = None) -> P
     """Resolve a stable ULID to its currently registered path, if any."""
     paths = [path for path, candidate in (registry or load_path_registry()).items() if candidate == ulid]
     return Path(min(paths)) if paths else None
+
+
+# ── Orphan reconciliation (READ-ONLY inventory) ───────────────────────────────
+
+def find_orphans() -> dict[str, list[dict[str, str]]]:
+    """Preview-only inventory of two independent orphan classes.
+
+    - ``orphaned_registry_entries``: path-registry rows whose registered path
+      no longer exists on disk — the repo was deleted or moved without
+      ``braincell project reassociate``. Memory for that ULID is untouched and
+      still reachable by ULID; only the path mapping is stale.
+    - ``orphaned_project_databases``: a ``projects/<ulid>/braincell.db`` on
+      disk with no path-registry row naming that ULID — the registry entry was
+      lost or never written for an existing brain.
+
+    Detection only: this never deletes a registry row, a database, or any
+    memory, and never reassociates a path (that is
+    ``reassociate_project_path``, already live via `braincell project
+    reassociate`). Callers decide what — if anything — to do with the list.
+    """
+    from . import config
+
+    registry = load_path_registry()
+    registered_ulids: set[str] = set(registry.values())
+    orphaned_paths = sorted(
+        (
+            {"path": path_str, "project_id": ulid}
+            for path_str, ulid in registry.items()
+            if not Path(path_str).exists()
+        ),
+        key=lambda item: item["path"],
+    )
+
+    projects_root = config._xdg_data_home() / config.DATA_NAMESPACE / "projects"
+    orphaned_databases: list[dict[str, str]] = []
+    if projects_root.is_dir():
+        for entry in projects_root.iterdir():
+            if not entry.is_dir() or entry.name in registered_ulids:
+                continue
+            db_path = entry / "braincell.db"
+            if db_path.is_file():
+                orphaned_databases.append(
+                    {"project_id": entry.name, "database": str(db_path)}
+                )
+    orphaned_databases.sort(key=lambda item: item["project_id"])
+
+    return {
+        "orphaned_registry_entries": orphaned_paths,
+        "orphaned_project_databases": orphaned_databases,
+    }
 
 
 # ── Pools (ULID membership only) ────────────────────────────────────────────
@@ -284,6 +412,28 @@ def load_families() -> dict[str, list[str]]:
     return out
 
 
+def _load_families_for_mutation(path: Path) -> dict[str, list[str]]:
+    """Load and fully validate family metadata before a read-modify-write."""
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise RuntimeError(
+            f"Family metadata is unreadable; refusing to mutate {path}: {exc}"
+        ) from exc
+    if not isinstance(data, dict) or not all(
+        isinstance(name, str)
+        and isinstance(members, list)
+        and all(isinstance(member, str) for member in members)
+        for name, members in data.items()
+    ):
+        raise RuntimeError(
+            f"Family metadata has an invalid format; refusing to mutate {path}"
+        )
+    return data
+
+
 def save_families(families: dict[str, list[str]]) -> None:
     """Persist families.json atomically (tmp + os.replace).
 
@@ -295,11 +445,17 @@ def save_families(families: dict[str, list[str]]) -> None:
     """
     if not isinstance(families, dict):
         raise TypeError(f"families must be a dict, got {type(families).__name__!r}")
+    if not all(
+        isinstance(name, str)
+        and isinstance(members, list)
+        and all(isinstance(member, str) for member in members)
+        for name, members in families.items()
+    ):
+        raise ValueError("Refusing to save invalid family metadata.")
     p = get_families_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(families, indent=2, sort_keys=True), encoding="utf-8")
-    os.replace(tmp, p)
+    with catalog_lock(p):
+        _load_families_for_mutation(p)
+        atomic_write_json(p, families, sort_keys=True)
 
 
 def add_family_members(name: str, paths: list[str]) -> dict[str, list[str]]:
@@ -316,13 +472,15 @@ def add_family_members(name: str, paths: list[str]) -> dict[str, list[str]]:
     Returns:
         The updated families dict (all families, not just ``name``).
     """
-    families = load_families()
-    existing: set[str] = {normalize_path(m) for m in families.get(name, [])}
-    for p in paths:
-        existing.add(normalize_path(p))
-    families[name] = sorted(existing)
-    save_families(families)
-    return families
+    catalog = get_families_path()
+    with catalog_lock(catalog):
+        families = _load_families_for_mutation(catalog)
+        existing: set[str] = {normalize_path(m) for m in families.get(name, [])}
+        for p in paths:
+            existing.add(normalize_path(p))
+        families[name] = sorted(existing)
+        atomic_write_json(catalog, families, sort_keys=True)
+        return families
 
 
 def remove_family(name: str, paths: list[str] | None = None) -> bool:
@@ -338,24 +496,26 @@ def remove_family(name: str, paths: list[str] | None = None) -> bool:
         ``True`` if anything changed, ``False`` if the family or the
         specified members were not found.
     """
-    families = load_families()
-    if name not in families:
-        return False
-    if paths is None:
-        del families[name]
-        save_families(families)
+    catalog = get_families_path()
+    with catalog_lock(catalog):
+        families = _load_families_for_mutation(catalog)
+        if name not in families:
+            return False
+        if paths is None:
+            del families[name]
+            atomic_write_json(catalog, families, sort_keys=True)
+            return True
+        normalized_to_remove = {normalize_path(p) for p in paths}
+        current = families[name]
+        after = [m for m in current if normalize_path(m) not in normalized_to_remove]
+        if len(after) == len(current):
+            return False
+        if after:
+            families[name] = after
+        else:
+            del families[name]
+        atomic_write_json(catalog, families, sort_keys=True)
         return True
-    normalized_to_remove = {normalize_path(p) for p in paths}
-    current = families[name]
-    after = [m for m in current if normalize_path(m) not in normalized_to_remove]
-    if len(after) == len(current):
-        return False  # nothing matched
-    if after:
-        families[name] = after
-    else:
-        del families[name]
-    save_families(families)
-    return True
 
 
 def resolve_family_ulids(

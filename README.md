@@ -68,9 +68,13 @@ ollama pull qwen3-embedding:4b
 Verify:
 
 ```bash
-braincell --version
+braincell --help
 braincell-mcp --help
+pipx list
 ```
+
+`braincell --help` lists every subcommand; `pipx list` reports the installed
+`braincell-mcp` version. There is no `braincell --version` flag.
 
 Upgrade later:
 
@@ -145,6 +149,32 @@ braincell start .
 
 Build reads supported documents and transcripts into that Project's database. `braincell sync` is the incremental compatibility alias for Build. Remember, Forget, and Correct memory are MCP actions; normal Recall and Search are always limited to the connected Project.
 
+Inspect persistent state without changing it:
+
+```bash
+braincell storage .
+braincell storage . --keep-backups 3
+braincell storage . --keep-backups 3 --backup-root /path/to/recovery-backups
+```
+
+The report includes file sizes and Project row counts. Retention output is a
+dry-run plan by default: it never deletes backups, indexed transcripts,
+operation history, tombstones, or curated memory. Project databases grow with
+indexed content and retained history, so use this report to review storage
+deliberately.
+
+Executing retention is a separate, explicit step:
+
+```bash
+braincell storage . --keep-backups 3 --apply
+braincell storage . --expire-operations-days 180 --expire-tombstones-days 180 --apply
+```
+
+Nothing is ever expired by default — `--apply` is refused unless at least one
+retention option is configured, snapshots referenced by undo history (and
+tombstoned notes referenced by recorded operations) are never deleted, and
+active or superseded memory is never touched.
+
 ## Pools: intentional, live cross-Project reads
 
 A **Pool** is a named set of stable Project ULIDs. It stores memberships only: it never contains copied notes, documents, chunks, or vectors. Pool Search and Recall resolve members through the registry at query time and open their databases read-only. Missing, inaccessible, corrupt, or incompatible members are reported and skipped without failing the whole query.
@@ -176,7 +206,11 @@ Claude private-local scope writes only `.claude/settings.local.json`. Add `--sco
 - There is no ordinary query that reads every Project.
 - There is no shared operational memory database.
 - Writes remain pinned to the Connected Project.
+- Concurrent Build and maintenance mutations for one Project are refused rather
+  than allowed to interleave.
 - Pool reads are explicit; ordinary Recall or Search never silently widens scope.
+- Keyword operations remain available when embeddings are unavailable; an
+  explicitly semantic Search still reports the provider failure.
 - A legacy shared installation or database is a recovery/migration concern, not a normal runtime mode. Do not delete it until the dedicated migration workflow has previewed, backed up, and verified the recovery.
 
 ## Development
@@ -188,5 +222,4 @@ python3 -m pip install -e ".[dev,openai]"
 python3 -m pytest
 ruff check braincell tests
 ```
-The Memory Map is a PySide6/QtWebEngine application. Test its native window and bridge for desktop changes; a standalone-browser test is supplemental only. See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution requirements.
-
+The Memory Map is a PySide6/QtWebEngine application. Test its native window and bridge for desktop changes; a standalone-browser test is supplemental only. See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution requirements and [ARCHITECTURE.md](ARCHITECTURE.md) for the module, CLI, schema, and on-disk state map.

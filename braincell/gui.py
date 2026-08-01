@@ -1,7 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (c) 2026 Karl Toussaint (kt2saint)
 """
-gui.py — BrainCell local web viewer (Phase K).
+gui.py — FastAPI application behind the native Memory Map.
+
+Not a browser product: the app is served on 127.0.0.1 exclusively to the
+native Memory Map shell (``native_shell.py``). The historical "local web
+viewer (Phase K)" framing is retired.
 
 A thin FastAPI read-mostly viewer/manager over the brain.  Reuses
 braincell.store, braincell.project_registry, braincell.embed, braincell.config,
@@ -735,12 +739,15 @@ def create_app(
 
         # Ingestion management (folder navigation / build jobs / clear / schedules).
         from .gui_ingest import IngestManager, mount_ingest_api
-        app.state.ingest_manager = IngestManager()
+        from .gui_mutation import GuiMutationCoordinator
+        app.state.mutation_coordinator = GuiMutationCoordinator()
+        app.state.ingest_manager = IngestManager(app.state.mutation_coordinator)
         mount_ingest_api(
             app,
             db_path=db_path,
             manager=app.state.ingest_manager,
             connected_project_id=seed_project_id or "",
+            coordinator=app.state.mutation_coordinator,
             pick_folder=(native_bridge.pick_folder if native_bridge is not None else None),
         )
 
@@ -751,12 +758,13 @@ def create_app(
         # Maintenance commands (consolidate/reflect/contradictions/reembed/
         # backup/memory log+undo) — the GUI counterparts of the remaining CLI.
         from .gui_ops import OpsJobManager, mount_ops_api
-        app.state.ops_manager = OpsJobManager()
+        app.state.ops_manager = OpsJobManager(app.state.mutation_coordinator)
         mount_ops_api(
             app,
             db_path=db_path,
             manager=app.state.ops_manager,
             connected_project_id=seed_project_id or "",
+            coordinator=app.state.mutation_coordinator,
         )
 
     return app
@@ -764,17 +772,66 @@ def create_app(
 
 # ── Server launcher (localhost-only) ──────────────────────────────────────────
 
+def _windows_restrict_token_acl(path: Path) -> None:
+    """Restrict *path* to the current user only via ``icacls``.
+
+    Windows has no POSIX chmod semantics: ``os.chmod(path, 0o600)`` there only
+    toggles the FILE_ATTRIBUTE_READONLY flag, never actual ACL permissions, so
+    it does nothing to stop another account on the same machine from reading
+    the token. ``icacls`` (stdlib-only — a subprocess call, not a new
+    dependency) removes inherited permissions and grants full control to only
+    the current user.
+
+    Fail-closed: any failure here — a missing ``USERNAME``, a non-NTFS volume
+    (FAT32/exFAT have no ACLs at all), ``icacls`` itself erroring — is
+    surfaced as a loud warning rather than silently leaving the token at
+    whatever ACL it inherited. This does not delete the token or block the
+    GUI from starting: the token already lives under the user's own config
+    directory, which carries a reasonably-scoped default ACL on Windows (real
+    exposure is a custom or relocated data root — see BUGS.md), so a failed
+    hardening attempt is a defense-in-depth gap to report, not a reason to
+    refuse to serve the GUI at all.
+    """
+    import os as _os
+    import subprocess
+
+    domain = _os.environ.get("USERDOMAIN", "")
+    username = _os.environ.get("USERNAME", "")
+    if not username:
+        log.warning(
+            "Cannot restrict the GUI token's ACL at %s: USERNAME is not set "
+            "in the environment — it may be readable by other accounts on "
+            "this machine.", path,
+        )
+        return
+    account = f"{domain}\\{username}" if domain else username
+    result = subprocess.run(
+        ["icacls", str(path), "/inheritance:r", "/grant:r", f"{account}:F"],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        log.warning(
+            "icacls failed to restrict the GUI token at %s to %s (exit %s): "
+            "%s — it may be readable by other accounts on this machine.",
+            path, account, result.returncode, result.stderr.strip(),
+        )
+
+
 def _resolve_gui_token() -> str:
     """Return the GUI auth token — durable across launches.
 
     Precedence: explicit ``BRAINCELL_GUI_TOKEN`` env override (ephemeral, NEVER
-    written) > persisted per-namespace file > mint + persist (0600, atomic
-    tmp-then-replace). Persisting means a GUI restart reuses the same token, so
-    the embedded renderer can reauthenticate instead of being stranded on 401.
-    Rotate via ``braincell gui --rotate-token``.
+    written) > persisted per-namespace file > mint + persist (atomic
+    tmp-then-replace, restricted to the current user only — POSIX/macOS via
+    ``os.chmod(0o600)``, Windows via ``icacls`` in `_windows_restrict_token_acl`
+    since ``os.chmod`` there cannot express real ACL permissions). Persisting
+    means a GUI restart reuses the same token, so the embedded renderer can
+    reauthenticate instead of being stranded on 401. Rotate via
+    ``braincell gui --rotate-token``.
     """
     import os
     import secrets
+    import sys
 
     from .config import get_gui_token_path
 
@@ -792,7 +849,10 @@ def _resolve_gui_token() -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(token, encoding="utf-8")
-    os.chmod(tmp, 0o600)
+    if sys.platform == "win32":
+        _windows_restrict_token_acl(tmp)
+    else:
+        os.chmod(tmp, 0o600)
     tmp.replace(path)
     return token
 
@@ -805,6 +865,9 @@ def run_gui(
     path: str = ".",
     url_extra_query: str | None = None,
     restart_command: str = "gui",
+    acknowledge_home: bool = False,
+    acknowledge_non_git: bool = False,
+    allow_privileged: bool = False,
 ) -> None:
     """Resolve the brain, build the app, and run the native GUI.
 
@@ -835,7 +898,8 @@ def run_gui(
         )
 
     resolve_mode(mode)
-    project_id = get_project_id(Path(path).resolve())
+    project_root = Path(path).resolve()
+    project_id = get_project_id(project_root)
     db_path = get_db_path(project_id)
 
     # Gate the namespace-wide API even though it is localhost-only. The first
@@ -854,15 +918,21 @@ def run_gui(
     if restart_command == "start":
         restart_argv = [
             sys.executable, "-m", "braincell.cli", "start",
-            str(Path(path).resolve()), "--port", str(port),
+            str(project_root), "--port", str(port),
         ]
     else:
         restart_argv = [
-            sys.executable, "-m", "braincell.cli", "gui", str(Path(path).resolve()),
+            sys.executable, "-m", "braincell.cli", "gui", str(project_root),
             "--port", str(port),
         ]
         if allow_writes:
             restart_argv.append("--allow-writes")
+    if acknowledge_home:
+        restart_argv.append("--acknowledge-home")
+    if acknowledge_non_git:
+        restart_argv.append("--acknowledge-non-git")
+    if allow_privileged:
+        restart_argv.append("--allow-privileged")
 
     native_bridge = native_shell.NativeBridge()
     app = create_app(
@@ -886,7 +956,13 @@ def run_gui(
     )
 
 
-# ── Desktop launcher installer (A3, Linux XDG) ────────────────────────────────
+# ── Desktop launcher installer (A3) ─────────────────────────────────────────
+#
+# One dispatcher (install_launcher) with a per-platform implementation. All
+# three point at the SAME one-command launcher (``braincell start
+# "<project_path>"``) so every platform gets the full
+# preflight/single-instance-reuse/per-project behaviour documented on
+# `_install_launcher_linux` below, never a bare `gui` invocation.
 
 _DESKTOP_ENTRY_TEMPLATE = """\
 [Desktop Entry]
@@ -933,7 +1009,7 @@ def _xdg_data_home() -> Path:
 _ICON_PNG_SIZES = (48, 128, 256, 512)
 
 
-def install_launcher(project_path: Path | None = None) -> tuple[Path, Path]:
+def _install_launcher_linux(project_path: Path | None = None) -> tuple[Path, Path]:
     """Install the desktop icon + .desktop entry (idempotent). Returns (icon, desktop).
 
     ``project_path`` is the project folder the icon launches (default: cwd).
@@ -1013,3 +1089,159 @@ def install_launcher(project_path: Path | None = None) -> tuple[Path, Path]:
                 "a manual refresh or re-login.", cmd[0],
             )
     return icon_dst, desktop_dst
+
+
+# ── macOS: .app wrapper under ~/Applications ────────────────────────────────
+
+_MACOS_INFO_PLIST = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key><string>BrainCell</string>
+    <key>CFBundleDisplayName</key><string>BrainCell Map</string>
+    <key>CFBundleIdentifier</key><string>com.braincell.map</string>
+    <key>CFBundleExecutable</key><string>braincell-launch</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>1.0</string>
+    <key>LSMinimumSystemVersion</key><string>11.0</string>
+    <key>NSHighResolutionCapable</key><true/>
+</dict>
+</plist>
+"""
+
+_MACOS_LAUNCH_SCRIPT = """\
+#!/bin/sh
+exec {exec} start {root}
+"""
+
+
+def _install_launcher_macos(project_path: Path | None = None) -> tuple[Path, Path]:
+    """Install a minimal .app WRAPPER under ``~/Applications`` (idempotent).
+    Returns (icon, app bundle). ``~/Applications`` is the conventional
+    per-user install location — no admin privileges and no code signing.
+
+    The "binary" at ``Contents/MacOS/braincell-launch`` is a plain shell
+    script, not a compiled Mach-O executable: Finder/LaunchServices happily
+    execs any file there that has the executable bit set, and a script is the
+    simplest thing that can carry the exact same ``braincell start
+    "<project_path>"`` command line as the other two platforms — no new
+    dependencies, nothing to compile.
+
+    No ``.icns`` is generated: turning the packaged SVG/PNG assets into a
+    real macOS icon needs ``iconutil``/``sips`` (both macOS-only, so this
+    repo's Linux dev/CI hosts can never build OR verify one), and the
+    dependency-free constraint rules out a third-party PNG→ICNS library. The
+    bundle therefore shows Finder's generic application icon — a cosmetic
+    gap, not a functional one; the launcher itself works identically.
+    """
+    import os as _os
+    import shlex
+    from importlib.resources import files
+
+    root = (project_path or Path.cwd()).resolve()
+    app_dir = Path.home() / "Applications" / "BrainCell.app"
+    contents = app_dir / "Contents"
+    macos_dir = contents / "MacOS"
+    resources_dir = contents / "Resources"
+    macos_dir.mkdir(parents=True, exist_ok=True)
+    resources_dir.mkdir(parents=True, exist_ok=True)
+
+    (contents / "Info.plist").write_text(_MACOS_INFO_PLIST, encoding="utf-8")
+
+    svg_bytes = files("braincell").joinpath("assets", "braincell.svg").read_bytes()
+    icon_dst = resources_dir / "braincell.svg"
+    icon_dst.write_bytes(svg_bytes)
+
+    launch_script = macos_dir / "braincell-launch"
+    launch_script.write_text(
+        _MACOS_LAUNCH_SCRIPT.format(
+            exec=shlex.quote(_resolve_cli_exec()), root=shlex.quote(str(root)),
+        ),
+        encoding="utf-8",
+    )
+    _os.chmod(launch_script, 0o755)
+
+    return icon_dst, app_dir
+
+
+# ── Windows: Start Menu .lnk via PowerShell's WScript.Shell ─────────────────
+
+_WINDOWS_SHORTCUT_POWERSHELL = """\
+$shell = New-Object -ComObject WScript.Shell
+$shortcut = $shell.CreateShortcut('{lnk_path}')
+$shortcut.TargetPath = '{target}'
+$shortcut.Arguments = 'start "{root}"'
+$shortcut.IconLocation = '{icon}'
+$shortcut.WorkingDirectory = '{root}'
+$shortcut.Description = 'BrainCell Map'
+$shortcut.Save()
+"""
+
+
+def _windows_start_menu_dir() -> Path:
+    import os
+
+    appdata = os.environ.get("APPDATA")
+    base = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
+    return base / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+
+
+def _install_launcher_windows(project_path: Path | None = None) -> tuple[Path, Path]:
+    """Create a Start Menu shortcut (.lnk) (idempotent). Returns (icon, .lnk).
+
+    PowerShell's ``WScript.Shell`` COM object is the standard way to author a
+    ``.lnk`` without a third-party library — the ``.lnk`` binary format has no
+    stdlib writer, and ``powershell.exe`` ships with every supported Windows
+    release, so this stays dependency-free. The icon is copied next to the
+    ``.lnk`` (not referenced from the installed package's own location)
+    because a ``.lnk``'s ``IconLocation`` stores a PATH STRING, not the icon's
+    bytes — pointing it at wherever ``importlib.resources`` happened to
+    extract the packaged asset would break the moment that temp location is
+    cleaned up (mirrors the Linux XDG icon copy above, same reasoning).
+    """
+    import subprocess
+    from importlib.resources import files
+
+    root = (project_path or Path.cwd()).resolve()
+    start_menu = _windows_start_menu_dir()
+    start_menu.mkdir(parents=True, exist_ok=True)
+
+    icon_bytes = files("braincell").joinpath("assets", "braincell.ico").read_bytes()
+    icon_dst = start_menu / "braincell.ico"
+    icon_dst.write_bytes(icon_bytes)
+
+    lnk_path = start_menu / "BrainCell Map.lnk"
+    script = _WINDOWS_SHORTCUT_POWERSHELL.format(
+        lnk_path=str(lnk_path), target=_resolve_cli_exec(),
+        root=str(root), icon=str(icon_dst),
+    )
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        log.warning(
+            "PowerShell shortcut creation failed (exit %s); the Start Menu "
+            "entry was not installed: %s",
+            result.returncode, result.stderr.strip(),
+        )
+    return icon_dst, lnk_path
+
+
+def install_launcher(project_path: Path | None = None) -> tuple[Path, Path]:
+    """Install the platform-appropriate desktop launcher (idempotent).
+    Returns (icon, launcher entry).
+
+    Linux: XDG ``.desktop`` entry + hicolor theme icons
+    (`_install_launcher_linux`). macOS: an .app wrapper under
+    ``~/Applications`` (`_install_launcher_macos`). Windows: a Start Menu
+    ``.lnk`` via PowerShell (`_install_launcher_windows`).
+    """
+    import sys
+
+    if sys.platform == "darwin":
+        return _install_launcher_macos(project_path)
+    if sys.platform == "win32":
+        return _install_launcher_windows(project_path)
+    return _install_launcher_linux(project_path)

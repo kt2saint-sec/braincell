@@ -294,6 +294,51 @@ class TestClear:
         assert r.status_code == 200
         assert not ledger.exists()
 
+    def test_clear_creates_a_pre_wipe_backup(self, tmp_path):
+        """BUGS.md safety-backup coverage: clear must snapshot before wiping."""
+        pid = "01TESTPROJECTDDDDDDDDDDDDD"
+        self._seed(tmp_path, pid)
+        with TestClient(_app(tmp_path)) as client:
+            r = client.post("/api/clear", json={"project_id": pid})
+        assert r.status_code == 200
+        backup = r.json()["backup"]
+        assert backup is not None
+        assert Path(backup).is_file()
+
+    def test_clear_fails_closed_when_backup_fails(self, tmp_path, monkeypatch):
+        """Fault injection: VACUUM INTO fails -> clear refuses, memory untouched."""
+        pid = "01TESTPROJECTEEEEEEEEEEEEE"
+        self._seed(tmp_path, pid)
+
+        def _boom(src, dest):
+            raise RuntimeError("simulated disk-full during VACUUM INTO")
+
+        monkeypatch.setattr("braincell.cli._vacuum_into", _boom)
+        with TestClient(_app(tmp_path)) as client:
+            r = client.post("/api/clear", json={"project_id": pid})
+            assert r.status_code == 409
+            projs = client.get("/api/projects").json()
+        me = next(p for p in projs if p["project_id"] == pid)
+        assert me["docs"] == 1 and me["chunks"] == 1  # the wipe never ran
+
+    def test_clear_skip_backup_bypasses_the_snapshot(self, tmp_path, monkeypatch):
+        """skip_backup is the explicit, off-by-default escape hatch."""
+        pid = "01TESTPROJECTFFFFFFFFFFFFF"
+        self._seed(tmp_path, pid)
+
+        def _boom(src, dest):
+            raise RuntimeError("simulated disk-full during VACUUM INTO")
+
+        monkeypatch.setattr("braincell.cli._vacuum_into", _boom)
+        with TestClient(_app(tmp_path)) as client:
+            r = client.post(
+                "/api/clear", json={"project_id": pid, "skip_backup": True}
+            )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["backup"] is None
+        assert body["docs_removed"] == 1  # the wipe proceeded despite no snapshot
+
 
 # ── /api/schedule ─────────────────────────────────────────────────────────────
 
@@ -331,10 +376,68 @@ class TestSchedule:
     def test_schedule_due_logic(self):
         from braincell.gui_ingest import schedule_due
         now = 1_000_000.0
-        assert schedule_due({"interval_minutes": 10, "last_run": None}, now)
-        assert schedule_due({"interval_minutes": 10, "last_run": now - 601}, now)
-        assert not schedule_due({"interval_minutes": 10, "last_run": now - 599}, now)
-        assert not schedule_due({"interval_minutes": 0, "last_run": None}, now)
+        assert schedule_due({"interval_minutes": 10, "last_success": None}, now)
+        assert schedule_due({"interval_minutes": 10, "last_success": now - 601}, now)
+        assert not schedule_due({"interval_minutes": 10, "last_success": now - 599}, now)
+        assert not schedule_due({"interval_minutes": 0, "last_success": None}, now)
+
+    def test_failed_scheduled_ingest_updates_attempt_not_success(
+        self, tmp_path, monkeypatch
+    ):
+        from braincell import gui_ingest
+
+        path = str((tmp_path / "project").resolve())
+        gui_ingest.save_schedules([
+            {
+                "path": path,
+                "interval_minutes": 60,
+                "last_attempt": None,
+                "last_success": None,
+            }
+        ])
+
+        class FailedManager:
+            busy = False
+            job = None
+
+            async def start(self, scheduled_path):
+                assert scheduled_path == path
+                self.job = gui_ingest.IngestJob(path=path, state="error", returncode=7)
+
+            async def wait(self):
+                return None
+
+        now = 1_000_000.0
+        assert asyncio.run(
+            gui_ingest.run_due_schedule_once(FailedManager(), now=now)
+        )
+        schedule = gui_ingest.load_schedules()[0]
+        assert schedule["last_attempt"] == now
+        assert schedule["last_success"] is None
+        assert schedule["last_error"] == "build exited with status 7"
+        assert not gui_ingest.schedule_due(schedule, now + 60)
+
+    def test_gui_mutation_contention_does_not_advance_attempt(self, tmp_path):
+        from braincell import gui_ingest
+        from braincell.gui_mutation import GuiMutationBusy
+
+        path = str((tmp_path / "project").resolve())
+        gui_ingest.save_schedules([{
+            "path": path,
+            "interval_minutes": 60,
+            "last_attempt": None,
+            "last_success": None,
+        }])
+
+        class BusyManager:
+            busy = False
+            async def start(self, _path):
+                raise GuiMutationBusy("maintenance owns the GUI")
+
+        assert not asyncio.run(
+            gui_ingest.run_due_schedule_once(BusyManager(), now=1_000_000.0)
+        )
+        assert gui_ingest.load_schedules()[0]["last_attempt"] is None
 
 
 # ── SPA carries the new UI ────────────────────────────────────────────────────

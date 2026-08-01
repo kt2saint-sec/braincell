@@ -57,6 +57,10 @@ braincell-pre*-*.db
 *.sqlite-wal
 *.sqlite-shm
 *-journal
+# Fixed, reused BrainCell interprocess coordination files. These live beside
+# XDG databases in normal operation, but must not become source artifacts if a
+# developer redirects state into a checkout.
+*.mutation.lock
 
 # ── Tooling / caches ──────────────────────────────────────────────────────────
 .pytest_cache/
@@ -113,8 +117,10 @@ CLAUDE.md
 # CLAUDE.md progress-pointer doc — same "never committed" policy as CLAUDE.md itself.
 /docs/STAGE_LOG.md
 # Internal planning docs (same convention as STAGE_LOG) — a broad `git add docs/`
-# must never track or publish them.
+# must never track or publish them. The .html is the generated companion view
+# (self-contained, multi-MB); same policy as the root-level /braincell-*.{md,html} pair.
 /docs/*-plan-*.md
+/docs/*-plan-*.html
 # CLAUDE.md restructure spillover (internal status + licensing strategy) — keep local.
 /docs/claude-md-pruned-2026-07-21.md
 /docs/claude-md-pruned-2026-07-25.md

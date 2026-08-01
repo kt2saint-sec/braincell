@@ -110,6 +110,19 @@ ruff check braincell
 python -m pytest
 ```
 
+For changes under `braincell/`, run the repository-wide lint target used by the
+release checks:
+
+```bash
+ruff check braincell tests
+```
+
+SQLite changes must preserve one transaction owner from `BEGIN` through
+commit/rollback. Any multi-statement mutation needs a fault-injection regression
+that proves the prior committed state survives a failure. Project database
+mutations must also use the destination-scoped process lock so CLI and Memory
+Map writers cannot interleave.
+
 The Memory Map is a native desktop application backed internally by the existing
 localhost-only FastAPI/uvicorn transport and embedded SPA. Changes must preserve the
 window-owned lifecycle: `braincell start`, `braincell gui`, and `braincell-map` create or
@@ -117,6 +130,9 @@ activate a native window, and closing it stops the server. Do not add an externa
 headless-GUI fallback, an always-on GUI service, or optionalize PySide6.
 
 ## Scope
+
+[ARCHITECTURE.md](ARCHITECTURE.md) maps the modules, CLI surface, database
+schema, and on-disk state — read it before adding a module or a command.
 
 `braincell-mcp` is the **Project-memory serving and Build** layer
 (Search/Recall/Remember + Build/sync). It

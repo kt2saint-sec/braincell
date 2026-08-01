@@ -28,6 +28,7 @@ from braincell.server import (
     SearchHit,
     SupersedeResult,
     mcp,
+    search_hits,
 )
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -37,6 +38,52 @@ def _get_tool(name: str):
     tool = mcp._tool_manager.get_tool(name)
     assert tool is not None, f"Tool {name!r} not registered"
     return tool
+
+
+class TestSearchEmbedderOutage:
+    class _Store:
+        def __init__(self):
+            self.calls = []
+
+        async def search(self, qvec, qtext, project, k, mode):
+            self.calls.append((qvec, qtext, project, k, mode))
+            return []
+
+    def test_keyword_never_calls_embedder(self, monkeypatch):
+        monkeypatch.setenv("BRAINCELL_PROJECT_ID", "P")
+
+        async def unavailable(_query):
+            raise AssertionError("keyword search called the embedder")
+
+        monkeypatch.setattr("braincell.server.embed_query_async", unavailable)
+        store = self._Store()
+        assert asyncio.run(search_hits(store, "exact phrase", project="P", rank="keyword")) == []
+        assert store.calls[0][0] is None
+        assert store.calls[0][4] == "keyword"
+
+    def test_hybrid_degrades_to_keyword_when_embedder_is_offline(self, monkeypatch):
+        monkeypatch.setenv("BRAINCELL_PROJECT_ID", "P")
+
+        async def unavailable(_query):
+            raise RuntimeError("offline")
+
+        monkeypatch.setattr("braincell.server.embed_query_async", unavailable)
+        store = self._Store()
+        assert asyncio.run(search_hits(store, "exact phrase", project="P", rank="hybrid")) == []
+        assert store.calls[0][0] is None
+        assert store.calls[0][4] == "keyword"
+
+    def test_semantic_search_fails_when_embedder_is_offline(self, monkeypatch):
+        monkeypatch.setenv("BRAINCELL_PROJECT_ID", "P")
+
+        async def unavailable(_query):
+            raise RuntimeError("offline")
+
+        monkeypatch.setattr("braincell.server.embed_query_async", unavailable)
+        with pytest.raises(RuntimeError, match="offline"):
+            asyncio.run(
+                search_hits(self._Store(), "meaning", project="P", rank="semantic")
+            )
 
 
 # ══════════════════════════════════════════════════════════════════════════════

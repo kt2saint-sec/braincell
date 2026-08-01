@@ -72,6 +72,19 @@ Recall and Search operate on the selected Project's memory. `braincell start`
 opens the native **Memory Map** for that Project. Its internal localhost
 transport is not an external browser UI or background service.
 
+To inspect disk use and preview backup retention without deleting anything:
+
+```bash
+braincell storage .
+braincell storage . --keep-backups 3
+```
+
+Project storage grows with indexed content and retained history. The retention
+list is a dry-run plan; BrainCell never silently expires curated memory.
+Deleting anything requires an explicitly configured
+`braincell storage . --keep-backups N --apply`, and snapshots referenced by
+undo history are always kept.
+
 ## Optional: create a Pool
 
 Use a Pool only when you deliberately want a live, read-only query across named

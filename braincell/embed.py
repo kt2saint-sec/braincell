@@ -9,10 +9,9 @@ pipeline (which calls the `ollama` SDK synchronously).
 Async wrapper (embed_texts_async / embed_query_async) is used by the
 FastMCP server via asyncio.get_event_loop().run_in_executor().
 
-keep_alive=0 (temporal separation) — the embed model
-is evicted after every batch so it does not hold VRAM alongside qwen3.5:27b
-under OLLAMA_MAX_LOADED_MODELS=1. Pre-warm via prewarm_embed_model() at
-pipeline/server start.
+The embedding model stays resident across one build's batches and the CLI
+explicitly unloads it at the end, avoiding repeated cold loads without leaking
+VRAM beyond the build lifecycle.
 """
 
 from __future__ import annotations
@@ -70,32 +69,32 @@ def _embed_normalized(texts: list[str]) -> list[np.ndarray]:
     else:
         raw = _embed_ollama(texts)
 
-    vecs = []
-    zero_count = 0
-    for emb in raw:
+    if len(raw) != len(texts):
+        raise ValueError(
+            "BrainCell embed provider contract violation: returned "
+            f"{len(raw)} embeddings for {len(texts)} inputs."
+        )
+
+    vecs: list[np.ndarray] = []
+    for index, emb in enumerate(raw):
         vec = np.asarray(emb, dtype=np.float32)
-        if vec.shape[0] != embed_spec.DIM:
+        if vec.ndim != 1 or vec.shape[0] != embed_spec.DIM:
             raise ValueError(
                 f"BrainCell embed dimension mismatch: model {embed_spec.MODEL!r} "
-                f"returned {vec.shape[0]}-d but embed_spec.DIM={embed_spec.DIM}. "
+                f"returned shape {vec.shape!r} for input {index}, but "
+                f"embed_spec.DIM={embed_spec.DIM}. "
                 f"Check BRAINCELL_EMBED_MODEL / BRAINCELL_EMBED_DIM."
             )
-        norm = np.linalg.norm(vec)
-        if norm > 0:
-            vec = vec / norm  # L2-normalise → inner product == cosine
-        else:
-            # Zero-norm embedding (empty/whitespace/degenerate input). Kept to
-            # preserve index alignment with the caller's texts, but a zero vector
-            # matches nothing and pollutes recall — never store it silently.
-            zero_count += 1
-        vecs.append(vec)
-    if zero_count:
-        log.warning(
-            "BrainCell embed: %d/%d vector(s) had zero norm (empty/degenerate "
-            "input) — stored un-normalised; they match no query and add noise to "
-            "recall. Check the source text.",
-            zero_count, len(vecs),
-        )
+        if not np.isfinite(vec).all():
+            raise ValueError(
+                f"BrainCell embed provider returned non-finite values for input {index}."
+            )
+        norm = float(np.linalg.norm(vec))
+        if not np.isfinite(norm) or norm <= 0.0:
+            raise ValueError(
+                f"BrainCell embed provider returned a zero-norm vector for input {index}."
+            )
+        vecs.append(vec / norm)  # L2-normalise → inner product == cosine
     return vecs
 
 
@@ -108,7 +107,7 @@ _OLLAMA_MAX_RETRIES = 3
 
 
 def _embed_ollama(texts: list[str]) -> list:
-    """Local Ollama embed call. keep_alive=0 evicts after the batch.
+    """Local Ollama embed call with build-scoped keepalive.
 
     Uses an explicit client with a bounded timeout (embed_spec.OLLAMA_TIMEOUT) so a
     daemon that is reachable but stalled (cold GPU model-load wedged) fails loud
@@ -268,7 +267,7 @@ def prewarm_embed_model() -> bool:
         client.embed(
             model=embed_spec.MODEL,
             input=["warm"],
-            keep_alive="0",  # evict immediately after warm (temporal separation)
+            keep_alive=embed_spec.KEEP_ALIVE,
         )
         log.debug("BrainCell embed model pre-warmed: %s", embed_spec.MODEL)
         return True
@@ -277,6 +276,22 @@ def prewarm_embed_model() -> bool:
             "BrainCell embed prewarm failed (non-fatal, embeddings skipped "
             "for this run): %s", exc,
         )
+        return False
+
+
+def unload_embed_model() -> bool:
+    """Explicitly release the Ollama embedding model after a build."""
+    if embed_spec.PROVIDER != "ollama":
+        return True
+    try:
+        import ollama
+
+        client = ollama.Client(timeout=embed_spec.OLLAMA_TIMEOUT)
+        client.generate(model=embed_spec.MODEL, prompt="", keep_alive=0)
+        log.debug("BrainCell embed model unloaded: %s", embed_spec.MODEL)
+        return True
+    except Exception as exc:  # noqa: BLE001 - cleanup is best-effort after build.
+        log.warning("BrainCell embed model unload failed (non-fatal): %s", exc)
         return False
 
 

@@ -16,12 +16,37 @@ like the SPA does.
 from __future__ import annotations
 
 import asyncio
+import sys
 import time
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from tests.conftest import fake_vec, make_store
+
+
+def test_ingest_and_maintenance_share_one_mutation_coordinator():
+    from braincell.gui_ingest import IngestManager
+    from braincell.gui_mutation import GuiMutationCoordinator
+    from braincell.gui_ops import OpsJobManager
+
+    coordinator = GuiMutationCoordinator()
+    ingest = IngestManager(coordinator)
+    ops = OpsJobManager(coordinator)
+
+    async def _run():
+        ingest.command_for = lambda _path: [
+            sys.executable,
+            "-c",
+            "import time; time.sleep(0.2)",
+        ]
+        await ingest.start("/tmp/project")
+        with pytest.raises(RuntimeError, match="already running"):
+            await ops.start("reembed-notes", lambda: None)
+        await ingest.wait()
+
+    asyncio.run(_run())
 
 
 def _app(tmp_path: Path, *, allow_writes: bool = True):

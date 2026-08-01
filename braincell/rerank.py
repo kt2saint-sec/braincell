@@ -29,6 +29,12 @@ try:
 except ValueError:
     _RERANK_M = 20
 _RERANK_MODEL: str = os.environ.get("BRAINCELL_RERANK_MODEL", "qwen2.5:7b")
+try:
+    _RERANK_CONCURRENCY = max(
+        1, min(8, int(os.environ.get("BRAINCELL_RERANK_CONCURRENCY", "4")))
+    )
+except ValueError:
+    _RERANK_CONCURRENCY = 4
 
 # score_fn: (query, text) -> float | None (None = unavailable for this item).
 ScoreFn = Callable[[str, str], "float | None | Awaitable[float | None]"]
@@ -78,11 +84,25 @@ async def _order_by_score(
     partial rerank would be worse than none.
     """
     fn = score_fn or (lambda q, t: _ollama_score(q, t))
+    semaphore = asyncio.Semaphore(_RERANK_CONCURRENCY)
+
+    async def _score(idx: int, text: str) -> tuple[int, float | None]:
+        async with semaphore:
+            if asyncio.iscoroutinefunction(fn):
+                value = await fn(query, text)
+            else:
+                # Ollama's Python client is synchronous. Keep it off the MCP
+                # event loop and bound parallel requests to avoid fan-out.
+                value = await asyncio.to_thread(fn, query, text)
+                if asyncio.iscoroutine(value):
+                    value = await value
+        return idx, None if value is None else float(value)
+
+    scored_results = await asyncio.gather(
+        *(_score(idx, text) for idx, text in items)
+    )
     scored: list[tuple[int, float]] = []
-    for idx, text in items:
-        s = fn(query, text)
-        if asyncio.iscoroutine(s):
-            s = await s
+    for idx, s in scored_results:
         if s is None:
             return None
         scored.append((idx, float(s)))
