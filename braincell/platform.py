@@ -100,10 +100,9 @@ def get_opencode_config_dir() -> Path:
 
     OpenCode uses ``~/.config/opencode`` on Linux/macOS and
     ``%APPDATA%/opencode`` (or ``~/.config/opencode``) on Windows.
+    Respects ``XDG_CONFIG_HOME`` on non-Windows platforms.
     """
-    if sys.platform == "win32":
-        return get_config_home() / "opencode"
-    return Path.home() / ".config" / "opencode"
+    return get_config_home() / "opencode"
 
 
 def get_opencode_project_config_path(project_root: Path) -> Path:
