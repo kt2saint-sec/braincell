@@ -4,9 +4,26 @@ Release-facing notes for the public BrainCell project. This file records
 verified product changes only; private engineering history and machine-specific
 details are intentionally excluded.
 
-## Unreleased
+## 1.0.0 - 2026-08-01
 
 ### Added
+
+- **Cross-platform SSoT module** (`braincell/platform.py`) — single source of
+  truth for data/config paths, desktop launchers, and legacy-service removal
+  across Linux, macOS, and Windows. All platform-specific ``sys.platform`` checks
+  and hardcoded home-directory paths are consolidated into one module.
+- **Cross-platform desktop launcher** (Linux XDG ``.desktop``, macOS ``.app``
+  wrapper under ``~/Applications``, Windows Start Menu ``.lnk`` via PowerShell
+  COM). The Windows launcher is dependency-free (no ``pywin32`` required).
+- **Cross-platform legacy-service removal** covering Linux ``systemctl`` user
+  units, macOS ``LaunchAgents``, and Windows Task Scheduler (defensive
+  best-effort).
+- **OpenCode client adapter** (`braincell install --client opencode`) for
+  project-local ``opencode.json`` MCP configuration. Connect BrainCell, manage
+  ``mcp.braincell`` entries (idempotent and conflict-safe), and disconnect
+  alongside Codex, Claude, and VS Code.
+- 22 cross-platform regression tests covering path resolution, launcher
+  dispatch, and legacy-service removal on all three platforms.
 
 - Windows and macOS test runners alongside Linux in continuous integration,
   with a cross-platform wheel smoke test.
