@@ -1,24 +1,25 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (c) 2026 Karl Toussaint (kt2saint)
-"""One-release cleanup bridge for the retired braincell-map.service."""
+"""One-release cleanup bridge for the retired braincell-map.service.
+
+Linux systemd specifics are here for backward-compatible test monkeypatching
+(``_systemctl`` is a module-level attr). Cross-platform removal delegates to
+``braincell.platform.remove_legacy_service()``.
+"""
 
 from __future__ import annotations
 
 import os
 import shutil
 import subprocess
-from pathlib import Path
 
-UNIT_NAME = "braincell-map.service"
+from .platform import (
+    UNIT_NAME,
+    _linux_unit_path,
+    remove_legacy_service,
+)
 
-
-def unit_path() -> Path:
-    override = os.environ.get("BRAINCELL_SYSTEMD_USER_DIR")
-    if override:
-        return Path(override) / UNIT_NAME
-    xdg = os.environ.get("XDG_CONFIG_HOME")
-    base = Path(xdg) if xdg else Path.home() / ".config"
-    return base / "systemd" / "user" / UNIT_NAME
+unit_path = _linux_unit_path
 
 
 def _systemctl(args: list[str]) -> tuple[int, str]:
@@ -46,7 +47,13 @@ def status() -> dict:
 
 
 def remove() -> dict:
-    """Disable, stop, and remove only the retired GUI unit."""
+    """Disable, stop, and remove the retired GUI unit.
+
+    For non-Linux platforms, delegates to ``platform.remove_legacy_service()``.
+    """
+    if os.sys.platform not in ("linux",):
+        return remove_legacy_service()
+
     path = unit_path()
     was_present = path.exists()
     details: list[str] = []

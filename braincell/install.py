@@ -77,7 +77,8 @@ def claude_settings_path() -> Path:
     override = os.environ.get("BRAINCELL_CLAUDE_SETTINGS")
     if override:
         return Path(override)
-    return Path.home() / ".claude" / "settings.json"
+    from .platform import get_claude_config_dir
+    return get_claude_config_dir() / "settings.json"
 
 
 def _load_json(path: Path) -> dict:
@@ -713,7 +714,8 @@ def claude_config_path() -> Path:
     override = os.environ.get("BRAINCELL_CLAUDE_JSON")
     if override:
         return Path(override)
-    return Path.home() / ".claude.json"
+    from .platform import get_claude_config_dir
+    return get_claude_config_dir() / ".claude.json"
 
 
 def codex_config_path() -> Path:
@@ -721,7 +723,8 @@ def codex_config_path() -> Path:
     override = os.environ.get("BRAINCELL_CODEX_CONFIG")
     if override:
         return Path(override)
-    return Path.home() / ".codex" / "config.toml"
+    from .platform import get_codex_config_dir
+    return get_codex_config_dir() / "config.toml"
 
 
 def _claude_registration(path: Path) -> dict:

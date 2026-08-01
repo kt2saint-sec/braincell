@@ -64,9 +64,11 @@ log = _get_log("braincell.transcript_ingest")
 # and ingested only if that project is in the build's family. Codex
 # payload-nesting extraction + cwd attribution keep ~/.codex in scope;
 # un-attributable files are skipped (files_unattributed), never mis-tagged.
+from .platform import get_claude_config_dir, get_codex_config_dir
+
 _TRANSCRIPT_ROOTS: list[Path] = [
-    Path.home() / ".claude" / "projects",
-    Path.home() / ".codex" / "sessions",
+    get_claude_config_dir() / "projects",
+    get_codex_config_dir() / "sessions",
 ]
 
 # Ledger file: tracks (path → content_hash) to gate re-ingestion.

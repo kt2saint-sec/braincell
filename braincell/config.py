@@ -45,27 +45,8 @@ DATA_NAMESPACE = os.environ.get("BRAINCELL_DATA_NAMESPACE", "braincell")
 _data_home_mismatch_warned = False
 
 
-def _legacy_linux_style_data_home() -> Path:
-    """``~/.local/share`` — every platform's default BEFORE this function
-    became platform-aware. Needed only to detect pre-existing data left there
-    by an older install on macOS/Windows (`_xdg_data_home`); on Linux this
-    already IS the platform default, so no separate detection is needed there.
-    """
-    return Path.home() / ".local" / "share"
-
-
-def _platform_data_home_default() -> Path:
-    """The platform-appropriate default data root when ``XDG_DATA_HOME`` is
-    unset: macOS ``~/Library/Application Support``, Windows ``%LOCALAPPDATA%``
-    (``~/AppData/Local`` if that variable is somehow unset), everything else
-    (Linux and other POSIX systems) ``~/.local/share``.
-    """
-    if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support"
-    if sys.platform == "win32":
-        local_app_data = os.environ.get("LOCALAPPDATA")
-        return Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local"
-    return _legacy_linux_style_data_home()
+# Delegated to braincell.platform (single source of truth).
+from .platform import _legacy_linux_style_data_home, _platform_data_home_default
 
 
 def _xdg_data_home() -> Path:

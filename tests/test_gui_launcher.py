@@ -101,7 +101,7 @@ class TestInstallLauncherA3:
         proj = tmp_path / "proj"
         proj.mkdir()
         monkeypatch.setenv("XDG_DATA_HOME", str(xdg))
-        from braincell.gui import install_launcher
+        from braincell.platform import install_launcher
 
         icon, desktop = install_launcher(proj)
         assert icon == xdg / "icons" / "braincell.svg"
@@ -137,7 +137,7 @@ class TestInstallLauncherA3:
         cwd.mkdir()
         monkeypatch.setenv("XDG_DATA_HOME", str(xdg))
         monkeypatch.chdir(cwd)
-        from braincell.gui import install_launcher
+        from braincell.platform import install_launcher
 
         _, desktop = install_launcher()
         exec_line = next(
@@ -149,7 +149,7 @@ class TestInstallLauncherA3:
     def test_idempotent(self, tmp_path, monkeypatch):
         xdg = tmp_path / "xdg"
         monkeypatch.setenv("XDG_DATA_HOME", str(xdg))
-        from braincell.gui import install_launcher
+        from braincell.platform import install_launcher
 
         install_launcher(tmp_path)
         _icon, desktop = install_launcher(tmp_path)  # second run must not error
@@ -235,7 +235,7 @@ class TestInstallLauncherMacOS:
         proj = tmp_path / "proj"
         proj.mkdir()
         monkeypatch.setattr(Path, "home", lambda: home)
-        from braincell.gui import _install_launcher_macos
+        from braincell.platform import _install_launcher_macos
 
         icon, app = _install_launcher_macos(proj)
         assert app == home / "Applications" / "BrainCell.app"
@@ -265,7 +265,7 @@ class TestInstallLauncherMacOS:
         cwd.mkdir()
         monkeypatch.setattr(Path, "home", lambda: home)
         monkeypatch.chdir(cwd)
-        from braincell.gui import _install_launcher_macos
+        from braincell.platform import _install_launcher_macos
 
         _icon, app = _install_launcher_macos()
         script = (app / "Contents" / "MacOS" / "braincell-launch").read_text(encoding="utf-8")
@@ -275,14 +275,14 @@ class TestInstallLauncherMacOS:
         home = tmp_path / "home"
         home.mkdir()
         monkeypatch.setattr(Path, "home", lambda: home)
-        from braincell.gui import _install_launcher_macos
+        from braincell.platform import _install_launcher_macos
 
         _install_launcher_macos(tmp_path)
         _icon, app = _install_launcher_macos(tmp_path)  # second run must not error
         assert app.is_dir()
 
     def test_dispatches_to_macos_on_darwin(self, tmp_path, monkeypatch):
-        import braincell.gui as gui_module
+        import braincell.platform as gui_module
 
         monkeypatch.setattr(sys, "platform", "darwin")
         calls = []
@@ -313,7 +313,7 @@ class TestInstallLauncherWindows:
             calls.append((cmd, kwargs))
             return _Result()
 
-        import braincell.gui as gui_module
+        import braincell.platform as gui_module
         monkeypatch.setattr("subprocess.run", _fake_run)
 
         icon, lnk = gui_module._install_launcher_windows(proj)
@@ -347,7 +347,7 @@ class TestInstallLauncherWindows:
         cwd.mkdir()
         monkeypatch.chdir(cwd)
 
-        import braincell.gui as gui_module
+        import braincell.platform as gui_module
         calls = []
 
         class _Result:
@@ -372,7 +372,7 @@ class TestInstallLauncherWindows:
     def test_falls_back_to_appdata_home_when_env_unset(self, tmp_path, monkeypatch):
         monkeypatch.delenv("APPDATA", raising=False)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        import braincell.gui as gui_module
+        import braincell.platform as gui_module
 
         class _Result:
             returncode = 0
@@ -386,7 +386,7 @@ class TestInstallLauncherWindows:
         )
 
     def test_dispatches_to_windows_on_win32(self, tmp_path, monkeypatch):
-        import braincell.gui as gui_module
+        import braincell.platform as gui_module
 
         monkeypatch.setattr(sys, "platform", "win32")
         calls = []
