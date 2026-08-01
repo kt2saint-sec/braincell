@@ -238,7 +238,10 @@ def _run_parent_death_watchdog(
     nothing a human would notice here.
     """
     while _pid_alive(parent_pid) and _pid_alive(child_pid):
-        time.sleep(poll_interval)
+        try:
+            time.sleep(poll_interval)
+        except KeyboardInterrupt:
+            return  # process shutting down; exit cleanly
     if not _pid_alive(parent_pid) and _pid_alive(child_pid):
         try:
             os.kill(child_pid, signal.SIGKILL)
