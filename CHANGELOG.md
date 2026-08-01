@@ -174,5 +174,4 @@ details are intentionally excluded.
 ### Baseline evidence
 
 - Release performance measurements are recorded as baseline observations only;
-  they are not performance guarantees. See
-  `docs/2026-07-27-v0.4.0-performance-baseline.md`.
+  they are not performance guarantees.

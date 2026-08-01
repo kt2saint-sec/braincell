@@ -6,7 +6,7 @@ context; severity reflects pre-fix impact.
 ## Open
 
 Identified 2026-07-31 by comparing the audit branch against the public remote
-branches (full comparison narrative: `bugs-archive-2026-07-31.md`).
+branches.
 
 - **Medium — SQLite compaction/hard-prune workflow:** a WAL-starvation warning
   now exists (see Resolved: stats/storage diagnostics), but there is still no
@@ -18,9 +18,8 @@ branches (full comparison narrative: `bugs-archive-2026-07-31.md`).
   explicit hard limits remain unimplemented and must not delete memory silently.
 
 **Do not merge `project-only-architecture`:** it is superseded by `main`'s
-preview-first, WAL-aware `legacy_recovery.py`; only its revision of
-`docs/add-repo-runbook.md` is worth cherry-picking. (Verdict recorded
-2026-07-31; details in `bugs-archive-2026-07-31.md`.)
+preview-first, WAL-aware `legacy_recovery.py`; only its add-repo-runbook revision is worth cherry-picking. (Verdict recorded
+2026-07-31.)
 
 ## Resolved in Unreleased
 
@@ -371,5 +370,5 @@ cross-platform audit work.
 
 The 2026-07-31 remote-comparison narrative and the "Ledger corrections —
 2026-07-31" record (applied anchor fixes, including one correction that was
-itself wrong) were archived to `bugs-archive-2026-07-31.md`. Nothing was
+itself wrong) were archived. Nothing was
 discarded.
