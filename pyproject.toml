@@ -41,15 +41,14 @@ dependencies = [
     "anyio>=4.14.0,<5",        # gui.py async plumbing
     "pydantic>=2.13.0,<3",     # request/response models
     "tomlkit>=0.13,<1",        # preserve project Codex configuration on edits
-    "PySide6>=6.8,<7",         # interactive desktop GUI + QtWebEngine renderer
 ]
 
 [project.optional-dependencies]
 openai = ["openai>=1.40.0,<3"]   # hosted embed provider (text-embedding-3-*)
-# Compatibility aliases: the interactive GUI, FastAPI, uvicorn, and PySide6 are
-# base dependencies. Existing `[gui]` and `[native]` install commands remain valid.
-native = []
-gui = []
+# Install `braincell-mcp[gui]` or `braincell-mcp[native]` for the desktop
+# GUI (memory server and CLI work without Qt).
+native = ["PySide6>=6.8,<7"]
+gui = ["PySide6>=6.8,<7"]
 dev = ["pytest>=8.0.0,<9", "ruff==0.16.0"]
 
 [project.scripts]
