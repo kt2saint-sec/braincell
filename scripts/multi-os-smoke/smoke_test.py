@@ -30,13 +30,13 @@ def main() -> int:
 
     print("=== Path resolution ===")
     from braincell.platform import (
-        get_data_home,
-        get_config_home,
+        get_braincell_flag_path,
         get_claude_config_dir,
         get_codex_config_dir,
+        get_config_home,
+        get_data_home,
         get_opencode_config_dir,
         get_opencode_project_config_path,
-        get_braincell_flag_path,
     )
 
     if sys.platform == "linux":
@@ -72,13 +72,13 @@ def main() -> int:
 
     print("=== Module imports (no Qt/Ollama required) ===")
     try:
+        import braincell.cli
         import braincell.config
         import braincell.legacy_service
-        import braincell.transcript_ingest
-        import braincell.cli
         import braincell.pool
-        import braincell.store
         import braincell.server
+        import braincell.store
+        import braincell.transcript_ingest
         check("core modules import", True, True)
     except ImportError as exc:
         check(f"core modules import: {exc}", False, True)
