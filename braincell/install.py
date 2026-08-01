@@ -912,11 +912,121 @@ def claude_registered_map(paths: list[str]) -> dict[str, bool]:
     return out
 
 
+# ── OpenCode client adapter ────────────────────────────────────────────────
+
+class OpenCodeClient:
+    """Wire BrainCell only into project ``opencode.json`` MCP servers."""
+
+    name = "opencode"
+
+    def __init__(self, opencode_bin: str | None = None):
+        self._opencode = opencode_bin or shutil.which("opencode")
+
+    def available(self) -> bool:
+        return bool(self._opencode)
+
+    def mcp_add(self, name, command, args, env, scope=None, cwd=None) -> None:
+        if name != _MCP_SERVER_NAME or not cwd:
+            raise RuntimeError("OpenCode connection requires a selected project.")
+        manage_opencode_project_registration(cwd, command, args, env)
+
+    def mcp_remove(self, name: str, scope: str | None = None, cwd: str | None = None) -> None:
+        if name != _MCP_SERVER_NAME or not cwd:
+            raise RuntimeError("OpenCode disconnection requires BrainCell's selected project.")
+        from .config import DATA_NAMESPACE, get_project_id
+
+        command, args = resolve_portable_server_command()
+        project_id = get_project_id(Path(cwd), create=False)
+        remove_opencode_project_registration(
+            cwd,
+            command,
+            args,
+            {
+                "BRAINCELL_DATA_NAMESPACE": DATA_NAMESPACE,
+                "BRAINCELL_PROJECT_ID": project_id,
+                "BRAINCELL_STORE": "sqlite",
+            },
+        )
+
+
+def opencode_project_config_path(project_root: str | Path) -> Path:
+    """Return the project-local OpenCode config path."""
+    from .platform import get_opencode_project_config_path
+
+    return get_opencode_project_config_path(Path(project_root))
+
+
+def _canonical_opencode_entry(
+    command: str, args: list[str], env: dict[str, str]
+) -> dict[str, Any]:
+    return {
+        "type": "local",
+        "command": command,
+        "enabled": True,
+        "environment": dict(env),
+    }
+
+
+def manage_opencode_project_registration(
+    project_root: str | Path, command: str, args: list[str], env: dict[str, str]
+) -> dict[str, Any]:
+    """Write ``mcp.braincell`` into ``opencode.json`` (idempotent, conflict-safe)."""
+    cfg = opencode_project_config_path(project_root)
+    data, raw = _read_json_object(cfg)
+    mcp = data.get("mcp")
+    if mcp is None:
+        mcp = {}
+        data["mcp"] = mcp
+    elif not isinstance(mcp, dict):
+        raise RuntimeError(f"{cfg} has a non-object 'mcp' field; BrainCell left it unchanged.")
+    canonical = _canonical_opencode_entry(command, args, env)
+    existing = mcp.get(_MCP_SERVER_NAME)
+    if existing is not None:
+        if existing != canonical:
+            raise RuntimeError(
+                f"{cfg} already has a different mcp.braincell entry. "
+                "It is user-managed and was not overwritten."
+            )
+        return {"changed": False, "config_path": str(cfg), "backup_path": None}
+    mcp[_MCP_SERVER_NAME] = canonical
+    mode = cfg.stat().st_mode if cfg.exists() else None
+    rendered = json.dumps(data, indent=2, ensure_ascii=False) + (
+        "\n" if raw is None or raw.endswith("\n") else ""
+    )
+    backup = _atomic_write_text(cfg, rendered, mode)
+    return {"changed": True, "config_path": str(cfg), "backup_path": str(backup) if backup else None}
+
+
+def remove_opencode_project_registration(
+    project_root: str | Path, command: str, args: list[str], env: dict[str, str]
+) -> dict[str, Any]:
+    """Remove ``mcp.braincell`` from ``opencode.json`` (conflict-safe)."""
+    cfg = opencode_project_config_path(project_root)
+    if not cfg.exists():
+        return {"changed": False, "config_path": str(cfg), "backup_path": None}
+    data, raw = _read_json_object(cfg)
+    mcp = data.get("mcp")
+    entry = mcp.get(_MCP_SERVER_NAME) if isinstance(mcp, dict) else None
+    if entry is None:
+        return {"changed": False, "config_path": str(cfg), "backup_path": None}
+    if entry != _canonical_opencode_entry(command, args, env):
+        raise RuntimeError(
+            f"{cfg} has a user-managed BrainCell entry with different settings; it was not removed."
+        )
+    del mcp[_MCP_SERVER_NAME]
+    rendered = json.dumps(data, indent=2, ensure_ascii=False) + (
+        "\n" if raw is None or raw.endswith("\n") else ""
+    )
+    backup = _atomic_write_text(cfg, rendered, cfg.stat().st_mode)
+    return {"changed": True, "config_path": str(cfg), "backup_path": str(backup) if backup else None}
+
+
 # Client registry — maps the CLI --client key to an adapter.
 CLIENTS = {
     "claude": ClaudeCodeClient,
     "codex": CodexClient,
     "vscode": VSCodeClient,
+    "opencode": OpenCodeClient,
 }
 
 
