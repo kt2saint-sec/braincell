@@ -125,3 +125,35 @@ def test_gui_preference_api_is_not_available_read_only(tmp_path):
             "/api/preferences/maintenance",
             json={"bypass_delete_confirmation": False},
         ).status_code in (404, 405)
+
+
+def test_gui_maintenance_overview_is_connected_project_read_only(tmp_path):
+    """The Memory Map may inspect only its Connected Project's health."""
+    from braincell.gui import create_app
+    from braincell.project_registry import register_path
+
+    root = tmp_path / "project"
+    root.mkdir()
+    register_path(root, PROJECT_ID)
+    app = create_app(
+        db_path=tmp_path / "braincell.db",
+        allow_writes=False,
+        seed_project_id=PROJECT_ID,
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/api/maintenance/overview")
+
+    assert response.status_code == 200
+    overview = response.json()
+    assert overview["connected_project_id"] == PROJECT_ID
+    assert overview["preferences"] == {"bypass_delete_confirmation": False}
+    assert overview["storage_impact"]["memory_estimate_bytes"] is None
+
+
+def test_gui_maintenance_overview_requires_a_connected_project(tmp_path):
+    from braincell.gui import create_app
+
+    app = create_app(db_path=tmp_path / "braincell.db", allow_writes=False)
+    with TestClient(app) as client:
+        assert client.get("/api/maintenance/overview").status_code == 409

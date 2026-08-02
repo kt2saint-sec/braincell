@@ -366,6 +366,40 @@ def create_app(
             "tour_seen": get_tour_seen_path().exists(),
         }
 
+    @app.get("/api/maintenance/overview")
+    async def api_maintenance_overview(request: Request) -> dict:  # type: ignore[type-arg]
+        """Read Connected-Project storage health for the Memory Map.
+
+        This route intentionally exposes no candidate selection or execution.
+        It is available in read-only launches because understanding local disk
+        impact must not require permission to change memory.
+        """
+        import sqlite3
+
+        from .maintenance_preferences import (
+            MaintenancePreferencesError,
+            load_preferences,
+        )
+        from .storage_accounting import RetentionRefusedError, storage_report
+
+        project_id = _connected_pool_project(request)
+        try:
+            report = storage_report(project_id)
+            preferences = load_preferences(project_id)
+        except (
+            MaintenancePreferencesError,
+            RetentionRefusedError,
+            OSError,
+            sqlite3.Error,
+        ) as exc:
+            raise HTTPException(409, f"Maintenance health is unavailable: {exc}") from exc
+        return {
+            "connected_project_id": project_id,
+            "database_diagnostics": report["database_diagnostics"],
+            "storage_impact": report["storage_impact"],
+            "preferences": preferences,
+        }
+
     @app.post("/api/tour-seen")
     async def api_tour_seen() -> dict:  # type: ignore[type-arg]
         """Mark the guided tour as seen (completed OR skipped) — machine-level.

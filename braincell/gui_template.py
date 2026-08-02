@@ -224,6 +224,11 @@ svg.stage:active{cursor:grabbing}
 .dr-actions .btn{font-size:11.5px;padding:6px 11px}
 .dr-sched{display:flex;align-items:center;gap:8px;margin-top:10px;font-size:11.5px;color:var(--mut)}
 .dr-sched select{border:1px solid rgba(200,207,216,.18);background:rgba(0,0,0,.35);color:var(--ink);border-radius:8px;padding:5px 8px;font:inherit;font-size:12px;outline:0}
+.maintenance-card{width:100%;display:flex;align-items:center;gap:10px;text-align:left;margin-top:12px;padding:9px 10px;color:var(--silver-h);cursor:pointer;background:rgba(24,201,138,.06);border:1px solid rgba(24,201,138,.25);border-radius:11px;box-shadow:inset 0 1px 0 rgba(255,255,255,.05)}
+.maintenance-card:hover{background:rgba(24,201,138,.12);border-color:var(--gold)}
+.maintenance-card:focus-visible{outline:2px solid var(--gold-h);outline-offset:2px}
+.maintenance-icon{color:var(--gold-h);font-size:16px}.maintenance-copy{min-width:0;flex:1}.maintenance-title{display:block;font-family:var(--disp);font-size:12px;font-weight:600}.maintenance-sub{display:block;margin-top:1px;font-size:10.5px;color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.maintenance-arrow{color:var(--silver);font-size:16px}
+.maint-step{display:flex;gap:10px;padding:10px 0;border-bottom:1px solid rgba(200,207,216,.1)}.maint-step:last-child{border-bottom:0}.maint-num{flex:0 0 22px;height:22px;display:grid;place-items:center;border:1px solid rgba(24,201,138,.45);border-radius:50%;font:600 11px var(--disp);color:var(--gold-h)}.maint-step h3{font:600 13px var(--disp);color:var(--silver-h);margin:0}.maint-step p{font-size:11.5px;color:var(--mut);margin:2px 0 0}.maint-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin-top:9px}.maint-metric{padding:8px;border:1px solid rgba(200,207,216,.12);border-radius:9px;background:rgba(0,0,0,.18)}.maint-metric b{display:block;font:600 13px var(--disp);color:var(--silver-h)}.maint-metric span{display:block;margin-top:1px;font-size:10px;color:var(--mut)}.maint-warning{margin-top:12px;padding:10px 11px;border:1px solid rgba(220,80,80,.45);border-radius:10px;background:rgba(220,80,80,.08);font-size:11.5px;color:#ffd7d7}.maint-warning b{color:#fff0f0}.maint-setting{display:flex;gap:8px;align-items:flex-start;margin-top:10px;font-size:12px;color:var(--silver-h)}.maint-setting input{margin-top:3px}.maint-setting small{display:block;margin-top:2px;color:var(--mut);line-height:1.4}.maint-ack{margin-top:10px}.maint-ack code{font-size:10px;word-break:break-word;color:#fff0f0}.maint-empty{font-size:12px;color:var(--faint);padding:10px 0}
 #chip-job{cursor:default}
 #chip-job .dot{background:var(--gold);box-shadow:0 0 9px var(--glow-g);animation:pulse 1.1s ease-in-out infinite}
 /* embedder header chip — quiet when ok; loud + clickable (fix modal) when down */
@@ -410,6 +415,9 @@ svg.stage:active{cursor:grabbing}
         <div class="stat"><b id="dr-chunks">0</b><span>chunks</span></div>
         <div class="stat"><b id="dr-notes">0</b><span>notes</span></div>
       </div>
+      <button class="maintenance-card" id="dr-maintenance-card" style="display:none" onclick="openMaintenanceReview()" title="Review storage health and maintenance safeguards for the Connected Project">
+        <span class="maintenance-icon">◇</span><span class="maintenance-copy"><span class="maintenance-title">Storage &amp; lifecycle</span><span class="maintenance-sub" id="dr-maintenance-sub">Review disk impact and safeguards</span></span><span class="maintenance-arrow">›</span>
+      </button>
       <div class="dr-actions" id="dr-actions" style="display:none">
         <button class="btn" id="dr-rebuild-btn" onclick="reingestSelected()">⟳ Rebuild now</button>
         <button class="btn" id="dr-reassociate-btn" onclick="reassociateSelected()">↪ Reassociate path</button>
@@ -592,6 +600,19 @@ async function apiPost(url,body){
       const err=new Error(`${r.status}: ${msg}`);
       if(detail&&typeof detail==="object")err.code=detail.code;
       throw err;
+    }
+    authOk();
+    return await r.json();
+  }catch(e){throw e;}
+}
+async function apiPut(url,body){
+  try{
+    const r=await fetch(withTok(url),{method:"PUT",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    if(!r.ok){
+      if(r.status===401){on401();throw new Error("401: session expired — reloading");}
+      let msg=r.statusText;
+      try{const j=await r.json();msg=typeof j.detail==="string"?j.detail:JSON.stringify(j);}catch(_){}
+      throw new Error(`${r.status}: ${msg}`);
     }
     authOk();
     return await r.json();
@@ -1406,6 +1427,7 @@ function openDock(nd){
   document.getElementById("dr-chunks").textContent=nd.chunks.toLocaleString();
   document.getElementById("dr-notes").textContent=nd.notes;
   renderFamTags(nd);
+  paintMaintenanceCard(nd);
   document.getElementById("dr-actions").style.display=status.allow_writes?"":"none";
   syncSchedUi(nd);
   paintInspectorRo();
@@ -1414,6 +1436,94 @@ function openDock(nd){
   document.getElementById("drawer").classList.add("open");
   size();   /* the dock changes the stage's height — resize the sim viewport */
   loadDrawerNotes();
+}
+
+function paintMaintenanceCard(nd){
+  const card=document.getElementById("dr-maintenance-card");
+  if(!card)return;
+  const connected=isLaunch()&&!!seedProjectId&&nd.id===seedProjectId;
+  card.style.display=connected?"":"none";
+  if(connected){
+    const sub=document.getElementById("dr-maintenance-sub");
+    if(sub)sub.textContent="Review disk impact and safeguards";
+  }
+}
+
+function maintenanceBytes(value){
+  if(typeof value!=="number"||value<0)return "unavailable";
+  const units=["B","KB","MB","GB","TB"];let n=value,i=0;
+  while(n>=1024&&i<units.length-1){n/=1024;i++;}
+  return `${n>=10||i===0?n.toFixed(0):n.toFixed(1)} ${units[i]}`;
+}
+const MAINTENANCE_ACKNOWLEDGEMENT="ENABLING THIS FEATURE MEANS I AGREE BRAINCELL IS NOT RESPONSIBLE SINCE I WAS ADVISED OF RISKS";
+
+async function openMaintenanceReview(){
+  if(!isLaunch()||!seedProjectId){toast(RO_VIEW_TITLE,"err");return;}
+  openModal("Storage & lifecycle","Connected Project only — this panel reviews state; it does not delete or compact memory.",
+    `<div class="maint-empty">Loading storage health…</div>`,
+    `<button class="btn" onclick="closeModal()">Close</button>`);
+  const overview=await apiFetch("/api/maintenance/overview");
+  if(!overview){
+    const body=document.getElementById("mo-body");
+    if(body)body.innerHTML=`<div class="maint-warning"><b>Storage health could not be loaded.</b><br>Nothing was changed. Close this panel and retry.</div>`;
+    return;
+  }
+  const impact=overview.storage_impact||{},fs=impact.filesystem||{},snapshot=impact.local_snapshot||{},compact=impact.compaction||{};
+  const prefs=overview.preferences||{},trusted=!!prefs.bypass_delete_confirmation;
+  const writable=!!status.allow_writes;
+  const body=document.getElementById("mo-body");
+  if(!body)return;
+  body.innerHTML=`
+    <div class="maint-step"><span class="maint-num">1</span><div><h3>Storage health</h3><p>Read-only measurements for this Connected Project. Review comes before any permanent cleanup.</p>
+      <div class="maint-metrics">
+        <div class="maint-metric"><b>${esc(maintenanceBytes(fs.free_bytes))}</b><span>free local disk</span></div>
+        <div class="maint-metric"><b>${esc(maintenanceBytes(snapshot.estimated_retained_bytes))}</b><span>future local snapshot growth</span></div>
+        <div class="maint-metric"><b>${esc(maintenanceBytes(compact.conservative_temporary_bytes))}</b><span>conservative compaction workspace</span></div>
+        <div class="maint-metric"><b>${esc(maintenanceBytes(compact.estimated_reclaimable_bytes))}</b><span>SQLite reclaimable estimate</span></div>
+      </div>
+      <p>${esc(impact.memory_notice||"Runtime memory is not estimated.")}</p></div></div>
+    <div class="maint-step"><span class="maint-num">2</span><div><h3>Review candidates</h3><p>Coming next: visible proof for eligible stale memory. Semantic or LLM suggestions will require your decision and cannot authorize deletion on their own.</p></div></div>
+    <div class="maint-step"><span class="maint-num">3</span><div><h3>Confirm and run</h3><p>Coming next: a digest-checked final Apply step. A local snapshot will be optional; no snapshot never means no review.</p></div></div>
+    <div class="maint-warning"><b>Trust verified maintenance is serious.</b><br>It only skips typing <code>DELETE</code> in a future run. It never skips review, proof, approval digest, final Apply, snapshot choice, or execution safeguards. It does not authorize unattended LLM deletion.</div>
+    <label class="maint-setting"><input type="checkbox" id="mt-bypass" data-trusted="${trusted?"true":"false"}" ${trusted?"checked":""} ${writable?"":'disabled title="read-only: launch with --allow-writes"'} onchange="maintenanceBypassToggled()"><span>Trust verified maintenance for this Connected Project<small>${trusted?"Enabled: typing DELETE will be skipped only after all other future safeguards.":"Off by default: typing DELETE will remain required for future permanent cleanup."}</small></span></label>
+    <div id="mt-setting-action"></div>`;
+  maintenanceBypassToggled();
+}
+
+function maintenanceBypassToggled(){
+  const toggle=document.getElementById("mt-bypass"),zone=document.getElementById("mt-setting-action");
+  if(!toggle||!zone)return;
+  if(!status.allow_writes){zone.innerHTML="";return;}
+  if(!toggle.checked){
+    zone.innerHTML=toggle.dataset.trusted==="true"
+      ?`<div class="maint-ack"><button class="btn" onclick="disableMaintenanceBypass()">Keep typed DELETE required</button></div>`
+      :"";
+    return;
+  }
+  zone.innerHTML=`<div class="maint-ack"><div class="mo-label">Type this exact acknowledgement</div><code>${esc(MAINTENANCE_ACKNOWLEDGEMENT)}</code><input class="mo-input" id="mt-ack" autocomplete="off" oninput="syncMaintenanceAcknowledgement()"><div style="margin-top:8px"><button class="btn danger" id="mt-enable" disabled onclick="enableMaintenanceBypass()">Enable trust bypass</button></div></div>`;
+}
+
+function syncMaintenanceAcknowledgement(){
+  const input=document.getElementById("mt-ack"),button=document.getElementById("mt-enable");
+  if(button)button.disabled=!input||input.value!==MAINTENANCE_ACKNOWLEDGEMENT;
+}
+
+async function enableMaintenanceBypass(){
+  const input=document.getElementById("mt-ack");
+  if(!input||input.value!==MAINTENANCE_ACKNOWLEDGEMENT)return;
+  try{
+    await apiPut("/api/preferences/maintenance",{bypass_delete_confirmation:true,acknowledgement:input.value});
+    toast("Trust bypass enabled for this Connected Project");
+    await openMaintenanceReview();
+  }catch(err){toast(`Could not enable trust bypass: ${err.message}`,"err");}
+}
+
+async function disableMaintenanceBypass(){
+  try{
+    await apiPut("/api/preferences/maintenance",{bypass_delete_confirmation:false});
+    toast("Typed DELETE will remain required");
+    await openMaintenanceReview();
+  }catch(err){toast(`Could not change trust bypass: ${err.message}`,"err");}
 }
 /* A viewed Project can be read-only. The write endpoints act on the connected
    store only, so managing another Project from
