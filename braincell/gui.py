@@ -891,11 +891,9 @@ def run_gui(
     from . import native_shell
     from .config import get_db_path, get_project_id
 
-    if not native_shell.native_available():
-        raise RuntimeError(
-            "PySide6/QtWebEngine cannot open a native window in this session. "
-            "Run BrainCell from a graphical desktop session."
-        )
+    unavailable = native_shell.native_unavailable_reason()
+    if unavailable:
+        raise RuntimeError(unavailable)
 
     resolve_mode(mode)
     project_root = Path(path).resolve()
@@ -947,9 +945,11 @@ def run_gui(
         native_bridge=native_bridge,
     )
 
+    # Never log the tokened URL — anyone with the log sink could replay the
+    # bearer token against token-gated routes, including writes.
     log.info(
-        "BrainCell GUI starting at %s  allow_writes=%s  auth=%s  db=%s",
-        url, allow_writes, bool(auth_token), db_path,
+        "BrainCell GUI starting at http://127.0.0.1:%s  allow_writes=%s  auth=%s  db=%s",
+        port, allow_writes, bool(auth_token), db_path,
     )
     native_shell.serve_native(
         app, port=port, url=open_url, bridge=native_bridge

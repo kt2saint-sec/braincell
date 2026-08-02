@@ -37,8 +37,8 @@ _PICKER_TIMEOUT_S = 180.0
 _SIGNAL_POLL_MS = 200
 
 
-def native_available() -> bool:
-    """True when the native window can actually open here.
+def native_unavailable_reason() -> str | None:
+    """None when the native window can open here, else an actionable message.
 
     Linux requires an X11/Wayland display (or an explicit Qt platform for
     deterministic offscreen tests). Windows and macOS do not advertise their
@@ -49,12 +49,26 @@ def native_available() -> bool:
         or os.environ.get("WAYLAND_DISPLAY")
         or os.environ.get("QT_QPA_PLATFORM")
     ):
-        return False
+        return (
+            "No graphical display detected. "
+            "Run BrainCell from a graphical desktop session."
+        )
     try:
         import PySide6.QtWebEngineWidgets  # noqa: F401
     except Exception:  # noqa: BLE001 — absent/broken install = unavailable
-        return False
-    return True
+        return (
+            "BrainCell's required native Memory Map runtime "
+            "(PySide6/QtWebEngine) could not be loaded. Repair or reinstall "
+            "BrainCell, then retry:\n"
+            "  python -m pip install --upgrade --force-reinstall braincell-mcp\n"
+            "(pipx: pipx reinstall braincell-mcp)"
+        )
+    return None
+
+
+def native_available() -> bool:
+    """True when the native window can actually open here."""
+    return native_unavailable_reason() is None
 
 
 @dataclass

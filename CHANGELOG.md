@@ -113,6 +113,20 @@ details are intentionally excluded.
 
 ### Changed
 
+- **PySide6/QtWebEngine is a required base dependency.** Every supported
+  BrainCell installation includes the native Memory Map; there is no headless
+  or server-only product mode. The historical `gui` and `native` extras remain
+  as empty compatibility aliases, while `openai` and `dev` remain optional.
+- Clarified and enforced the Memory Map context boundary: selecting a map
+  Project is catalog-only; ordinary Search and Recent notes stay with the
+  Connected Project; named Pool Search and Recall are the only cross-Project
+  read paths.
+- Added an explicit GUI confirmation-and-retry flow for intentional non-Git
+  Projects, plus structured target error codes: malformed paths return `400`;
+  acknowledgement and configuration conflicts return `409`.
+- **GUI/QtWebEngine tests now run through a serialized, resource-bounded
+  runner.** It isolates per-run state, disables GPU compositing, and contains
+  renderer descendants so a test cannot leak work into the developer desktop.
 - The test suite no longer assumes a Linux host. File reads and writes declare
   UTF-8 explicitly instead of relying on the platform default encoding, and
   checks that assert Linux-specific behaviour — XDG desktop launchers, display

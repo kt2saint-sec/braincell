@@ -158,7 +158,7 @@ class TestInstallLauncherA3:
     def test_main_map_calls_run_gui_with_documented_kwargs(self, monkeypatch):
         captured = {}
         from braincell import launch, native_shell
-        monkeypatch.setattr(native_shell, "native_available", lambda: True)
+        monkeypatch.setattr(native_shell, "native_unavailable_reason", lambda: None)
         monkeypatch.setattr(
             launch,
             "preflight",
@@ -180,7 +180,7 @@ class TestInstallLauncherA3:
     def test_main_map_port_override(self, monkeypatch):
         captured = {}
         from braincell import launch, native_shell
-        monkeypatch.setattr(native_shell, "native_available", lambda: True)
+        monkeypatch.setattr(native_shell, "native_unavailable_reason", lambda: None)
         monkeypatch.setattr(
             launch,
             "preflight",
@@ -198,7 +198,7 @@ class TestInstallLauncherA3:
 
         activated = []
         run_gui_called = []
-        monkeypatch.setattr(native_shell, "native_available", lambda: True)
+        monkeypatch.setattr(native_shell, "native_unavailable_reason", lambda: None)
         monkeypatch.setattr(
             launch,
             "preflight",

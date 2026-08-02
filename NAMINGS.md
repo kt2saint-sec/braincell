@@ -13,10 +13,13 @@ and code identifiers.
   project ULID. Say **project folder** only while asking for a filesystem path.
   Do not use “repo”; Git is not required for a BrainCell project.
 - **Project memory** — searchable information stored in one Project database.
-- **Viewed project** — the Project currently displayed in the Memory Map.
+- **Viewed project** — the Project currently selected in the Memory Map for
+  catalog identity, statistics, and membership controls; it does not change the
+  source of ordinary memory panes.
 - **Connected project** — the Project connected to the current MCP or Memory
-  Map session. New memory always saves here. When it differs from the Viewed
-  project, say: “Viewing Project B. New memory still saves to Project A.”
+  Map session. New memory always saves here, and ordinary Memory Map Search and
+  Recent notes read here. When it differs from the Viewed project, say:
+  “Viewing Project B's catalog. Connected Project A memory remains shown.”
 
 ## Everyday actions
 

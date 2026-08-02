@@ -262,7 +262,7 @@ class TestCmdStart:
     @pytest.fixture(autouse=True)
     def _native_available(self, monkeypatch):
         monkeypatch.setattr(
-            "braincell.native_shell.native_available", lambda: True
+            "braincell.native_shell.native_unavailable_reason", lambda: None
         )
         monkeypatch.setattr("braincell.native_shell.alert", lambda *a, **k: True)
 
@@ -392,7 +392,7 @@ class TestRunGuiExtraQuery:
         monkeypatch.setattr(
             gui, "create_app", lambda **k: captured.update(k) or object()
         )
-        monkeypatch.setattr(native_shell, "native_available", lambda: True)
+        monkeypatch.setattr(native_shell, "native_unavailable_reason", lambda: None)
         monkeypatch.setattr(
             native_shell,
             "serve_native",

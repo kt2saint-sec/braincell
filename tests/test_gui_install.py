@@ -65,6 +65,14 @@ def _fake_client(*, available: bool = True, add_error=None, remove_error=None):
     return _Fake, calls
 
 
+def _git_project(tmp_path, name: str = "repo") -> Path:
+    """Create the smallest local Git-shaped Project accepted by the API."""
+    project = tmp_path / name
+    project.mkdir()
+    (project / ".git").mkdir()
+    return project
+
+
 # ── /api/install ────────────────────────────────────────────────────────────────
 
 def test_install_happy_path(tmp_path, monkeypatch):
@@ -72,8 +80,7 @@ def test_install_happy_path(tmp_path, monkeypatch):
     settings_path = _settings(tmp_path, monkeypatch)
     fake_cls, calls = _fake_client()
     monkeypatch.setitem(inst.CLIENTS, "claude", fake_cls)
-    repo = tmp_path / "repo"
-    repo.mkdir()
+    repo = _git_project(tmp_path)
 
     with TestClient(_app(tmp_path)) as client:
         r = client.post("/api/install", json={"path": str(repo)})
@@ -99,8 +106,7 @@ def test_install_rejects_legacy_federation_option(tmp_path, monkeypatch):
     _settings(tmp_path, monkeypatch)
     fake_cls, calls = _fake_client()
     monkeypatch.setitem(inst.CLIENTS, "claude", fake_cls)
-    repo = tmp_path / "repo"
-    repo.mkdir()
+    repo = _git_project(tmp_path)
 
     with TestClient(_app(tmp_path)) as client:
         r = client.post("/api/install", json={"path": str(repo), "federate": True})
@@ -114,8 +120,7 @@ def test_install_missing_client_409_no_mcp_add(tmp_path, monkeypatch):
     _settings(tmp_path, monkeypatch)
     fake_cls, calls = _fake_client(available=False)
     monkeypatch.setitem(inst.CLIENTS, "claude", fake_cls)
-    repo = tmp_path / "repo"
-    repo.mkdir()
+    repo = _git_project(tmp_path)
 
     with TestClient(_app(tmp_path)) as client:
         r = client.post("/api/install", json={"path": str(repo)})
@@ -134,13 +139,34 @@ def test_install_non_dir_400(tmp_path, monkeypatch):
         r = client.post("/api/install", json={"path": str(tmp_path / "nope")})
 
     assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "target_not_directory"
+
+
+def test_install_non_git_requires_explicit_gui_confirmation(tmp_path, monkeypatch):
+    """A valid non-Git directory is a confirmation conflict, not bad input."""
+    _settings(tmp_path, monkeypatch)
+    fake_cls, calls = _fake_client()
+    monkeypatch.setitem(inst.CLIENTS, "claude", fake_cls)
+    project = tmp_path / "plain-project"
+    project.mkdir()
+
+    with TestClient(_app(tmp_path)) as client:
+        blocked = client.post("/api/install", json={"path": str(project)})
+        allowed = client.post(
+            "/api/install",
+            json={"path": str(project), "acknowledge_non_git": True},
+        )
+
+    assert blocked.status_code == 409
+    assert blocked.json()["detail"]["code"] == "non_git_acknowledgement_required"
+    assert allowed.status_code == 200
+    assert len(calls) == 1
 
 
 def test_install_body_smuggling_422(tmp_path, monkeypatch):
     """(t5) SI-3: a smuggled `command` or `env` field is rejected (extra=forbid)."""
     _settings(tmp_path, monkeypatch)
-    repo = tmp_path / "repo"
-    repo.mkdir()
+    repo = _git_project(tmp_path)
 
     with TestClient(_app(tmp_path)) as client:
         r_command = client.post(
@@ -156,8 +182,7 @@ def test_install_body_smuggling_422(tmp_path, monkeypatch):
 
 def test_install_absent_in_read_only_mode(tmp_path, monkeypatch):
     """(t6) SI-1: a read-only launch (allow_writes=False) does not expose the route."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
+    repo = _git_project(tmp_path)
     with TestClient(_app(tmp_path, allow_writes=False)) as client:
         r = client.post("/api/install", json={"path": str(repo)})
     assert r.status_code in (404, 405)
@@ -211,8 +236,7 @@ def test_uninstall_vscode_409_manual_instructions(tmp_path, monkeypatch):
         )
     )
     monkeypatch.setitem(inst.CLIENTS, "vscode", fake_cls)
-    repo = tmp_path / "repo"
-    repo.mkdir()
+    repo = _git_project(tmp_path)
 
     with TestClient(_app(tmp_path)) as client:
         r = client.post("/api/uninstall", json={"path": str(repo), "client": "vscode"})
@@ -226,8 +250,7 @@ def test_uninstall_happy_path_claude_leaves_legacy_hook_state_untouched(tmp_path
     settings_path.write_text('{"hooks":{"UserPromptSubmit":[{"hooks":[{"command":"legacy"}]}]}}', encoding="utf-8")
     fake_cls, calls = _fake_client()
     monkeypatch.setitem(inst.CLIENTS, "claude", fake_cls)
-    repo = tmp_path / "repo"
-    repo.mkdir()
+    repo = _git_project(tmp_path)
 
     with TestClient(_app(tmp_path)) as client:
         r = client.post("/api/uninstall", json={"path": str(repo)})
@@ -239,6 +262,26 @@ def test_uninstall_happy_path_claude_leaves_legacy_hook_state_untouched(tmp_path
     assert "hook_removed" not in body
     assert calls[-1]["op"] == "remove" and calls[-1]["name"] == "braincell"
     assert '"legacy"' in settings_path.read_text(encoding="utf-8")
+
+
+def test_uninstall_non_git_requires_explicit_gui_confirmation(tmp_path, monkeypatch):
+    _settings(tmp_path, monkeypatch)
+    fake_cls, calls = _fake_client()
+    monkeypatch.setitem(inst.CLIENTS, "claude", fake_cls)
+    project = tmp_path / "plain-project"
+    project.mkdir()
+
+    with TestClient(_app(tmp_path)) as client:
+        blocked = client.post("/api/uninstall", json={"path": str(project)})
+        allowed = client.post(
+            "/api/uninstall",
+            json={"path": str(project), "acknowledge_non_git": True},
+        )
+
+    assert blocked.status_code == 409
+    assert blocked.json()["detail"]["code"] == "non_git_acknowledgement_required"
+    assert allowed.status_code == 200
+    assert calls[-1]["op"] == "remove"
 
 
 # ── /api/hook ─────────────────────────────────────────────────────────────────

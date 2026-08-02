@@ -8,6 +8,10 @@ context; severity reflects pre-fix impact.
 Identified 2026-07-31 by comparing the audit branch against the public remote
 branches.
 
+Identified 2026-08-02 by comparing the confirmed remote `v0.4.0` tag against
+the current `braincell-public` working tree.
+
+
 - **Medium — SQLite compaction/hard-prune workflow:** a WAL-starvation warning
   now exists (see Resolved: stats/storage diagnostics), but there is still no
   authorized hard-prune plus `VACUUM` execution workflow — VACUUM/hard-prune
@@ -22,6 +26,102 @@ preview-first, WAL-aware `legacy_recovery.py`; only its add-repo-runbook revisio
 2026-07-31.)
 
 ## Resolved in Unreleased
+
+- **High — selected map Project could be mistaken for the source of ordinary
+  memory panels:** exact evidence observed in the v1.0.0 working tree on
+  2026-08-02, verbatim:
+
+  ```javascript
+  function scopeParams(){return "";}
+  ```
+
+  ```javascript
+  /* ════════ VIEWED PROJECT vs CONNECTED PROJECT ════════
+     activeProjectId = whose memory the GUI is showing: map focus, inspector,
+     drawer notes/search. Switching it is a VIEW change only; writes stay pinned
+     to the connected project's opened store. Init: ?active= URL param → connected
+     seed → null (rides the URL like ?scope=,
+     so a view is shareable/bookmarkable). */
+  ```
+
+  The first statement meant ordinary drawer `/api/notes` and `/api/search`
+  requests never selected the map Project; the second claimed that they did.
+  This could present Connected Project memory under a selected sibling's
+  inspector. Resolved: map selection is now explicitly catalog-only (map,
+  Project statistics, inspector, and membership state); both drawer sections
+  visibly name **Connected Project memory**; selecting an already open Project
+  no longer re-queries ordinary memory; and every cross-Project live read
+  remains an explicit named Pool Search or Recall.
+
+- **High — intentional non-Git Projects had no GUI acknowledgement path:**
+  exact evidence observed in the v1.0.0 working tree on 2026-08-02, verbatim:
+
+  ```javascript
+  const res=await apiPost("/api/install",{path:arPath,client,scope});
+  ```
+
+  ```python
+  acknowledge_non_git: bool = False
+  ```
+
+  The API correctly required `acknowledge_non_git`, but the GUI neither sent it
+  nor explained how to give it. Resolved: target failures now return a
+  structured `non_git_acknowledgement_required` code; the GUI opens a clear
+  confirmation explaining that GitLab clones normally have `.git`, and retries
+  the same install or deregistration request with
+  `acknowledge_non_git: true` only after consent. Codex remains Git-required by
+  design; new folders, archive extracts, and other non-Git Projects remain
+  supported for clients that do not require Git.
+
+- **Medium — malformed target paths were classified as a generic conflict:**
+  exact evidence observed in the v1.0.0 working tree on 2026-08-02, verbatim:
+
+  ```python
+  if not resolved.is_dir():
+      raise ProjectTargetError(f"Project target is not a directory: {resolved}")
+  ```
+
+  ```python
+  except ProjectTargetError as exc:
+      raise HTTPException(409, str(exc)) from exc
+  ```
+
+  A nonexistent path is invalid input, not a state conflict or consent request.
+  Resolved: `ProjectTargetError` now carries a stable code; filesystem-root and
+  non-directory targets return HTTP `400` (`filesystem_root_forbidden` or
+  `target_not_directory`), while acknowledgement and client-configuration
+  conflicts return HTTP `409` with `{code, message}` detail. The same target
+  mapping is shared by the GUI install, uninstall, skills, and Automatic Pool
+  recall endpoints.
+
+- **High — release documentation advertised retired headless behavior:** the
+  README, Quickstart, architecture guide, contribution guide, and changelog
+  described PySide6 as optional, offered `--server-only`, or prescribed `[gui]`
+  installation even though the native Memory Map is now a required base runtime.
+  Resolved: all tracked release documentation now states the mandatory GUI
+  contract, uses base-package install commands, and identifies `gui`/`native`
+  only as empty compatibility aliases. Verified against `pyproject.toml`,
+  `scripts/install.sh`, and the GUI entry-point preflight paths.
+
+- **High — required-GUI remediation described an optional install:** a partial
+  or broken PySide6/QtWebEngine installation reported the native Memory Map as
+  optional and advised `braincell-mcp[gui]`, contradicting the mandatory GUI
+  contract. Resolved: `native_unavailable_reason()`
+  (`braincell/native_shell.py:40`) now identifies the required runtime and
+  directs the user to repair/reinstall BrainCell; the broken-import regression
+  asserts the required-runtime wording and rejects both `optional` and `[gui]`.
+
+- **High — GUI tests could escape mocks and initialize real QtWebEngine on the
+  developer workstation:** `cmd_start` and `run_gui` changed from the boolean
+  `native_available()` seam to `native_unavailable_reason()`, while several
+  tests still mocked the old seam. Their supposed failure paths then imported
+  QtWebEngine, spawned Chromium helpers, and could hang inside the ordinary
+  pytest process. Resolved: affected tests now mock the active seam;
+  `test_native_shell.py` runs its real import probe in a bounded process group
+  and kills descendants; `scripts/test-gui-safe.sh` serializes all GUI tests in
+  an isolated HOME/XDG/tmp/cache/bytecode environment with offscreen,
+  software-rendered QtWebEngine and a user-cgroup memory/task/CPU/time limit.
+  The focused GUI safety selection passes 109 tests in that environment.
 
 - **High — foreign transcript cleanup:** historical `bc_documents` rows
   attributed to a Project other than the database they live in (predating the

@@ -12,8 +12,9 @@ cd braincell
 ./scripts/install.sh
 ```
 
-The installer creates a local environment and, when available, fetches the
-default Ollama embedding model. With an existing environment, use:
+The installer creates a local environment with the required native Memory Map
+GUI and, when available, fetches the default Ollama embedding model. There is
+no supported `--server-only` installation. With an existing environment, use:
 
 ```bash
 python3 -m pip install "braincell-mcp @ git+https://github.com/kt2saint-sec/braincell.git"
@@ -68,9 +69,14 @@ braincell search "throttle"
 braincell start .
 ```
 
-Recall and Search operate on the selected Project's memory. `braincell start`
+Recall and Search operate on the connected Project's memory. `braincell start`
 opens the native **Memory Map** for that Project. Its internal localhost
 transport is not an external browser UI or background service.
+
+Inside the Memory Map, a map selection is catalog context (Project identity,
+statistics, and Pool membership). Ordinary Search and Recent notes remain
+Connected-Project memory. Use a named Pool only for an intentional cross-Project
+read.
 
 To inspect disk use and preview backup retention without deleting anything:
 

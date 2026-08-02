@@ -97,7 +97,8 @@ break the dual-license). PRs without a sign-off will be asked to amend.
 
 ## Dev setup & checks
 
-The base package includes the native GUI runtime (PySide6/QtWebEngine). To work on it:
+The native GUI runtime (PySide6/QtWebEngine) is a required base dependency, so
+every development installation includes the Memory Map and its tests:
 
 ```bash
 python -m venv .venv && . .venv/bin/activate
@@ -117,6 +118,16 @@ release checks:
 ruff check braincell tests
 ```
 
+Run GUI/QtWebEngine selections only through the host-safe runner. It isolates
+HOME/XDG/tmp/cache state, serializes renderer use, disables GPU compositing, and
+applies a user-cgroup memory/task/CPU/time limit; it refuses an uncaged run:
+
+```bash
+scripts/test-gui-safe.sh tests/test_native_shell.py \
+  tests/test_gui_commands_modal.py tests/test_gui_hittest.py \
+  tests/test_native_pool_surface.py
+```
+
 SQLite changes must preserve one transaction owner from `BEGIN` through
 commit/rollback. Any multi-statement mutation needs a fault-injection regression
 that proves the prior committed state survives a failure. Project database
@@ -127,7 +138,9 @@ The Memory Map is a native desktop application backed internally by the existing
 localhost-only FastAPI/uvicorn transport and embedded SPA. Changes must preserve the
 window-owned lifecycle: `braincell start`, `braincell gui`, and `braincell-map` create or
 activate a native window, and closing it stops the server. Do not add an external-viewer or
-headless-GUI fallback, an always-on GUI service, or optionalize PySide6.
+headless-GUI fallback, or an always-on GUI service. PySide6 ships as a required
+base dependency; `gui` and `native` are empty compatibility aliases only. Never
+degrade to a browser or headless fallback.
 
 ## Scope
 

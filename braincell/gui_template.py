@@ -437,15 +437,15 @@ svg.stage:active{cursor:grabbing}
       <div class="mcp-note" id="dr-mcp-note">To restart the MCP server, reconnect in your client — run <b>/mcp</b> in Claude Code. The GUI cannot restart it; it runs inside your MCP client.</div>
     </div>
     <div class="col c-search">
-      <div class="sec">Search this project</div>
+      <div class="sec">Search Connected Project memory</div>
       <div class="dr-search">
-        <input id="dr-q" placeholder="Search this project's memory…" onkeydown="if(event.key==='Enter')drawerSearch()">
+        <input id="dr-q" placeholder="Search Connected Project memory…" onkeydown="if(event.key==='Enter')drawerSearch()">
         <button class="btn" onclick="drawerSearch()">Go</button>
       </div>
       <div id="dr-hits-list"></div>
     </div>
     <div class="col c-notes">
-      <div class="sec">Recent notes</div>
+      <div class="sec">Recent Connected Project notes</div>
       <div id="dr-notes-list"></div>
     </div>
   </div>
@@ -584,16 +584,39 @@ async function apiPost(url,body){
     const r=await fetch(withTok(url),{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
     if(!r.ok){
       if(r.status===401){on401();throw new Error("401: session expired — reloading");}
-      let msg=r.statusText;try{const j=await r.json();msg=j.detail||JSON.stringify(j);}catch(_){}
-      throw new Error(`${r.status}: ${msg}`);
+      let msg=r.statusText,detail=null;
+      try{
+        const j=await r.json();detail=j.detail;
+        msg=typeof detail==="string"?detail:(detail&&detail.message)||JSON.stringify(j);
+      }catch(_){}
+      const err=new Error(`${r.status}: ${msg}`);
+      if(detail&&typeof detail==="object")err.code=detail.code;
+      throw err;
     }
     authOk();
     return await r.json();
   }catch(e){throw e;}
 }
-/* Like apiFetch, but surfaces the backend's 404 "not built" answer (a sibling
-   project whose brain doesn't exist yet) as {notBuilt:true} instead of
-   collapsing it into null — the drawer maps it to an honest empty state. */
+let _nonGitRetry=null;
+function requestNonGitAcknowledgement(err,body,retry){
+  if(!err||err.code!=="non_git_acknowledgement_required")return false;
+  _nonGitRetry=()=>retry({...body,acknowledge_non_git:true});
+  openModal("Use non-Git Project?",
+    `This folder has no <code>.git</code> marker. BrainCell supports intentional non-Git Projects, but will not change client configuration until you confirm it. GitLab clones normally have <code>.git</code> and do not need this confirmation.`,
+    "",
+    `<button class="btn" onclick="cancelNonGitAcknowledgement()">Cancel</button>
+     <button class="btn primary" onclick="confirmNonGitAcknowledgement()">Use this non-Git Project</button>`);
+  return true;
+}
+function cancelNonGitAcknowledgement(){_nonGitRetry=null;closeModal();}
+async function confirmNonGitAcknowledgement(){
+  const retry=_nonGitRetry;_nonGitRetry=null;closeModal();
+  try{if(retry)await retry();}
+  catch(err){toast(`Operation failed: ${err.message}`,"err");}
+}
+/* Like apiFetch, but surfaces the backend's 404 "not built" answer for the
+   connected Project as {notBuilt:true}; the drawer maps it to an honest empty
+   state instead of collapsing it into null. */
 async function apiFetchView(url){
   try{
     const r=await fetch(withTok(url),{credentials:"same-origin"});
@@ -611,15 +634,14 @@ async function apiFetchView(url){
 let seedProjectId=null;
 function scopeParams(){return "";}
 
-/* ════════ VIEWED PROJECT vs CONNECTED PROJECT ════════
-   activeProjectId = whose memory the GUI is showing: map focus, inspector,
-   drawer notes/search. Switching it is a VIEW change only; writes stay pinned
-   to the connected project's opened store. Init: ?active= URL param → connected
-   seed → null (rides the URL like ?scope=,
-   so a view is shareable/bookmarkable). */
+/* ════════ SELECTED PROJECT vs CONNECTED PROJECT ════════
+   activeProjectId selects a Project's map cell, catalog statistics, inspector,
+   and membership controls. Ordinary notes/search and every write remain pinned
+   to the connected Project's opened store. Cross-Project reads require an
+   explicit named Pool. Init: ?active= URL param → connected seed → null. */
 let activeProjectId=null,_activeInit=false;
 const _urlActive=new URLSearchParams(location.search).get("active");
-const RO_VIEW_TITLE="read-only view — launch braincell gui on this folder to manage it";
+const RO_VIEW_TITLE="Selected Project is catalog-only. Memory panels show the Connected Project. Use an explicit Pool query for live read-only cross-Project memory.";
 function isLaunch(){
   /* Seedless test factories have no connected project to pin to. */
   if(!seedProjectId)return true;
@@ -702,18 +724,12 @@ function setActiveProject(pid){
   history.replaceState(null,"",u.toString());
   renderActiveChip();
   feedFilterSync();
-  /* re-run the open drawer view immediately (same pattern as setScope);
-     following the active node keeps header + notes on one project */
+  /* Selection changes catalog focus; ordinary memory never changes Project. */
   const dk=document.getElementById("drawer");
   if(dk&&dk.classList.contains("open")){
     const nd=nodes.find(n=>n.id===activeProjectId);
     if(nd&&selected!==nd.id)openDock(nd);
-    else{
-      paintInspectorRo();
-      loadDrawerNotes();
-      const dq=document.getElementById("dr-q");
-      if(dq&&dq.value.trim())drawerSearch();
-    }
+    else paintInspectorRo();
   }
   draw();
 }
@@ -1175,6 +1191,15 @@ async function arStepBuild(){
   try{
     await apiPost("/api/ingest",{path:arPath});
   }catch(err){
+    if(/limited to the connected Project/i.test(err.message||"")){
+      openModal("Add a project — one Project per Memory Map",esc(arPath),
+        `<div style="font-size:12.5px;line-height:1.5">This Memory Map manages only the
+         <b>connected Project</b>. To add a different project, run
+         <code>braincell setup ${esc(arPath)}</code> in a terminal, then launch that
+         project's own Memory Map with <code>braincell start ${esc(arPath)}</code>.</div>`,
+        `<button class="btn primary" onclick="closeModal()">OK</button>`);
+      return;
+    }
     const st=document.getElementById("ar-build-status");
     if(st)st.textContent=`Failed to start: ${err.message}`;
     return;
@@ -1215,6 +1240,8 @@ function arStepInstall(){
      <select class="mo-input" id="ar-client">
        <option value="claude">claude</option>
        <option value="codex">codex</option>
+       <option value="vscode">vscode</option>
+       <option value="opencode">opencode</option>
      </select>
      <div class="mo-label">Scope</div>
      <select class="mo-input" id="ar-scope">
@@ -1228,13 +1255,18 @@ function arStepInstall(){
 async function arDoInstall(){
   const client=document.getElementById("ar-client").value;
   const scope=document.getElementById("ar-scope").value;
+  await submitInstall({path:arPath,client,scope});
+}
+async function submitInstall(body){
   const errBox=document.getElementById("ar-install-err");
   try{
-    const res=await apiPost("/api/install",{path:arPath,client,scope});
-    arProjectId=res.project_id;arClient=client;
+    const res=await apiPost("/api/install",body);
+    arProjectId=res.project_id;arClient=body.client;
     arStepPool();
   }catch(err){
+    if(requestNonGitAcknowledgement(err,body,submitInstall))return;
     if(errBox){errBox.style.display="";errBox.textContent=err.message;}
+    else toast(`Connect BrainCell failed: ${err.message}`,"err");
   }
 }
 async function arStepPool(){
@@ -1444,9 +1476,17 @@ function mcpRegisterSelected(){
   arStepInstall();
 }
 /* shared POST — the dock's Deregister modal and the Commands row both land here */
-async function mcpDeregister(path,client,scope){
-  const r=await apiPost("/api/uninstall",{path,client,scope});
-  toast(`Disconnected from ${client}: BrainCell ${r.mcp_removed?"removed":"not removed"}`);
+async function mcpDeregister(path,client,scope,acknowledge_non_git=false,onSuccess=null){
+  const body={path,client,scope,acknowledge_non_git};
+  try{
+    const r=await apiPost("/api/uninstall",body);
+    toast(`Disconnected from ${client}: BrainCell ${r.mcp_removed?"removed":"not removed"}`);
+    if(onSuccess)await onSuccess();
+    return true;
+  }catch(err){
+    if(requestNonGitAcknowledgement(err,body,next=>mcpDeregister(next.path,next.client,next.scope,next.acknowledge_non_git,onSuccess)))return false;
+    throw err;
+  }
 }
 function mcpDeregisterSelected(){
   const nd=nodes.find(n=>n.id===selected);if(!nd)return;
@@ -1456,7 +1496,7 @@ function mcpDeregisterSelected(){
     `Remove <b>${esc(nd.name)}</b>'s braincell MCP registration from a client. The brain data itself is untouched.`,
     `<div class="mo-label">MCP client</div>
      <select class="mo-input" id="dm-client">
-       <option value="claude">claude</option><option value="codex">codex</option><option value="vscode">vscode</option>
+       <option value="claude">claude</option><option value="codex">codex</option><option value="vscode">vscode</option><option value="opencode">opencode</option>
      </select>
      <div class="mo-label">Scope</div>
      <select class="mo-input" id="dm-scope">
@@ -1473,10 +1513,12 @@ async function doDeregisterSelected(){
   try{
     /* VS Code removal is manual — the server's 409 instructions surface
        verbatim in the error toast below. */
-    await mcpDeregister(nd.path,client,scope);
-    await loadAll();   /* repaint registration state from the server's answer */
-    const nd2=nodes.find(n=>n.id===nd.id);
-    if(nd2)openDock(nd2);
+    const repaint=async()=>{
+      await loadAll();   /* repaint registration state from the server's answer */
+      const nd2=nodes.find(n=>n.id===nd.id);
+      if(nd2)openDock(nd2);
+    };
+    if(!await mcpDeregister(nd.path,client,scope,false,repaint))return;
   }catch(err){toast(`Deregister failed: ${err.message}`,"err");}
 }
 function closeDock(){selected=null;document.getElementById("drawer").classList.remove("open");size();}
@@ -1523,7 +1565,7 @@ async function removeFamTag(nodeId,famName){
   }
 }
 
-/* honest empty state for a sibling whose brain doesn't exist yet (backend 404) */
+/* Honest empty state when the connected Project has not been built yet (backend 404). */
 function notBuiltHtml(){
   return `<div style="color:var(--faint);font-size:12px">Not built yet — <b>Build memory</b> to absorb this folder.</div>`;
 }
@@ -1543,8 +1585,8 @@ async function loadDrawerNotes(){
     const ts=(n.created_at||"").slice(0,10);
     /* forget = the GUI face of `braincell forget` (soft-delete). Write-gated:
        the button renders only when writes are on (/api/forget is unmounted
-       read-only, so a click would 404 anyway). On a read-only sibling view it
-       renders DISABLED (never hidden) — writes act on the launch store only. */
+       read-only, so a click would 404 anyway). A selected non-connected
+       Project keeps the control disabled — writes act on the launch store only. */
     const del=status.allow_writes&&n.id!=null
       ?(launchView
         ?`<span class="ftag-x" style="float:right" title="Forget this note (soft-delete — hidden from recall, kept for audit)" onclick="confirmForgetNote(${Number(n.id)},'${esc(n.project_id||"").replace(/'/g,"\\'")}')">✕</span>`
@@ -1739,7 +1781,7 @@ function openCommandsModal(){
        run /mcp in Claude Code.</div>
        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:11.5px;color:var(--mut)">
          <select class="mo-input" id="cmd-un-client" style="width:auto;padding:4px 8px">
-           <option value="claude">claude</option><option value="codex">codex</option><option value="vscode">vscode</option>
+           <option value="claude">claude</option><option value="codex">codex</option><option value="vscode">vscode</option><option value="opencode">opencode</option>
          </select>
          <select class="mo-input" id="cmd-un-scope" style="width:auto;padding:4px 8px">
            <option value="local">local</option><option value="project">project</option>
@@ -1982,8 +2024,8 @@ function cmdUninstall(){
   cmdConfirm(`Remove this project's braincell MCP registration from ${client}? The brain data itself is untouched.`,
     async()=>{
       try{
-        await mcpDeregister(path,client,scope);
-        await loadAll();   /* refresh mcp_registered so the dock repaints honestly */
+        const refresh=async()=>{await loadAll();};
+        if(!await mcpDeregister(path,client,scope,false,refresh))return;
       }catch(err){toast(`Deregister failed: ${err.message}`,"err");}
     });
 }

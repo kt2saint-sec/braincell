@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Request
@@ -36,9 +35,34 @@ from .install import (
     install_project_skills,
     remove_project_skills,
 )
+from .project_target import ProjectTarget, ProjectTargetError, validate_project_target
 
 # Delay before the restart re-exec fires — lets the 200 response flush first.
 _RESTART_DELAY_S = 0.5
+_BAD_TARGET_CODES = frozenset({"filesystem_root_forbidden", "target_not_directory"})
+
+
+def _target_http_exception(exc: ProjectTargetError) -> HTTPException:
+    """Preserve the difference between invalid input and needed consent."""
+    status_code = 400 if exc.code in _BAD_TARGET_CODES else 409
+    return HTTPException(
+        status_code,
+        {"code": exc.code, "message": str(exc)},
+    )
+
+
+def _validate_gui_target(body: object, *, require_git: bool = False) -> ProjectTarget:
+    """Validate a closed request body and expose structured target failures."""
+    try:
+        return validate_project_target(
+            getattr(body, "path"),
+            acknowledge_home=getattr(body, "acknowledge_home"),
+            acknowledge_non_git=getattr(body, "acknowledge_non_git"),
+            allow_privileged=getattr(body, "allow_privileged"),
+            require_git=require_git,
+        )
+    except ProjectTargetError as exc:
+        raise _target_http_exception(exc) from exc
 
 
 # ── Request bodies (path + closed enums/booleans only — SI-3) ──────────────────
@@ -47,8 +71,11 @@ class InstallBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     path: str
-    client: Literal["claude", "codex", "vscode"] = "claude"
+    client: Literal["claude", "codex", "vscode", "opencode"] = "claude"
     scope: Literal["local", "project"] = "local"
+    acknowledge_home: bool = False
+    acknowledge_non_git: bool = False
+    allow_privileged: bool = False
 
 
 class SkillsBody(BaseModel):
@@ -82,17 +109,11 @@ class UninstallBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     path: str
-    client: Literal["claude", "codex", "vscode"] = "claude"
+    client: Literal["claude", "codex", "vscode", "opencode"] = "claude"
     scope: Literal["local", "project"] = "local"
-
-
-# ── Path validation (SI-4: mirror gui_ingest.py:299-303) ───────────────────────
-
-def _resolve_dir(raw: str) -> Path:
-    p = Path(raw).expanduser()
-    if not p.is_dir():
-        raise HTTPException(400, f"Not a directory: {raw}")
-    return p.resolve()
+    acknowledge_home: bool = False
+    acknowledge_non_git: bool = False
+    allow_privileged: bool = False
 
 
 # ── Route mounting (called by gui.create_app when allow_writes=True) ──────────
@@ -107,13 +128,14 @@ def mount_install_api(app: FastAPI, *, restart_argv: list[str] | None = None) ->
 
     @app.post("/api/install")
     async def api_install(body: InstallBody) -> dict:  # type: ignore[type-arg]
+        target = _validate_gui_target(body, require_git=body.client == "codex")
         client = get_client(body.client)
         if not client.available():
             raise HTTPException(
                 409, f"`{body.client}` CLI not found on PATH — install it, then retry."
             )
 
-        root = _resolve_dir(body.path)
+        root = target.path
         pid = get_project_id(root)
         cwd = str(root)
         env = {
@@ -121,7 +143,7 @@ def mount_install_api(app: FastAPI, *, restart_argv: list[str] | None = None) ->
             "BRAINCELL_PROJECT_ID": pid,
             "BRAINCELL_STORE": "sqlite",
         }
-        if body.client in {"codex", "vscode"} or body.scope == "project":
+        if body.client in {"codex", "vscode", "opencode"} or body.scope == "project":
             from .install import resolve_portable_server_command
             command, cmd_args = resolve_portable_server_command()
         else:
@@ -147,7 +169,8 @@ def mount_install_api(app: FastAPI, *, restart_argv: list[str] | None = None) ->
 
     @app.post("/api/uninstall")
     async def api_uninstall(body: UninstallBody) -> dict:  # type: ignore[type-arg]
-        root = _resolve_dir(body.path)
+        target = _validate_gui_target(body)
+        root = target.path
         client = get_client(body.client)
 
         import anyio
@@ -170,17 +193,7 @@ def mount_install_api(app: FastAPI, *, restart_argv: list[str] | None = None) ->
         Existing same-name skills with different content are reported as
         ``conflict`` and left untouched.
         """
-        from .project_target import ProjectTargetError, validate_project_target
-
-        try:
-            target = validate_project_target(
-                body.path,
-                acknowledge_home=body.acknowledge_home,
-                acknowledge_non_git=body.acknowledge_non_git,
-                allow_privileged=body.allow_privileged,
-            )
-        except ProjectTargetError as exc:
-            raise HTTPException(409, str(exc)) from exc
+        target = _validate_gui_target(body)
         import anyio
         operation = install_project_skills if body.action == "add" else remove_project_skills
         try:
@@ -209,15 +222,8 @@ def mount_install_api(app: FastAPI, *, restart_argv: list[str] | None = None) ->
             enable_automatic_pool_recall,
             status_automatic_pool_recall,
         )
-        from .project_target import ProjectTargetError, validate_project_target
-
         try:
-            target = validate_project_target(
-                body.path,
-                acknowledge_home=body.acknowledge_home,
-                acknowledge_non_git=body.acknowledge_non_git,
-                allow_privileged=body.allow_privileged,
-            )
+            target = _validate_gui_target(body)
             if body.action == "enable":
                 result = await anyio.to_thread.run_sync(
                     lambda: enable_automatic_pool_recall(
@@ -232,7 +238,7 @@ def mount_install_api(app: FastAPI, *, restart_argv: list[str] | None = None) ->
                 result = await anyio.to_thread.run_sync(
                     lambda: status_automatic_pool_recall(target.path, scope=body.scope)
                 )
-        except (ProjectTargetError, RuntimeError, ValueError, KeyError) as exc:
+        except (RuntimeError, ValueError, KeyError) as exc:
             raise HTTPException(409, str(exc)) from exc
         return {"project": str(target.path), "action": body.action, **result}
 

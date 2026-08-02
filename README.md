@@ -22,6 +22,10 @@ Connection management preserves unrelated client configuration. It writes only B
 
 ## Install
 
+The native Memory Map desktop GUI (PySide6/QtWebEngine) is a required BrainCell
+runtime dependency and is installed with every supported installation. There is
+no supported headless or server-only BrainCell installation.
+
 ### Install with pipx
 
 BrainCell uses Ollama locally with the verified default embedding model `qwen3-embedding:4b`.
@@ -148,6 +152,11 @@ braincell start .
 `braincell start`, `braincell gui`, and `braincell-map` open the native **Memory Map** for the selected Project. The embedded localhost server is an implementation detail of that desktop app, not a browser product or an always-on service.
 
 Build reads supported documents and transcripts into that Project's database. `braincell sync` is the incremental compatibility alias for Build. Remember, Forget, and Correct memory are MCP actions; normal Recall and Search are always limited to the connected Project.
+
+In the Memory Map, selecting a Project changes its catalog card, statistics, and
+Pool membership controls. The ordinary Search and Recent notes panes always
+name and read the Connected Project. Use named Pool Search or Recall for an
+intentional cross-Project read.
 
 Inspect persistent state without changing it:
 

@@ -1,11 +1,10 @@
 # BrainCell architecture
 
-`last_verified: 2026-07-31` against `audit/persistence-mutation-hardening`,
-rebased onto `main` at `471bc71` (the merge of PR #4's Windows/macOS CI
-matrix and lint pass). The branch closes the five remaining fault-ledger
-entries — foreign-transcript reconciliation, cross-platform parent-death
-cleanup, native launchers, Windows token ACL, and platform data roots — see
-`BUGS.md`'s "Resolved in Unreleased". Not yet merged to `main`.
+`last_verified: 2026-08-02` against the current
+`~/braincell-public` integration working tree and the confirmed
+remote `v0.4.0` tag (`e92aaf0`). This tree carries the v1 integration work,
+including cross-platform lifecycle/launcher hardening and the required native
+Memory Map runtime; see `BUGS.md` for verified open and resolved faults.
 
 The cross-repo map: where each concern lives, what the CLI surface is, what the
 database schema holds, and which on-disk files are state. Product language is
@@ -23,10 +22,12 @@ points declared in `pyproject.toml`:
 | `braincell-mcp` | `braincell.server:main` | FastMCP stdio server (also `python -m braincell`) |
 | `braincell-map` | `braincell.cli:main_map` | Memory Map launcher |
 
-Runtime dependencies are all declared as base deps — FastAPI, uvicorn, and
-PySide6 included, because `gui.py` imports them unconditionally. The `native`
-and `gui` extras are empty compatibility aliases. Only `openai` (hosted
-embeddings) and `dev` (pytest, ruff) add anything.
+Server and CLI runtime dependencies (FastAPI, uvicorn, and friends) are base
+dependencies. PySide6/QtWebEngine — the native Memory Map renderer — is also a
+required base dependency: every supported BrainCell installation includes the
+desktop application, and there is no headless or server-only product mode.
+`gui` and `native` remain empty compatibility aliases; `openai` (hosted
+embeddings) and `dev` (pytest, ruff) are the functional optional extras.
 
 ## Module map
 
@@ -76,17 +77,25 @@ virtual). Everything for one Project lives in that Project's single
 
 | Module | Holds |
 |---|---|
-| `gui.py` | The FastAPI app, auth token (`:790-801`), and Linux XDG desktop-launcher installer (`:903`). |
-| `native_shell.py` | PySide6/QtWebEngine host. `native_available` (`:47-52`) deliberately requires a display only on Linux. |
+| `gui.py` | The FastAPI app, durable auth token, and native-window orchestration. |
+| `platform.py` | Cross-platform source of truth for data paths, desktop launchers, and retired-service handling. |
+| `native_shell.py` | Required PySide6/QtWebEngine host. `native_unavailable_reason` preflights a Linux display and reports a damaged required runtime. |
 | `gui_template.py` | The single-page app, inlined as HTML+CSS+JS. |
 | `gui_mutation.py` | `GuiMutationCoordinator` (`:12`) — one ownership gate across ingest, maintenance, clear, and undo. |
-| `gui_ingest.py` | Build subprocess management, schedules, and `clear_project` (`:403`). Ties the child's life to the GUI with `PR_SET_PDEATHSIG` on Linux (`_pdeathsig_preexec`, `:77`, guarded at `:92`). |
+| `gui_ingest.py` | Build subprocess management, schedules, and `clear_project`; ties a child build to the GUI with Linux `PR_SET_PDEATHSIG`, a Windows Job Object, or a macOS watchdog. |
 | `gui_ops.py` | Maintenance endpoints. |
 | `gui_install.py` | Client connect/disconnect from the GUI. |
 
 The Memory Map is window-owned: closing the window stops the server. There is
 deliberately no headless fallback and no always-on service — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
+
+The map has two deliberately separate contexts: the selected Project controls
+catalog identity, statistics, inspector state, and Pool membership controls;
+the Connected Project owns ordinary Search, Recent notes, and writes. A named
+Pool is the only cross-Project query surface, and it opens member databases
+read-only at query time. This prevents a map selection from silently widening
+or misattributing memory context.
 
 ### Installation and connection
 

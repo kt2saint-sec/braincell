@@ -959,9 +959,11 @@ def opencode_project_config_path(project_root: str | Path) -> Path:
 def _canonical_opencode_entry(
     command: str, args: list[str], env: dict[str, str]
 ) -> dict[str, Any]:
+    # OpenCode's local-server schema takes ``command`` as an argv array; the
+    # server arguments ride in the same array, not a separate ``args`` field.
     return {
         "type": "local",
-        "command": command,
+        "command": [command, *args],
         "enabled": True,
         "environment": dict(env),
     }

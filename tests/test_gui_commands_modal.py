@@ -111,7 +111,8 @@ def modal_state(tmp_path_factory):
         [sys.executable, str(runner), str(page)],
         capture_output=True, text=True, timeout=180,
         env={**os.environ, "QT_QPA_PLATFORM": "offscreen",
-             "QTWEBENGINE_CHROMIUM_FLAGS": "--no-sandbox"},
+             "QTWEBENGINE_CHROMIUM_FLAGS": "--no-sandbox --disable-gpu --disable-gpu-compositing",
+             "LIBGL_ALWAYS_SOFTWARE": "1"},
         check=False,
     )
     assert proc.returncode == 0, f"engine runner failed:\n{proc.stderr[-2000:]}"

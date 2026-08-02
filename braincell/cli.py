@@ -1326,11 +1326,9 @@ def cmd_gui(args: argparse.Namespace) -> None:
         print("Open your app menu and search for “BrainCell Map”.")
         return
     from . import native_shell
-    if not native_shell.native_available():
-        raise RuntimeError(
-            "PySide6/QtWebEngine cannot open a native window in this session. "
-            "Run BrainCell from a graphical desktop session."
-        )
+    unavailable = native_shell.native_unavailable_reason()
+    if unavailable:
+        raise RuntimeError(unavailable)
     if getattr(args, "rotate_token", False):
         from .config import get_gui_token_path
         token_path = get_gui_token_path()
@@ -1361,13 +1359,10 @@ def cmd_start(args: argparse.Namespace) -> None:
 
     root = _validated_project_path(args)
     mode = "project"
-    if not native_shell.native_available():
-        msg = (
-            "BrainCell requires a graphical desktop session with "
-            "PySide6/QtWebEngine available."
-        )
-        print(f"ERROR: {msg}", file=sys.stderr)
-        native_shell.alert(msg)
+    unavailable = native_shell.native_unavailable_reason()
+    if unavailable:
+        print(f"ERROR: {unavailable}", file=sys.stderr)
+        native_shell.alert(unavailable)
         raise SystemExit(1)
     get_project_id(root)
     pre = launch.preflight(root, mode=mode, port=args.port)
@@ -1516,7 +1511,10 @@ def cmd_install(args: argparse.Namespace) -> None:
     if args.client == "codex":
         print("  Codex loads this connection only after this project is trusted.")
 
-    restart = {"claude": "Claude Code", "codex": "Codex", "vscode": "VS Code"}[args.client]
+    restart = {
+        "claude": "Claude Code", "codex": "Codex",
+        "vscode": "VS Code", "opencode": "OpenCode",
+    }[args.client]
     print("\nNext steps:")
     print(f"  1. Restart {restart} so it loads the new MCP server.")
 
@@ -1999,12 +1997,12 @@ def main(argv: list[str] | None = None) -> None:
 
     pi = sub.add_parser(
         "connect", aliases=["install"],
-        help="Connect BrainCell to one project in Codex, Claude, or VS Code.",
+        help="Connect BrainCell to one project in Claude, Codex, VS Code, or OpenCode.",
     )
     pi.add_argument("path", nargs="?", default=".",
                     help="Project path to connect (default: cwd).")
-    pi.add_argument("--client", choices=["claude", "codex", "vscode"], default="claude",
-                    help="Target client (default: Claude).")
+    pi.add_argument("--client", choices=["claude", "codex", "vscode", "opencode"],
+                    default="claude", help="Target client (default: Claude).")
     pi.add_argument("--scope", choices=["local", "project"], default="local",
                     help="Claude scope: local private-project (default) or shareable project .mcp.json.")
     pi.add_argument("--acknowledge-home", action="store_true",
@@ -2020,7 +2018,8 @@ def main(argv: list[str] | None = None) -> None:
         help="Plan or apply Project database, client connection, and optional skills setup.",
     )
     psetup.add_argument("path", nargs="?", default=".", help="Project path (default: cwd).")
-    psetup.add_argument("--client", choices=["claude", "codex", "vscode"], default="claude")
+    psetup.add_argument("--client", choices=["claude", "codex", "vscode", "opencode"],
+                        default="claude")
     psetup.add_argument("--claude-scope", choices=["local", "project"], default="local")
     psetup.add_argument("--with-skills", action="store_true")
     psetup.add_argument("--automatic-pool-recall", metavar="POOL")
@@ -2035,8 +2034,8 @@ def main(argv: list[str] | None = None) -> None:
     pu = sub.add_parser("disconnect", aliases=["uninstall"], help="Disconnect BrainCell from one project client.")
     pu.add_argument("path", nargs="?", default=".",
                     help="Project path (default: cwd).")
-    pu.add_argument("--client", choices=["claude", "codex", "vscode"], default="claude",
-                    help="Client to disconnect (default: Claude).")
+    pu.add_argument("--client", choices=["claude", "codex", "vscode", "opencode"],
+                    default="claude", help="Client to disconnect (default: Claude).")
     pu.add_argument("--scope", choices=["local", "project"], default="local",
                     help="Claude scope to remove (must match the connection scope).")
     pu.add_argument("--acknowledge-home", action="store_true")
