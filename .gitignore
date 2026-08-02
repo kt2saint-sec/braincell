@@ -114,6 +114,10 @@ CLAUDE.md
 # (braincell-mcp-wrapper.sh is a shipped launcher, NOT matched by these.)
 /braincell-*.md
 /braincell-*.html
+# Release-reconciliation audit set (first-pass evidence, reconciliation,
+# plan, generated companion views) — same maintainer-only policy.
+/V1*.md
+/V1*.html
 # CLAUDE.md progress-pointer doc — same "never committed" policy as CLAUDE.md itself.
 /docs/STAGE_LOG.md
 # Internal planning docs (same convention as STAGE_LOG) — a broad `git add docs/`
