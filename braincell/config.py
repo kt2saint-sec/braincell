@@ -174,6 +174,15 @@ def get_db_path(project_id: str) -> Path:
     return get_local_state_dir(project_id) / "braincell.db"
 
 
+def get_maintenance_preferences_path(project_id: str) -> Path:
+    """Return the crash-safe per-Project maintenance-preferences catalog.
+
+    This is intentionally separate from the Project database: it controls a
+    human confirmation preference, never memory content or deletion state.
+    """
+    return get_local_state_dir(project_id) / "maintenance-preferences.json"
+
+
 # ── Workspace-level project registry + families (BrainCell project model) ──────
 
 

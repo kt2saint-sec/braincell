@@ -88,6 +88,13 @@ class _ProjectReassociateBody(BaseModel):
     allow_privileged: bool = False
 
 
+class _MaintenancePreferencesBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    bypass_delete_confirmation: bool
+    acknowledgement: str | None = None
+
+
 # ── App factory ───────────────────────────────────────────────────────────────
 
 def create_app(
@@ -671,6 +678,40 @@ def create_app(
     # ── Write endpoints (only mounted when allow_writes=True) ─────────────────
 
     if allow_writes:
+
+        @app.get("/api/preferences/maintenance")
+        async def api_maintenance_preferences(request: Request) -> dict:  # type: ignore[type-arg]
+            """Read destructive-maintenance confirmation settings for this Project."""
+            from .maintenance_preferences import (
+                MaintenancePreferencesError,
+                load_preferences,
+            )
+
+            project_id = _connected_pool_project(request)
+            try:
+                return load_preferences(project_id)
+            except MaintenancePreferencesError as exc:
+                raise HTTPException(409, str(exc)) from exc
+
+        @app.put("/api/preferences/maintenance")
+        async def api_set_maintenance_preferences(
+            request: Request, body: _MaintenancePreferencesBody
+        ) -> dict:  # type: ignore[type-arg]
+            """Change only the Connected Project's typed-delete bypass setting."""
+            from .maintenance_preferences import (
+                MaintenancePreferencesError,
+                set_bypass_delete_confirmation,
+            )
+
+            project_id = _connected_pool_project(request)
+            try:
+                return set_bypass_delete_confirmation(
+                    project_id,
+                    body.bypass_delete_confirmation,
+                    acknowledgement=body.acknowledgement,
+                )
+            except MaintenancePreferencesError as exc:
+                raise HTTPException(409, str(exc)) from exc
 
         @app.post("/api/pools")
         async def api_pool_membership(

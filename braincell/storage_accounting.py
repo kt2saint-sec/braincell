@@ -16,6 +16,7 @@ Retention discipline (BC-12 / BC-23):
 
 from __future__ import annotations
 
+import shutil
 import sqlite3
 from collections.abc import Sequence
 from pathlib import Path
@@ -156,6 +157,56 @@ def _db_diagnostics(database: Path, project_id: str) -> dict[str, Any]:
         ),
     }
     return diagnostics
+
+
+def _storage_impact(
+    database: Path, diagnostics: dict[str, Any]
+) -> dict[str, Any]:
+    """Report conservative local disk needs without creating a snapshot.
+
+    Snapshot size includes the live database and its WAL.  Compaction is
+    intentionally budgeted at twice that source size so the future workflow
+    has room for a retained same-host copy and temporary SQLite work.  These
+    are disk figures, not a misleading prediction of RAM usage.
+    """
+    wal = diagnostics["wal"]
+    source_bytes = int(wal["db_bytes"]) + int(wal["wal_bytes"])
+    try:
+        usage = shutil.disk_usage(database.parent)
+        filesystem: dict[str, int | None] = {
+            "total_bytes": int(usage.total),
+            "used_bytes": int(usage.used),
+            "free_bytes": int(usage.free),
+        }
+        free_bytes: int | None = int(usage.free)
+    except OSError:
+        filesystem = {"total_bytes": None, "used_bytes": None, "free_bytes": None}
+        free_bytes = None
+
+    snapshot_bytes = source_bytes
+    compaction_bytes = source_bytes * 2
+    return {
+        "filesystem": filesystem,
+        "local_snapshot": {
+            "estimated_retained_bytes": snapshot_bytes,
+            "fits_available_space": (
+                None if free_bytes is None else snapshot_bytes <= free_bytes
+            ),
+        },
+        "compaction": {
+            "conservative_temporary_bytes": compaction_bytes,
+            "fits_available_space": (
+                None if free_bytes is None else compaction_bytes <= free_bytes
+            ),
+            "estimated_reclaimable_bytes": diagnostics["freelist_bytes"],
+        },
+        "memory_estimate_bytes": None,
+        "memory_notice": (
+            "RAM use cannot be reliably estimated from stored bytes; local "
+            "snapshots consume disk space, while SQLite and the operating "
+            "system decide runtime memory use."
+        ),
+    }
 
 
 def referenced_backup_paths(database: Path) -> frozenset[str]:
@@ -327,13 +378,15 @@ def storage_report(
 
     from .project_registry import find_orphans
 
+    diagnostics = _db_diagnostics(database, project_id)
     return {
         "namespace_root": str(root),
         "scanned_roots": [str(item) for item in roots],
         "project_id": project_id,
         "project_database": str(database),
         "project_rows": _row_counts(database),
-        "database_diagnostics": _db_diagnostics(database, project_id),
+        "database_diagnostics": diagnostics,
+        "storage_impact": _storage_impact(database, diagnostics),
         "orphans": find_orphans(),
         "totals": {
             "files": len(entries),

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from collections import namedtuple
 
 import pytest
 
@@ -372,6 +373,42 @@ class TestDatabaseDiagnostics:
         assert diag["page_count"] is None
         assert diag["embedding"]["chunks_embedded"] == 0
         assert diag["wal"]["starved"] is False
+
+    def test_storage_report_includes_conservative_snapshot_and_compaction_impact(
+        self, tmp_path, monkeypatch
+    ):
+        from braincell import storage_accounting
+        from braincell.storage_accounting import storage_report
+
+        project_id, database = _bootstrapped_project(tmp_path)
+        wal = database.parent / (database.name + "-wal")
+        wal.write_bytes(b"w" * 100)
+        DiskUsage = namedtuple("DiskUsage", "total used free")
+        monkeypatch.setattr(
+            storage_accounting.shutil,
+            "disk_usage",
+            lambda _path: DiskUsage(total=10_000, used=9_500, free=500),
+        )
+
+        report = storage_report(project_id)
+
+        impact = report["storage_impact"]
+        source_bytes = database.stat().st_size + 100
+        assert impact["filesystem"] == {
+            "total_bytes": 10_000,
+            "used_bytes": 9_500,
+            "free_bytes": 500,
+        }
+        assert impact["local_snapshot"] == {
+            "estimated_retained_bytes": source_bytes,
+            "fits_available_space": source_bytes <= 500,
+        }
+        assert impact["compaction"]["conservative_temporary_bytes"] == source_bytes * 2
+        assert impact["compaction"]["estimated_reclaimable_bytes"] == (
+            report["database_diagnostics"]["freelist_bytes"]
+        )
+        assert impact["memory_estimate_bytes"] is None
+        assert "cannot be reliably estimated" in impact["memory_notice"]
 
 
 class TestOrphansSurfacedInStorageReport:
