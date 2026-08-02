@@ -9,6 +9,8 @@ Write-gated endpoints mounted by gui.create_app(allow_writes=True):
   POST /api/ops/reflect        LLM-synthesize higher-level notes from clusters
   POST /api/ops/contradictions read-only LLM audit of embedding-close notes
   POST /api/ops/reembed-notes  backfill NULL note embeddings
+  POST /api/ops/hard-prune/plan  evidence-led permanent-cleanup preview
+  POST /api/ops/hard-prune/apply digest-gated cleanup + compaction job
   GET  /api/ops/status         poll the current/last maintenance job
   POST /api/backup             VACUUM INTO snapshot of the opened brain
   GET  /api/memory             list recorded merge operations (memory log)
@@ -91,6 +93,22 @@ class UndoBody(BaseModel):
 
     op_id: int
     project_id: str
+
+
+class HardPrunePlanBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str
+    keep_backups: int | None = None
+    backup_roots: list[str] = []
+    expire_operations_days: int | None = None
+    expire_tombstones_days: int | None = None
+
+
+class HardPruneApplyBody(HardPrunePlanBody):
+    approval_digest: str
+    confirmation_phrase: str | None = None
+    create_local_snapshot: bool = False
 
 
 # ── Background job manager (one maintenance op at a time) ─────────────────────
@@ -298,6 +316,39 @@ def run_reembed_notes(db_path: Path, project_id: str) -> dict | None:
     return {"reembedded": count}
 
 
+def run_hard_prune(body: HardPruneApplyBody) -> dict[str, object]:
+    """Run the digest-gated core workflow with the GUI's 15-second reader wait."""
+    from .storage_accounting import execute_hard_prune
+
+    result = execute_hard_prune(
+        body.project_id,
+        approval_digest=body.approval_digest,
+        confirmation_phrase=body.confirmation_phrase,
+        create_local_snapshot=body.create_local_snapshot,
+        keep_backups=body.keep_backups,
+        backup_roots=[Path(item) for item in body.backup_roots],
+        expire_operations_days=body.expire_operations_days,
+        expire_tombstones_days=body.expire_tombstones_days,
+        wait_for_readers_seconds=15.0,
+        allow_trusted_bypass=True,
+    )
+    print(
+        "Hard-prune complete: "
+        f"{result['retention']['notes_purged']} tombstoned notes, "  # type: ignore[index]
+        f"{result['retention']['operations_expired']} operation rows, "  # type: ignore[index]
+        f"{len(result['retention']['removed_backups'])} backup files."  # type: ignore[index]
+    )
+    compaction = result["compaction"]  # type: ignore[assignment]
+    if compaction["status"] == "reader-blocked":  # type: ignore[index]
+        print(
+            "Compaction is pending: close Memory Map/MCP clients and retry a "
+            "future hard-prune when no live reader holds the WAL."
+        )
+    elif compaction["status"] != "compacted":  # type: ignore[index]
+        print(f"Compaction did not complete: {compaction.get('detail', compaction['status'])}")  # type: ignore[union-attr,index]
+    return result
+
+
 def _run_locked(
     db_path: Path, operation: str, worker: Callable[[], dict | None],
 ) -> dict | None:
@@ -390,6 +441,32 @@ def mount_ops_api(
                 lambda: run_reembed_notes(db_path, body.project_id),
             ),
         )
+
+    @app.post("/api/ops/hard-prune/plan")
+    async def api_hard_prune_plan(body: HardPrunePlanBody) -> dict:  # type: ignore[type-arg]
+        """Preview only the connected Project's evidence-backed cleanup plan."""
+        from .maintenance_preferences import load_preferences
+        from .storage_accounting import RetentionRefusedError, hard_prune_plan
+
+        _require_project(body.project_id)
+        try:
+            plan = hard_prune_plan(
+                body.project_id,
+                keep_backups=body.keep_backups,
+                backup_roots=[Path(item) for item in body.backup_roots],
+                expire_operations_days=body.expire_operations_days,
+                expire_tombstones_days=body.expire_tombstones_days,
+            )
+            plan["preferences"] = load_preferences(body.project_id)
+            return plan
+        except (RetentionRefusedError, ValueError) as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.post("/api/ops/hard-prune/apply")
+    async def api_hard_prune_apply(body: HardPruneApplyBody) -> dict:  # type: ignore[type-arg]
+        """Start one digest-gated hard-prune under the shared GUI mutation gate."""
+        _require_project(body.project_id)
+        return await _start("hard-prune", lambda: run_hard_prune(body))
 
     @app.get("/api/ops/status")
     async def api_ops_status() -> dict:  # type: ignore[type-arg]

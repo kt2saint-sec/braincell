@@ -55,8 +55,20 @@ def test_maintenance_panel_stays_connected_project_scoped(tmp_path):
             }
           };
           const fetched=[]; const put=[];
+          const posted=[];
           window.apiFetch=async path=>{fetched.push(path);return path==='/api/maintenance/overview'?overview:null;};
           window.apiPut=async (path,body)=>{put.push([path,body]);return {bypass_delete_confirmation:true};};
+          window.apiPost=async (path,body)=>{
+            posted.push([path,body]);
+            if(path==='/api/ops/hard-prune/plan') return {
+              approval_digest:'digest',candidate_count:1,
+              selection:{expired_tombstone_note_ids:[7],expired_operation_ids:[],unprotected_backup_paths:[]},
+              preferences:{bypass_delete_confirmation:false},
+              storage_impact:overview.storage_impact
+            };
+            if(path==='/api/ops/hard-prune/apply') return {started:true};
+            return null;
+          };
 
           openDock(nodes[0]);
           const card=document.getElementById('dr-maintenance-card');
@@ -73,6 +85,14 @@ def test_maintenance_panel_stays_connected_project_scoped(tmp_path):
           out.enable_ready=!document.getElementById('mt-enable').disabled;
           await enableMaintenanceBypass();
           out.put=put;
+          document.getElementById('hp-keep').value='0';
+          await analyzeHardPrune();
+          out.review_digest=document.getElementById('hp-review').textContent.includes('digest');
+          document.getElementById('hp-typed').value='DELETE WITHOUT LOCAL RECOVERY SNAPSHOT';
+          syncHardPruneApply();
+          out.apply_ready=!document.getElementById('hp-apply').disabled;
+          await startHardPrune();
+          out.posted=posted;
 
           closeModal(); activeProjectId='01SIBLING'; openDock(nodes[1]);
           out.sibling_card_hidden=document.getElementById('dr-maintenance-card').style.display==='none';
@@ -114,4 +134,23 @@ def test_maintenance_panel_stays_connected_project_scoped(tmp_path):
             ),
         },
     ]]
+    assert result["review_digest"] is True
+    assert result["apply_ready"] is True
+    assert result["posted"] == [
+        ["/api/ops/hard-prune/plan", {
+            "project_id": "01CONNECTED",
+            "keep_backups": 0,
+            "expire_operations_days": None,
+            "expire_tombstones_days": None,
+        }],
+        ["/api/ops/hard-prune/apply", {
+            "project_id": "01CONNECTED",
+            "keep_backups": 0,
+            "expire_operations_days": None,
+            "expire_tombstones_days": None,
+            "approval_digest": "digest",
+            "confirmation_phrase": "DELETE WITHOUT LOCAL RECOVERY SNAPSHOT",
+            "create_local_snapshot": False,
+        }],
+    ]
     assert result["sibling_card_hidden"] is True

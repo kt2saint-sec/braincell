@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from braincell.cli import main
 from braincell.config import get_db_path, get_project_id
 from braincell.project_registry import register_path
@@ -59,3 +61,33 @@ def test_storage_report_is_silent_when_wal_is_healthy(tmp_path, capsys):
     main(["storage", str(root)])
     err = capsys.readouterr().err
     assert "WAL" not in err
+
+
+def test_hard_prune_cli_requires_preview_digest_and_final_phrase(tmp_path, capsys):
+    root = tmp_path / "project"
+    root.mkdir()
+    project_id = get_project_id(root)
+    database = get_db_path(project_id)
+    SqliteStore(database).assert_schema_version()
+    backup = database.parent / "braincell-backup-20200101.db"
+    backup.write_bytes(b"eligible")
+
+    with pytest.raises(SystemExit, match="reviewed plan changed"):
+        main([
+            "storage", str(root), "--hard-prune", "--keep-backups", "0", "--apply",
+            "--confirm", "DELETE WITHOUT LOCAL RECOVERY SNAPSHOT",
+        ])
+    assert backup.exists()
+
+    main(["storage", str(root), "--hard-prune", "--keep-backups", "0"])
+    preview = json.loads(capsys.readouterr().out)
+    assert preview["selection"]["unprotected_backup_paths"] == [str(backup)]
+
+    main([
+        "storage", str(root), "--hard-prune", "--keep-backups", "0", "--apply",
+        "--approve", preview["approval_digest"],
+        "--confirm", "DELETE WITHOUT LOCAL RECOVERY SNAPSHOT",
+    ])
+    result = json.loads(capsys.readouterr().out)
+    assert result["applied"] is True
+    assert not backup.exists()

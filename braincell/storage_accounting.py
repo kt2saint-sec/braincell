@@ -16,18 +16,28 @@ Retention discipline (BC-12 / BC-23):
 
 from __future__ import annotations
 
+import hashlib
+import json
 import shutil
 import sqlite3
+import time
+import uuid
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from . import config
-from .catalog_io import mutation_lock
+from .catalog_io import atomic_write_json, catalog_lock, mutation_lock
 
 
 class RetentionRefusedError(RuntimeError):
     """Fail-closed refusal: retention would touch protected or unprovable state."""
+
+
+DELETE_CONFIRMATION = "DELETE"
+DELETE_WITHOUT_SNAPSHOT_CONFIRMATION = "DELETE WITHOUT LOCAL RECOVERY SNAPSHOT"
+_HARD_PRUNE_AUDIT_VERSION = 1
 
 
 def _category(path: Path) -> str:
@@ -414,6 +424,103 @@ def storage_report(
     }
 
 
+def _hard_prune_selection(report: dict[str, Any]) -> dict[str, list[Any]]:
+    """Extract the only candidate classes an initial hard-prune may touch."""
+    retention = report["retention_plan"]
+    history = retention["history"]
+    return {
+        "expired_tombstone_note_ids": list(history["tombstoned_notes"]),
+        "expired_operation_ids": [item["op_id"] for item in history["operations"]],
+        "unprotected_backup_paths": [item["path"] for item in retention["candidates"]],
+    }
+
+
+def _hard_prune_digest_payload(
+    project_id: str,
+    selection: dict[str, list[Any]],
+    *,
+    keep_backups: int | None,
+    expire_operations_days: int | None,
+    expire_tombstones_days: int | None,
+) -> dict[str, Any]:
+    """Canonical, stable content that the final approval binds to."""
+    return {
+        "version": 1,
+        "project_id": project_id,
+        "policy": {
+            "keep_backups": keep_backups,
+            "expire_operations_days": expire_operations_days,
+            "expire_tombstones_days": expire_tombstones_days,
+        },
+        "selection": selection,
+    }
+
+
+def hard_prune_plan(
+    project_id: str,
+    *,
+    keep_backups: int | None = None,
+    backup_roots: Sequence[Path] = (),
+    expire_operations_days: int | None = None,
+    expire_tombstones_days: int | None = None,
+) -> dict[str, Any]:
+    """Create an evidence-led, read-only hard-prune plan and approval digest.
+
+    The planner deliberately delegates eligibility to the existing retention
+    rules: only aged tombstones, old operation history, and unprotected backup
+    files can appear. Active/superseded notes, documents, chunks, semantic
+    similarity, and LLM opinions have no route into this selection.
+    """
+    report = storage_report(
+        project_id,
+        keep_backups=keep_backups,
+        backup_roots=backup_roots,
+        expire_operations_days=expire_operations_days,
+        expire_tombstones_days=expire_tombstones_days,
+    )
+    selection = _hard_prune_selection(report)
+    payload = _hard_prune_digest_payload(
+        project_id,
+        selection,
+        keep_backups=keep_backups,
+        expire_operations_days=expire_operations_days,
+        expire_tombstones_days=expire_tombstones_days,
+    )
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    digest = hashlib.sha256(encoded).hexdigest()
+    retention = report["retention_plan"]
+    return {
+        "dry_run": True,
+        "project_id": project_id,
+        "approval_digest": digest,
+        "approval_payload": payload,
+        "selection": selection,
+        "candidate_count": sum(len(items) for items in selection.values()),
+        "evidence": {
+            "expired_tombstones": {
+                "rule": "explicit tombstone marker + configured age + no undo reference",
+                "note_ids": selection["expired_tombstone_note_ids"],
+            },
+            "expired_operations": {
+                "rule": "operation history older than configured age",
+                "operation_ids": selection["expired_operation_ids"],
+            },
+            "unprotected_backups": {
+                "rule": "backup retention count + no undo-history reference",
+                "paths": selection["unprotected_backup_paths"],
+            },
+            "excluded": {
+                "undo_referenced_backups": retention["protected"],
+                "undo_referenced_tombstone_note_ids": retention["history"]["protected_notes"],
+                "active_superseded_documents_and_chunks": "never eligible",
+                "semantic_or_llm_findings": "informational only; never deletion authority",
+            },
+        },
+        "storage_impact": report["storage_impact"],
+        "retention_plan": retention,
+    }
+
+
 def _apply_history_expiry(database: Path, history_plan: dict[str, Any]) -> dict[str, int]:
     """Delete the planned history rows in one immediate transaction.
 
@@ -460,6 +567,41 @@ def _apply_history_expiry(database: Path, history_plan: dict[str, Any]) -> dict[
     return {"operations_expired": len(op_ids), "notes_purged": len(note_ids)}
 
 
+def _execute_retention_plan(
+    database: Path, plan: dict[str, Any]
+) -> dict[str, Any]:
+    """Execute one already-locked, freshly planned retention selection.
+
+    SQLite history expiry is one transaction. Backup files cannot share that
+    transaction, so they are deleted only after re-checking the current undo
+    references. Callers record a durable maintenance audit before entering
+    this helper, which makes a sudden process death visible as an incomplete
+    attempt rather than an invisible cleanup.
+    """
+    history_result = _apply_history_expiry(database, plan["history"])
+    referenced = referenced_backup_paths(database)
+    removed_files: list[str] = []
+    removed_bytes = 0
+    for item in plan["candidates"]:
+        path = Path(item["path"])
+        if str(path) in referenced or _category(path) != "backups":
+            raise RetentionRefusedError(
+                f"retention apply refused at {path}: the file is protected "
+                "or is not a backup snapshot; no further deletion was "
+                "performed"
+            )
+        if path.is_file():
+            path.unlink()
+            removed_files.append(str(path))
+            removed_bytes += int(item["bytes"])
+    return {
+        "removed_backups": removed_files,
+        "removed_bytes": removed_bytes,
+        "operations_expired": history_result["operations_expired"],
+        "notes_purged": history_result["notes_purged"],
+    }
+
+
 def apply_retention(
     project_id: str,
     *,
@@ -498,32 +640,275 @@ def apply_retention(
             expire_tombstones_days=expire_tombstones_days,
         )
         plan = report["retention_plan"]
-        history_result = _apply_history_expiry(database, plan["history"])
-
-        referenced = referenced_backup_paths(database)
-        removed_files: list[str] = []
-        removed_bytes = 0
-        for item in plan["candidates"]:
-            path = Path(item["path"])
-            if str(path) in referenced or _category(path) != "backups":
-                raise RetentionRefusedError(
-                    f"retention apply refused at {path}: the file is protected "
-                    "or is not a backup snapshot; no further deletion was "
-                    "performed"
-                )
-            if path.is_file():
-                path.unlink()
-                removed_files.append(str(path))
-                removed_bytes += int(item["bytes"])
+        result = _execute_retention_plan(database, plan)
 
     return {
         "applied": True,
         "project_id": project_id,
-        "removed_backups": removed_files,
-        "removed_bytes": removed_bytes,
-        "operations_expired": history_result["operations_expired"],
-        "notes_purged": history_result["notes_purged"],
+        **result,
         "protected": plan["protected"],
         "protected_notes": plan["history"]["protected_notes"],
         "plan": report,
+    }
+
+
+def _load_maintenance_audit_for_mutation(path: Path) -> dict[str, list[dict[str, Any]]]:
+    if not path.exists():
+        return {"events": []}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise RetentionRefusedError(
+            "hard-prune refused: maintenance audit is unreadable; cannot record "
+            "an irreversible action"
+        ) from exc
+    if (
+        not isinstance(data, dict)
+        or set(data) != {"events"}
+        or not isinstance(data["events"], list)
+        or not all(isinstance(event, dict) for event in data["events"])
+    ):
+        raise RetentionRefusedError(
+            "hard-prune refused: maintenance audit is invalid; cannot record "
+            "an irreversible action"
+        )
+    return {"events": list(data["events"])}
+
+
+def _append_maintenance_audit(project_id: str, event: dict[str, Any]) -> None:
+    """Durably append one lifecycle event before/after irreversible work."""
+    path = config.get_maintenance_audit_path(project_id)
+    with catalog_lock(path):
+        audit = _load_maintenance_audit_for_mutation(path)
+        audit["events"].append(event)
+        atomic_write_json(path, audit, sort_keys=True)
+
+
+def maintenance_audit(project_id: str) -> list[dict[str, Any]]:
+    """Read the Project's durable hard-prune audit without creating it."""
+    return _load_maintenance_audit_for_mutation(
+        config.get_maintenance_audit_path(project_id)
+    )["events"]
+
+
+def _create_local_recovery_snapshot(database: Path, run_id: str) -> Path:
+    """Create and validate an optional same-host recovery copy before deletion."""
+    destination = database.parent / f"braincell-hard-prune-backup-{run_id}.db"
+    connection = sqlite3.connect(str(database))
+    try:
+        connection.execute("VACUUM INTO ?", (str(destination),))
+    finally:
+        connection.close()
+    _verify_database_integrity(destination)
+    return destination
+
+
+def _verify_database_integrity(database: Path) -> None:
+    """Fail loudly when SQLite cannot prove the resulting database is sound."""
+    connection = _readonly_connection(database)
+    try:
+        integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
+        foreign_keys = connection.execute("PRAGMA foreign_key_check").fetchall()
+    finally:
+        connection.close()
+    if integrity != "ok" or foreign_keys:
+        raise RetentionRefusedError(
+            f"SQLite integrity check failed for {database}: {integrity}; "
+            f"foreign-key rows={len(foreign_keys)}"
+        )
+
+
+def _checkpoint_and_compact(
+    database: Path, *, wait_for_readers_seconds: float
+) -> dict[str, Any]:
+    """Try WAL truncate then VACUUM, waiting only for the configured bound."""
+    deadline = time.monotonic() + max(0.0, wait_for_readers_seconds)
+    last_error: str | None = None
+    while True:
+        connection = sqlite3.connect(str(database), timeout=0)
+        try:
+            busy, _log_frames, _checkpointed = connection.execute(
+                "PRAGMA wal_checkpoint(TRUNCATE)"
+            ).fetchone()
+        except sqlite3.Error as exc:
+            busy = 1
+            last_error = str(exc)
+        finally:
+            connection.close()
+        if not busy:
+            break
+        if time.monotonic() >= deadline:
+            return {
+                "status": "reader-blocked",
+                "waited_seconds": max(0.0, wait_for_readers_seconds),
+                "detail": last_error
+                or "A live reader prevented WAL TRUNCATE; close Memory Map/MCP clients and retry compaction.",
+            }
+        time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
+
+    try:
+        connection = sqlite3.connect(str(database), timeout=0)
+        try:
+            connection.execute("VACUUM")
+        finally:
+            connection.close()
+    except sqlite3.Error as exc:
+        return {
+            "status": "vacuum-failed",
+            "detail": str(exc),
+        }
+    return {"status": "compacted"}
+
+
+def _require_hard_prune_confirmation(
+    project_id: str,
+    *,
+    create_local_snapshot: bool,
+    confirmation_phrase: str | None,
+    allow_trusted_bypass: bool,
+) -> None:
+    """Enforce the approved confirmation policy at the final executor edge."""
+    if allow_trusted_bypass:
+        from .maintenance_preferences import load_preferences
+
+        if load_preferences(project_id)["bypass_delete_confirmation"]:
+            return
+    expected = (
+        DELETE_CONFIRMATION
+        if create_local_snapshot
+        else DELETE_WITHOUT_SNAPSHOT_CONFIRMATION
+    )
+    if confirmation_phrase != expected:
+        raise RetentionRefusedError(
+            f"hard-prune refused: type the exact confirmation phrase {expected!r}"
+        )
+
+
+def execute_hard_prune(
+    project_id: str,
+    *,
+    approval_digest: str,
+    confirmation_phrase: str | None,
+    create_local_snapshot: bool,
+    keep_backups: int | None = None,
+    backup_roots: Sequence[Path] = (),
+    expire_operations_days: int | None = None,
+    expire_tombstones_days: int | None = None,
+    wait_for_readers_seconds: float = 0.0,
+    allow_trusted_bypass: bool = False,
+) -> dict[str, Any]:
+    """Execute one approved initial hard-prune and best-effort compaction.
+
+    The plan is recomputed under the database mutation lock and must have the
+    exact digest the human reviewed. A same-host snapshot is optional, but a
+    failed requested snapshot aborts before deletion so the person may choose
+    the stronger unsnapshotted confirmation deliberately. Compaction failure
+    never rolls back already committed retention; the audit states that result
+    plainly and the database is integrity-checked either way.
+    """
+    if (
+        keep_backups is None
+        and expire_operations_days is None
+        and expire_tombstones_days is None
+    ):
+        raise RetentionRefusedError(
+            "hard-prune refused: configure at least one retention policy before review"
+        )
+    database = config.get_db_path(project_id)
+    run_id = uuid.uuid4().hex
+    planned_snapshot_path = (
+        str(database.parent / f"braincell-hard-prune-backup-{run_id}.db")
+        if create_local_snapshot
+        else None
+    )
+    with mutation_lock(database, operation="hard-prune"):
+        plan = hard_prune_plan(
+            project_id,
+            keep_backups=keep_backups,
+            backup_roots=backup_roots,
+            expire_operations_days=expire_operations_days,
+            expire_tombstones_days=expire_tombstones_days,
+        )
+        if plan["approval_digest"] != approval_digest:
+            raise RetentionRefusedError(
+                "hard-prune refused: reviewed plan changed; analyze again and approve "
+                "the new digest"
+            )
+        if plan["candidate_count"] == 0:
+            raise RetentionRefusedError(
+                "hard-prune refused: the approved plan has no eligible candidates"
+            )
+        _require_hard_prune_confirmation(
+            project_id,
+            create_local_snapshot=create_local_snapshot,
+            confirmation_phrase=confirmation_phrase,
+            allow_trusted_bypass=allow_trusted_bypass,
+        )
+        impact = plan["storage_impact"]
+        if create_local_snapshot and impact["local_snapshot"]["fits_available_space"] is False:
+            raise RetentionRefusedError(
+                "hard-prune refused: local disk space is insufficient for the requested "
+                "recovery snapshot; retry without it only with the stronger confirmation"
+            )
+
+        started = {
+            "version": _HARD_PRUNE_AUDIT_VERSION,
+            "run_id": run_id,
+            "event": "started",
+            "at": datetime.now(UTC).isoformat(),
+            "approval_digest": approval_digest,
+            "selection": plan["selection"],
+            "local_snapshot_requested": create_local_snapshot,
+            "snapshot_path": planned_snapshot_path,
+        }
+        _append_maintenance_audit(project_id, started)
+        snapshot_path = planned_snapshot_path
+        try:
+            if create_local_snapshot:
+                snapshot_path = str(_create_local_recovery_snapshot(database, run_id))
+            retention_result = _execute_retention_plan(
+                database, plan["retention_plan"])
+            compact = (
+                _checkpoint_and_compact(
+                    database, wait_for_readers_seconds=wait_for_readers_seconds
+                )
+                if impact["compaction"]["fits_available_space"] is not False
+                else {
+                    "status": "skipped-low-disk",
+                    "detail": "Conservative temporary compaction space is unavailable.",
+                }
+            )
+            _verify_database_integrity(database)
+        except Exception as exc:
+            _append_maintenance_audit(project_id, {
+                "version": _HARD_PRUNE_AUDIT_VERSION,
+                "run_id": run_id,
+                "event": "failed",
+                "at": datetime.now(UTC).isoformat(),
+                "error": repr(exc),
+                "snapshot_path": snapshot_path,
+            })
+            raise
+
+        outcome = {
+            "version": _HARD_PRUNE_AUDIT_VERSION,
+            "run_id": run_id,
+            "event": "completed",
+            "at": datetime.now(UTC).isoformat(),
+            "snapshot_path": snapshot_path,
+            "retention": retention_result,
+            "compaction": compact,
+            "integrity": "ok",
+        }
+        _append_maintenance_audit(project_id, outcome)
+    return {
+        "applied": True,
+        "project_id": project_id,
+        "approval_digest": approval_digest,
+        "snapshot_path": snapshot_path,
+        "selection": plan["selection"],
+        "retention": retention_result,
+        "compaction": compact,
+        "integrity": "ok",
+        "audit_run_id": run_id,
     }

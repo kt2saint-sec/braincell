@@ -651,6 +651,8 @@ def cmd_storage(args: argparse.Namespace) -> None:
     from .storage_accounting import (
         RetentionRefusedError,
         apply_retention,
+        execute_hard_prune,
+        hard_prune_plan,
         storage_report,
     )
 
@@ -660,6 +662,25 @@ def cmd_storage(args: argparse.Namespace) -> None:
         expire_operations_days=args.expire_operations_days,
         expire_tombstones_days=args.expire_tombstones_days,
     )
+    if args.hard_prune:
+        if args.apply:
+            try:
+                result = execute_hard_prune(
+                    project_id,
+                    approval_digest=args.approve or "",
+                    confirmation_phrase=args.confirm,
+                    create_local_snapshot=args.local_recovery_snapshot,
+                    wait_for_readers_seconds=args.wait_for_readers_seconds,
+                    **retention_kwargs,
+                )
+            except (RetentionRefusedError, MutationBusyError) as exc:
+                raise SystemExit(f"braincell storage: {exc}") from exc
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return
+        plan = hard_prune_plan(project_id, **retention_kwargs)
+        print(json.dumps(plan, indent=2, sort_keys=True))
+        return
+
     if args.apply:
         try:
             result = apply_retention(project_id, **retention_kwargs)
@@ -2220,6 +2241,45 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Execute the printed plan (refused with no retention option "
              "configured; undo-referenced snapshots are never deleted).",
+    )
+    pstorage.add_argument(
+        "--hard-prune",
+        action="store_true",
+        help=(
+            "Use the digest-gated permanent workflow for only eligible expired "
+            "tombstones, old operation history, and unprotected backups. "
+            "Preview first; with --apply requires --approve DIGEST and the "
+            "exact --confirm phrase."
+        ),
+    )
+    pstorage.add_argument(
+        "--approve",
+        help="Exact approval digest printed by a preceding --hard-prune preview.",
+    )
+    pstorage.add_argument(
+        "--confirm",
+        help=(
+            "Required final phrase for --hard-prune --apply: DELETE with a "
+            "requested snapshot, or DELETE WITHOUT LOCAL RECOVERY SNAPSHOT without one."
+        ),
+    )
+    pstorage.add_argument(
+        "--local-recovery-snapshot",
+        action="store_true",
+        help=(
+            "Request an optional same-host recovery copy before hard-prune. "
+            "If it cannot be created, nothing is deleted; retry without it only "
+            "with the stronger confirmation phrase."
+        ),
+    )
+    pstorage.add_argument(
+        "--wait-for-readers-seconds",
+        type=float,
+        default=0.0,
+        help=(
+            "Bounded wait for WAL TRUNCATE before compaction (default: 0 for CLI). "
+            "A live reader is reported, never forced closed."
+        ),
     )
     pstorage.add_argument(
         "--list-orphans",

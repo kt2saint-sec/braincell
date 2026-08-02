@@ -1482,8 +1482,16 @@ async function openMaintenanceReview(){
         <div class="maint-metric"><b>${esc(maintenanceBytes(compact.estimated_reclaimable_bytes))}</b><span>SQLite reclaimable estimate</span></div>
       </div>
       <p>${esc(impact.memory_notice||"Runtime memory is not estimated.")}</p></div></div>
-    <div class="maint-step"><span class="maint-num">2</span><div><h3>Review candidates</h3><p>Coming next: visible proof for eligible stale memory. Semantic or LLM suggestions will require your decision and cannot authorize deletion on their own.</p></div></div>
-    <div class="maint-step"><span class="maint-num">3</span><div><h3>Confirm and run</h3><p>Coming next: a digest-checked final Apply step. A local snapshot will be optional; no snapshot never means no review.</p></div></div>
+    <div class="maint-step"><span class="maint-num">2</span><div style="min-width:0"><h3>Review candidates</h3><p>Choose at least one explicit age/count policy, then analyze. Semantic or LLM suggestions never authorize deletion.</p>
+      <div class="maint-metrics" style="margin-top:8px">
+        <label class="maint-metric"><span>keep newest backups</span><input class="mo-input" id="hp-keep" type="number" min="0" placeholder="off" style="margin-top:5px;padding:5px 7px"></label>
+        <label class="maint-metric"><span>expire operation days</span><input class="mo-input" id="hp-ops-days" type="number" min="0" placeholder="off" style="margin-top:5px;padding:5px 7px"></label>
+        <label class="maint-metric"><span>expire tombstone days</span><input class="mo-input" id="hp-tomb-days" type="number" min="0" placeholder="off" style="margin-top:5px;padding:5px 7px"></label>
+        <div class="maint-metric"><b>Project only</b><span>documents, chunks, active and superseded notes are excluded</span></div>
+      </div>
+      <div style="margin-top:9px"><button class="btn" ${writable?"":'disabled title="read-only: launch with --allow-writes"'} onclick="analyzeHardPrune()">Analyze candidates</button></div>
+      <div id="hp-review" class="maint-empty">No candidate analysis yet.</div></div></div>
+    <div class="maint-step"><span class="maint-num">3</span><div style="min-width:0"><h3>Confirm and run</h3><p>Apply stays unavailable until the current reviewed digest and final confirmation are present. A local snapshot is optional; no snapshot never means no review.</p><div id="hp-confirm" class="maint-empty">Analyze eligible candidates first.</div><div id="cmd-op-status" style="font-size:12px;color:var(--gold-h);margin-top:8px"></div><div class="joblog" id="cmd-op-log" style="display:none"></div></div></div>
     <div class="maint-warning"><b>Trust verified maintenance is serious.</b><br>It only skips typing <code>DELETE</code> in a future run. It never skips review, proof, approval digest, final Apply, snapshot choice, or execution safeguards. It does not authorize unattended LLM deletion.</div>
     <label class="maint-setting"><input type="checkbox" id="mt-bypass" data-trusted="${trusted?"true":"false"}" ${trusted?"checked":""} ${writable?"":'disabled title="read-only: launch with --allow-writes"'} onchange="maintenanceBypassToggled()"><span>Trust verified maintenance for this Connected Project<small>${trusted?"Enabled: typing DELETE will be skipped only after all other future safeguards.":"Off by default: typing DELETE will remain required for future permanent cleanup."}</small></span></label>
     <div id="mt-setting-action"></div>`;
@@ -1524,6 +1532,91 @@ async function disableMaintenanceBypass(){
     toast("Typed DELETE will remain required");
     await openMaintenanceReview();
   }catch(err){toast(`Could not change trust bypass: ${err.message}`,"err");}
+}
+
+let _hardPrunePlan=null,_hardPruneTrusted=false;
+function hardPruneNumber(id){
+  const raw=((document.getElementById(id)||{}).value||"").trim();
+  if(!raw)return null;
+  const value=Number(raw);
+  return Number.isInteger(value)&&value>=0?value:null;
+}
+function hardPrunePolicy(){
+  return {
+    project_id:seedProjectId,
+    keep_backups:hardPruneNumber("hp-keep"),
+    expire_operations_days:hardPruneNumber("hp-ops-days"),
+    expire_tombstones_days:hardPruneNumber("hp-tomb-days"),
+  };
+}
+function hardPruneConfirmationPhrase(){
+  return (document.getElementById("hp-snapshot")||{}).checked
+    ?"DELETE":"DELETE WITHOUT LOCAL RECOVERY SNAPSHOT";
+}
+function renderHardPruneConfirmation(){
+  const box=document.getElementById("hp-confirm");
+  if(!box||!_hardPrunePlan)return;
+  const existingSnapshot=document.getElementById("hp-snapshot");
+  const snapshotChecked=!!(existingSnapshot&&existingSnapshot.checked);
+  const count=_hardPrunePlan.candidate_count||0;
+  if(!count){box.innerHTML=`<div class="maint-empty">No eligible candidates under this policy. Nothing can be applied.</div>`;return;}
+  const snapshot=_hardPrunePlan.storage_impact.local_snapshot||{};
+  const snapshotSpace=snapshot.fits_available_space===false
+    ?`<div class="maint-warning">This device does not currently have the estimated local disk space for a retained snapshot. You may proceed without one only with the stronger confirmation phrase.</div>`:"";
+  const phrase=snapshotChecked?"DELETE":"DELETE WITHOUT LOCAL RECOVERY SNAPSHOT";
+  const typed=_hardPruneTrusted
+    ?`<div class="warn-note">Trust verified maintenance is enabled for this Connected Project. Review, proof, this digest, final Apply, and execution safeguards still apply.</div>`
+    :`<div class="maint-ack"><div class="mo-label">Type this exact phrase</div><code id="hp-phrase">${esc(phrase)}</code><input class="mo-input" id="hp-typed" autocomplete="off" oninput="syncHardPruneApply()"></div>`;
+  box.innerHTML=`<div class="maint-ack"><label class="maint-setting"><input type="checkbox" id="hp-snapshot" ${snapshotChecked?"checked":""} onchange="renderHardPruneConfirmation()"><span>Create an optional local recovery snapshot<small>It uses about ${esc(maintenanceBytes(snapshot.estimated_retained_bytes))} of local disk. It is a same-host copy, not a guaranteed backup.</small></span></label>${snapshotSpace}${typed}<div style="margin-top:9px"><button class="btn danger" id="hp-apply" disabled onclick="startHardPrune()">Apply reviewed cleanup</button></div></div>`;
+  syncHardPruneApply();
+}
+function syncHardPruneApply(){
+  const button=document.getElementById("hp-apply");
+  if(!button)return;
+  if(_hardPruneTrusted){button.disabled=false;return;}
+  const input=document.getElementById("hp-typed");
+  button.disabled=!input||input.value!==hardPruneConfirmationPhrase();
+}
+async function analyzeHardPrune(){
+  if(!requireWrites())return;
+  const policy=hardPrunePolicy();
+  if(policy.keep_backups===null&&policy.expire_operations_days===null&&policy.expire_tombstones_days===null){toast("Set at least one retention policy before analysis","err");return;}
+  const review=document.getElementById("hp-review");
+  if(review)review.textContent="Analyzing eligible stale state…";
+  try{
+    const plan=await apiPost("/api/ops/hard-prune/plan",policy);
+    _hardPrunePlan=plan;
+    _hardPruneTrusted=!!((plan.preferences||{}).bypass_delete_confirmation);
+    const selection=plan.selection||{};
+    const noteIds=(selection.expired_tombstone_note_ids||[]).map(Number).join(", ")||"none";
+    const opIds=(selection.expired_operation_ids||[]).map(Number).join(", ")||"none";
+    const backupNames=(selection.unprotected_backup_paths||[]).map(path=>String(path).split("/").pop()).join(", ")||"none";
+    if(review)review.innerHTML=`<div class="note"><div class="k">Reviewed digest</div><div class="c"><code>${esc(plan.approval_digest)}</code></div><div class="m">${Number(plan.candidate_count||0)} eligible: ${Number((selection.expired_tombstone_note_ids||[]).length)} tombstones, ${Number((selection.expired_operation_ids||[]).length)} operation rows, ${Number((selection.unprotected_backup_paths||[]).length)} backups.</div><div class="m">Tombstone IDs: ${esc(noteIds)} · operation IDs: ${esc(opIds)} · backups: ${esc(backupNames)}</div><div class="m">Proof: explicit tombstone marker + age, operation age, or unprotected backup retention. Protected undo history is excluded.</div></div>`;
+    renderHardPruneConfirmation();
+  }catch(err){
+    _hardPrunePlan=null;
+    if(review)review.innerHTML=`<div class="maint-warning">Analysis failed: ${esc(err.message)}</div>`;
+    toast(`Hard-prune analysis failed: ${err.message}`,"err");
+  }
+}
+async function startHardPrune(){
+  if(!_hardPrunePlan||!requireWrites())return;
+  const snapshot=!!(document.getElementById("hp-snapshot")||{}).checked;
+  const typed=document.getElementById("hp-typed");
+  const phrase=_hardPruneTrusted?null:(typed?typed.value:null);
+  if(!_hardPruneTrusted&&phrase!==hardPruneConfirmationPhrase())return;
+  const policy=hardPrunePolicy();
+  try{
+    await apiPost("/api/ops/hard-prune/apply",{
+      ...policy,
+      approval_digest:_hardPrunePlan.approval_digest,
+      confirmation_phrase:phrase,
+      create_local_snapshot:snapshot,
+    });
+    const button=document.getElementById("hp-apply");if(button)button.disabled=true;
+    toast("Hard-prune started — the map will wait briefly for live readers before compaction");
+    opsWatch();
+  }catch(err){toast(`Hard-prune failed to start: ${err.message}`,"err");}
 }
 /* A viewed Project can be read-only. The write endpoints act on the connected
    store only, so managing another Project from

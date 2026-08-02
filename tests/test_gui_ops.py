@@ -99,6 +99,8 @@ class TestOpsGating:
                 ("/api/ops/reflect", {"project_id": "X"}),
                 ("/api/ops/contradictions", {"project_id": "X"}),
                 ("/api/ops/reembed-notes", {"project_id": "X"}),
+                ("/api/ops/hard-prune/plan", {"project_id": "X"}),
+                ("/api/ops/hard-prune/apply", {"project_id": "X", "approval_digest": "x"}),
                 ("/api/backup", {}),
                 ("/api/memory/undo", {"op_id": 1, "project_id": "X"}),
             ):
@@ -109,8 +111,12 @@ class TestOpsGating:
     def test_unknown_project_404(self, tmp_path):
         with TestClient(_app(tmp_path)) as client:
             for path in ("/api/ops/consolidate", "/api/ops/reflect",
-                         "/api/ops/contradictions", "/api/ops/reembed-notes"):
-                r = client.post(path, json={"project_id": "01NOPE"})
+                         "/api/ops/contradictions", "/api/ops/reembed-notes",
+                         "/api/ops/hard-prune/plan", "/api/ops/hard-prune/apply"):
+                body = {"project_id": "01NOPE"}
+                if path.endswith("/apply"):
+                    body["approval_digest"] = "required-before-scope-check"
+                r = client.post(path, json=body)
                 assert r.status_code == 404, path
             assert client.get("/api/memory?project_id=01NOPE").status_code == 404
             r = client.post("/api/memory/undo", json={"op_id": 1, "project_id": "01NOPE"})
@@ -137,6 +143,35 @@ class TestOpsGating:
             assert client.post("/api/ops/consolidate",
                                json={"project_id": pid}).status_code == 409
             _wait_op(client)
+
+    def test_hard_prune_plan_and_apply_are_connected_project_scoped(self, tmp_path, monkeypatch):
+        pid = "01OPSHARDPRUNEAAAAAAAAAAAA"
+        _register(tmp_path, pid)
+        from braincell import gui_ops, storage_accounting
+
+        preview = {
+            "approval_digest": "digest",
+            "candidate_count": 1,
+            "selection": {"expired_tombstone_note_ids": [], "expired_operation_ids": [], "unprotected_backup_paths": ["/tmp/a.db"]},
+        }
+        monkeypatch.setattr(storage_accounting, "hard_prune_plan", lambda *_a, **_kw: dict(preview))
+        seen = []
+        monkeypatch.setattr(gui_ops, "run_hard_prune", lambda body: seen.append(body) or {"ok": True})
+        with TestClient(_app(tmp_path)) as client:
+            planned = client.post(
+                "/api/ops/hard-prune/plan", json={"project_id": pid, "keep_backups": 0}
+            )
+            assert planned.status_code == 200
+            assert planned.json()["approval_digest"] == "digest"
+            started = client.post(
+                "/api/ops/hard-prune/apply",
+                json={"project_id": pid, "approval_digest": "digest", "keep_backups": 0},
+            )
+            assert started.status_code == 200
+            job = _wait_op(client)
+        assert job["state"] == "done"
+        assert seen[0].project_id == pid
+        assert seen[0].approval_digest == "digest"
 
 
 # ── consolidate ────────────────────────────────────────────────────────────────

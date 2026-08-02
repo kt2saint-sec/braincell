@@ -183,6 +183,15 @@ def get_maintenance_preferences_path(project_id: str) -> Path:
     return get_local_state_dir(project_id) / "maintenance-preferences.json"
 
 
+def get_maintenance_audit_path(project_id: str) -> Path:
+    """Return the durable per-Project hard-prune audit catalog.
+
+    It remains outside the SQLite database so a permanent history-row purge
+    cannot erase evidence of a maintenance attempt.
+    """
+    return get_local_state_dir(project_id) / "maintenance-audit.json"
+
+
 # ── Workspace-level project registry + families (BrainCell project model) ──────
 
 

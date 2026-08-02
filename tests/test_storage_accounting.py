@@ -411,6 +411,171 @@ class TestDatabaseDiagnostics:
         assert "cannot be reliably estimated" in impact["memory_notice"]
 
 
+class TestHardPruneWorkflow:
+    """Digest-gated permanent retention: no active memory candidate path."""
+
+    def test_plan_exposes_only_proven_candidates_and_stable_digest(self, tmp_path):
+        from braincell.storage_accounting import hard_prune_plan
+
+        project_id, database = _bootstrapped_project(tmp_path)
+        backup = database.parent / "braincell-backup-20200101.db"
+        backup.write_bytes(b"reclaim")
+        _insert_note(database, 1, status="tombstoned", deleted_at="2020-01-01 00:00:00")
+        _insert_note(database, 2, status="active")
+        _record_operation(database, created_at="2020-01-01 00:00:00")
+
+        first = hard_prune_plan(
+            project_id,
+            keep_backups=0,
+            expire_operations_days=30,
+            expire_tombstones_days=30,
+        )
+        second = hard_prune_plan(
+            project_id,
+            keep_backups=0,
+            expire_operations_days=30,
+            expire_tombstones_days=30,
+        )
+
+        assert first["approval_digest"] == second["approval_digest"]
+        assert first["selection"] == {
+            "expired_tombstone_note_ids": [1],
+            "expired_operation_ids": [1],
+            "unprotected_backup_paths": [str(backup)],
+        }
+        excluded = first["evidence"]["excluded"]
+        assert excluded["active_superseded_documents_and_chunks"] == "never eligible"
+        assert excluded["semantic_or_llm_findings"].startswith("informational")
+
+    def test_execute_requires_current_digest_and_unsnapshotted_phrase(self, tmp_path):
+        from braincell.storage_accounting import (
+            DELETE_WITHOUT_SNAPSHOT_CONFIRMATION,
+            RetentionRefusedError,
+            execute_hard_prune,
+            hard_prune_plan,
+            maintenance_audit,
+        )
+
+        project_id, database = _bootstrapped_project(tmp_path)
+        backup = database.parent / "braincell-backup-20200101.db"
+        backup.write_bytes(b"reclaim")
+        _insert_note(database, 1, status="tombstoned", deleted_at="2020-01-01 00:00:00")
+        plan = hard_prune_plan(project_id, keep_backups=0, expire_tombstones_days=30)
+
+        with pytest.raises(RetentionRefusedError, match="reviewed plan changed"):
+            execute_hard_prune(
+                project_id,
+                approval_digest="wrong",
+                confirmation_phrase=DELETE_WITHOUT_SNAPSHOT_CONFIRMATION,
+                create_local_snapshot=False,
+                keep_backups=0,
+                expire_tombstones_days=30,
+            )
+        assert backup.exists()
+
+        with pytest.raises(RetentionRefusedError, match="exact confirmation"):
+            execute_hard_prune(
+                project_id,
+                approval_digest=plan["approval_digest"],
+                confirmation_phrase="DELETE",
+                create_local_snapshot=False,
+                keep_backups=0,
+                expire_tombstones_days=30,
+            )
+        assert backup.exists()
+
+        result = execute_hard_prune(
+            project_id,
+            approval_digest=plan["approval_digest"],
+            confirmation_phrase=DELETE_WITHOUT_SNAPSHOT_CONFIRMATION,
+            create_local_snapshot=False,
+            keep_backups=0,
+            expire_tombstones_days=30,
+        )
+
+        assert result["retention"]["notes_purged"] == 1
+        assert result["retention"]["removed_backups"] == [str(backup)]
+        assert not backup.exists()
+        con = sqlite3.connect(str(database))
+        try:
+            assert con.execute("SELECT COUNT(*) FROM memory_notes").fetchone()[0] == 0
+        finally:
+            con.close()
+        events = maintenance_audit(project_id)
+        assert [event["event"] for event in events] == ["started", "completed"]
+        assert events[0]["selection"] == plan["selection"]
+
+    def test_requested_snapshot_failure_aborts_before_any_deletion(self, tmp_path, monkeypatch):
+        from braincell import storage_accounting
+        from braincell.storage_accounting import (
+            DELETE_CONFIRMATION,
+            execute_hard_prune,
+            hard_prune_plan,
+            maintenance_audit,
+        )
+
+        project_id, database = _bootstrapped_project(tmp_path)
+        backup = database.parent / "braincell-backup-20200101.db"
+        backup.write_bytes(b"reclaim")
+        _insert_note(database, 1, status="tombstoned", deleted_at="2020-01-01 00:00:00")
+        plan = hard_prune_plan(project_id, keep_backups=0, expire_tombstones_days=30)
+
+        def _snapshot_failure(*_args, **_kwargs):
+            raise OSError("simulated disk full")
+
+        monkeypatch.setattr(
+            storage_accounting, "_create_local_recovery_snapshot", _snapshot_failure
+        )
+        with pytest.raises(OSError, match="simulated disk full"):
+            execute_hard_prune(
+                project_id,
+                approval_digest=plan["approval_digest"],
+                confirmation_phrase=DELETE_CONFIRMATION,
+                create_local_snapshot=True,
+                keep_backups=0,
+                expire_tombstones_days=30,
+            )
+
+        assert backup.exists()
+        con = sqlite3.connect(str(database))
+        try:
+            assert con.execute("SELECT COUNT(*) FROM memory_notes").fetchone()[0] == 1
+        finally:
+            con.close()
+        assert [event["event"] for event in maintenance_audit(project_id)] == [
+            "started", "failed"
+        ]
+
+    def test_reader_block_after_prune_is_reported_not_hidden(self, tmp_path, monkeypatch):
+        from braincell import storage_accounting
+        from braincell.storage_accounting import (
+            DELETE_WITHOUT_SNAPSHOT_CONFIRMATION,
+            execute_hard_prune,
+            hard_prune_plan,
+        )
+
+        project_id, database = _bootstrapped_project(tmp_path)
+        backup = database.parent / "braincell-backup-20200101.db"
+        backup.write_bytes(b"reclaim")
+        plan = hard_prune_plan(project_id, keep_backups=0)
+        monkeypatch.setattr(
+            storage_accounting,
+            "_checkpoint_and_compact",
+            lambda *_args, **_kwargs: {"status": "reader-blocked", "waited_seconds": 0},
+        )
+
+        result = execute_hard_prune(
+            project_id,
+            approval_digest=plan["approval_digest"],
+            confirmation_phrase=DELETE_WITHOUT_SNAPSHOT_CONFIRMATION,
+            create_local_snapshot=False,
+            keep_backups=0,
+        )
+
+        assert not backup.exists()
+        assert result["compaction"]["status"] == "reader-blocked"
+
+
 class TestOrphansSurfacedInStorageReport:
     def test_storage_report_includes_the_orphan_inventory(self, tmp_path):
         from braincell.project_registry import register_path
