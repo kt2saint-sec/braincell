@@ -41,9 +41,23 @@ read_cgroup_value() {
     awk -v key="$key" '$1 == key { print $2; exit }' "$path" 2>/dev/null || true
 }
 
+find_scope_cgroup() {
+    # Resolve a live user scope from its processes, not transient unit metadata.
+    local unit_name=$1 proc_file cgroup_path
+    for proc_file in /proc/[0-9]*/cgroup; do
+        cgroup_path=$(sed -n 's/^0:://p' "$proc_file" 2>/dev/null || true)
+        case "$cgroup_path" in
+            *"/$unit_name.scope")
+                printf '/sys/fs/cgroup%s\n' "$cgroup_path"
+                return
+                ;;
+        esac
+    done
+}
+
 monitor_scope() {
     local unit_name=$1 launcher_pid=$2 run_dir=$3
-    local control_group="" cgroup_dir="" last_events=""
+    local cgroup_dir="" last_events=""
     local current="" peak="" tasks="" high="" max="" oom="" oom_kill=""
     local max_bytes="" timestamp=""
 
@@ -51,10 +65,9 @@ monitor_scope() {
         > "$run_dir/resource-samples.tsv"
 
     while kill -0 "$launcher_pid" 2>/dev/null; do
-        if [ -z "$control_group" ]; then
-            control_group=$(systemctl --user show "$unit_name" -p ControlGroup --value 2>/dev/null || true)
-            if [ -n "$control_group" ] && [ -d "/sys/fs/cgroup$control_group" ]; then
-                cgroup_dir="/sys/fs/cgroup$control_group"
+        if [ -z "$cgroup_dir" ] || [ ! -d "$cgroup_dir" ]; then
+            cgroup_dir=$(find_scope_cgroup "$unit_name" || true)
+            if [ -n "$cgroup_dir" ] && [ -d "$cgroup_dir" ]; then
                 max_bytes=$(cat "$cgroup_dir/memory.max" 2>/dev/null || true)
             fi
         fi

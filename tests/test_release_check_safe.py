@@ -20,6 +20,7 @@ def test_release_runner_retains_nvme_cgroup_and_monitoring_guards():
         "MemorySwapMax=0",
         "OOMPolicy=kill",
         "TasksMax=128",
+        "/proc/[0-9]*/cgroup",
         "resource-samples.tsv",
         "memory.events",
         "memory-pressure",
