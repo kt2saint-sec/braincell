@@ -662,6 +662,15 @@ def cmd_storage(args: argparse.Namespace) -> None:
         expire_operations_days=args.expire_operations_days,
         expire_tombstones_days=args.expire_tombstones_days,
     )
+    warning_kwargs = {
+        "warn_project_bytes": args.warn_project_bytes,
+        "warn_free_bytes": args.warn_free_bytes,
+    }
+    if args.apply and any(value is not None for value in warning_kwargs.values()):
+        raise SystemExit(
+            "braincell storage: warning thresholds are read-only report options; "
+            "run them without --apply"
+        )
     if args.hard_prune:
         if args.apply:
             try:
@@ -688,7 +697,7 @@ def cmd_storage(args: argparse.Namespace) -> None:
             raise SystemExit(f"braincell storage: {exc}") from exc
         print(json.dumps(result, indent=2, sort_keys=True))
         return
-    report = storage_report(project_id, **retention_kwargs)
+    report = storage_report(project_id, **retention_kwargs, **warning_kwargs)
     print(json.dumps(report, indent=2, sort_keys=True))
 
     wal = report["database_diagnostics"]["wal"]
@@ -710,6 +719,8 @@ def cmd_storage(args: argparse.Namespace) -> None:
             "nothing was changed.",
             file=sys.stderr,
         )
+    for warning in report["storage_budget"]["warnings"]:
+        print(f"WARNING: {warning['message']} Nothing was changed.", file=sys.stderr)
 
 
 def cmd_reflect(args: argparse.Namespace) -> None:
@@ -2235,6 +2246,24 @@ def main(argv: list[str] | None = None) -> None:
         default=None,
         help="Plan hard-purging notes tombstoned more than N days ago "
              "(never touches active/superseded notes or undo-referenced ones).",
+    )
+    pstorage.add_argument(
+        "--warn-project-bytes",
+        type=int,
+        default=None,
+        help=(
+            "Read-only warning when this Connected Project's local state reaches "
+            "N bytes; does not block writes or clean anything."
+        ),
+    )
+    pstorage.add_argument(
+        "--warn-free-bytes",
+        type=int,
+        default=None,
+        help=(
+            "Read-only warning when free local disk is at or below N bytes; "
+            "does not block writes or clean anything."
+        ),
     )
     pstorage.add_argument(
         "--apply",

@@ -181,7 +181,14 @@ def packaged_skills() -> list[str]:
     root = files("braincell").joinpath("skills")
     if not root.is_dir():
         return []
-    return sorted(e.name for e in root.iterdir() if e.is_dir())
+    # Resource packages can contain Python's ``__pycache__`` alongside the
+    # data directories in a source checkout.  A skill is defined by its
+    # SKILL.md contract, never merely by being a directory.
+    return sorted(
+        entry.name
+        for entry in root.iterdir()
+        if entry.is_dir() and entry.joinpath("SKILL.md").is_file()
+    )
 
 
 def project_skills_dir(project_root: str | Path, client: str) -> Path:

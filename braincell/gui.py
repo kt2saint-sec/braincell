@@ -398,6 +398,7 @@ def create_app(
             "connected_project_id": project_id,
             "database_diagnostics": report["database_diagnostics"],
             "storage_impact": report["storage_impact"],
+            "storage_budget": report["storage_budget"],
             "preferences": preferences,
         }
 

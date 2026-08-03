@@ -90,6 +90,8 @@ To inspect disk use and preview backup retention without deleting anything:
 ```bash
 braincell storage .
 braincell storage . --keep-backups 3
+# Warning-only thresholds, in bytes. They never block writes or remove memory.
+braincell storage . --warn-project-bytes 1073741824 --warn-free-bytes 2147483648
 ```
 
 Project storage grows with indexed content and retained history. The retention
@@ -97,6 +99,11 @@ list is a dry-run plan; BrainCell never silently expires curated memory.
 Deleting anything requires an explicitly configured
 `braincell storage . --keep-backups N --apply`, and snapshots referenced by
 undo history are always kept.
+
+Thresholds are an explicit per-command review aid, not a default reservation:
+choose values appropriate for the machine. The Memory Map also shows the
+Connected Project footprint and warns when its optional snapshot or future
+compaction workspace cannot fit. None of these warnings changes memory.
 
 For permanent stale-state cleanup, first review a digest-gated plan:
 

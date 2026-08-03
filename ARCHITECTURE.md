@@ -38,7 +38,7 @@ embeddings) and `dev` (pytest, ruff) are the functional optional extras.
 | `store.py` (the largest module) | The `Store` protocol and `SqliteStore`. One coroutine owns a write transaction from `BEGIN` through commit via `_write_transaction` (`store.py:1167`). Document replacement is atomic across hash, chunks, and FTS (`replace_document`, `store.py:2984`). |
 | `schema.py` | Raw DDL only. |
 | `compaction.py` | Pure transcript-page compaction; no I/O. |
-| `storage_accounting.py` | `storage_report` (`:315`) — read-only file/row accounting plus retention planning. `hard_prune_plan` (`:459`) creates a deterministic eligible selection and approval digest; `execute_hard_prune` (`:787`) re-plans under `mutation_lock`, records durable audit events, optionally snapshots, performs eligible retention, then verifies integrity and attempts WAL TRUNCATE + `VACUUM`. |
+| `storage_accounting.py` | `storage_report` (`:386`) — read-only file/row accounting, warning-only Project/disk pressure, and retention planning. `hard_prune_plan` (`:544`) creates a deterministic eligible selection and approval digest; `execute_hard_prune` (`:872`) re-plans under `mutation_lock`, records durable audit events, optionally snapshots, performs eligible retention, then verifies integrity and attempts WAL TRUNCATE + `VACUUM`. |
 
 Tables created by `schema.py`: `bc_documents`, `bc_chunks`, `bc_chunks_fts`
 (FTS5 virtual), `bc_note_links`, `bc_operations`, `bc_operation_notes`,
@@ -164,6 +164,11 @@ destination-scoped `mutation_lock`.
 benchmark via `_stats_async` (`cli.py:576`); `cmd_storage` (`cli.py:630`)
 delegates to `storage_accounting.storage_report` or the digest-gated
 hard-prune planner/executor when explicitly requested.
+
+`storage --warn-project-bytes N --warn-free-bytes N` adds explicit,
+warning-only review thresholds to that report. It never blocks a write,
+modifies state, or grants cleanup authority; the report also flags when the
+exact optional snapshot or compaction estimate cannot fit on the current disk.
 
 ## On-disk state
 

@@ -20,9 +20,10 @@ usage() {
     cat <<'EOF'
 Usage: scripts/release-check-safe.sh
 
-Runs the full GUI-safe test suite, then builds and checks the wheel and sdist
-inside a separate NVMe-backed systemd cgroup. Packaging and clean-install smoke
-tests never use the regular GUI-test virtualenv.
+Runs the full GUI-safe test suite, captures a bounded local performance
+baseline, then builds and checks the wheel and sdist inside a separate
+NVMe-backed systemd cgroup. Packaging and clean-install smoke tests never use
+the regular GUI-test virtualenv.
 
 The default sandbox is /mnt/nvme-fast/braincell-release-sandbox. The runner
 refuses another filesystem, insufficient free NVMe space, or a missing user
@@ -152,6 +153,15 @@ run_inside_scope() {
     # or allowing one renderer run to affect another.
     "$PROJECT_ROOT/scripts/test-gui-safe.sh" tests --ignore=tests/test_gui_hittest.py
     "$PROJECT_ROOT/scripts/test-gui-safe.sh" tests/test_gui_hittest.py
+
+    # A small, deterministic observation rather than a hardware-specific
+    # latency gate.  It exercises connected-Project and Pool reads plus the
+    # actual native Map startup without using the host's normal venv or /tmp.
+    BRAINCELL_BENCH_BIN_DIR="$release_venv/bin" \
+        python scripts/pool_bench.py --iterations 8 --notes 20 --chunks 20 --members 4 \
+        > "$run_dir/performance-baseline.json"
+    python -c 'import json, pathlib, sys; payload = json.loads(pathlib.Path(sys.argv[1]).read_text()); assert payload["metadata"]["workspace_retained"] is False; assert payload["query_timings"]["pools"]; assert all(not item.get("timed_out", False) for item in payload["console_and_processes"].values())' \
+        "$run_dir/performance-baseline.json"
 
     mkdir -p "$run_dir/dist"
     python -m build --outdir "$run_dir/dist"

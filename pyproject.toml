@@ -61,7 +61,10 @@ braincell-map = "braincell.cli:main_map"
 Homepage = "https://github.com/kt2saint-sec/braincell"
 
 [tool.setuptools]
-packages = ["braincell"]
+# Assets and shipped skills are importable resource namespaces.  Listing them
+# explicitly keeps setuptools' package discovery unambiguous and prevents a
+# future packaging-tool upgrade from silently changing what the wheel contains.
+packages = ["braincell", "braincell.assets", "braincell.skills"]
 
 [tool.setuptools.package-data]
 braincell = [

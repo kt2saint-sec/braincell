@@ -1468,7 +1468,7 @@ async function openMaintenanceReview(){
     if(body)body.innerHTML=`<div class="maint-warning"><b>Storage health could not be loaded.</b><br>Nothing was changed. Close this panel and retry.</div>`;
     return;
   }
-  const impact=overview.storage_impact||{},fs=impact.filesystem||{},snapshot=impact.local_snapshot||{},compact=impact.compaction||{};
+  const impact=overview.storage_impact||{},fs=impact.filesystem||{},snapshot=impact.local_snapshot||{},compact=impact.compaction||{},budget=overview.storage_budget||{},footprint=budget.project_footprint||{},storageWarnings=Array.isArray(budget.warnings)?budget.warnings:[];
   const prefs=overview.preferences||{},trusted=!!prefs.bypass_delete_confirmation;
   const writable=!!status.allow_writes;
   const body=document.getElementById("mo-body");
@@ -1477,11 +1477,13 @@ async function openMaintenanceReview(){
     <div class="maint-step"><span class="maint-num">1</span><div><h3>Storage health</h3><p>Read-only measurements for this Connected Project. Review comes before any permanent cleanup.</p>
       <div class="maint-metrics">
         <div class="maint-metric"><b>${esc(maintenanceBytes(fs.free_bytes))}</b><span>free local disk</span></div>
+        <div class="maint-metric"><b>${esc(maintenanceBytes(footprint.bytes))}</b><span>Connected Project local state</span></div>
         <div class="maint-metric"><b>${esc(maintenanceBytes(snapshot.estimated_retained_bytes))}</b><span>future local snapshot growth</span></div>
         <div class="maint-metric"><b>${esc(maintenanceBytes(compact.conservative_temporary_bytes))}</b><span>conservative compaction workspace</span></div>
         <div class="maint-metric"><b>${esc(maintenanceBytes(compact.estimated_reclaimable_bytes))}</b><span>SQLite reclaimable estimate</span></div>
       </div>
-      <p>${esc(impact.memory_notice||"Runtime memory is not estimated.")}</p></div></div>
+      <p>${esc(impact.memory_notice||"Runtime memory is not estimated.")}</p>
+      ${storageWarnings.length?`<div class="maint-warning"><b>Storage review needed.</b><br>${storageWarnings.map(item=>esc(item.message||"Storage warning.")).join("<br>")}<br>${esc(budget.notice||"Nothing was changed.")}</div>`:`<p>${esc(budget.notice||"Storage warnings are review-only; nothing was changed.")}</p>`}</div></div>
     <div class="maint-step"><span class="maint-num">2</span><div style="min-width:0"><h3>Review candidates</h3><p>Choose at least one explicit age/count policy, then analyze. Semantic or LLM suggestions never authorize deletion.</p>
       <div class="maint-metrics" style="margin-top:8px">
         <label class="maint-metric"><span>keep newest backups</span><input class="mo-input" id="hp-keep" type="number" min="0" placeholder="off" style="margin-top:5px;padding:5px 7px"></label>

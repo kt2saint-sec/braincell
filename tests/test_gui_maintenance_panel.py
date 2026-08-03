@@ -52,6 +52,12 @@ def test_maintenance_panel_stays_connected_project_scoped(tmp_path):
               compaction:{conservative_temporary_bytes:2048,fits_available_space:true,estimated_reclaimable_bytes:128},
               memory_estimate_bytes:null,
               memory_notice:'RAM use cannot be reliably estimated from stored bytes.'
+            },
+            storage_budget:{
+              warning_only:true,
+              project_footprint:{files:2,bytes:3072},
+              warnings:[{code:'free-space-threshold',message:'Local free disk space is below its review threshold.'}],
+              notice:'Warnings ask for review only. Nothing was changed.'
             }
           };
           const fetched=[]; const put=[];
@@ -122,6 +128,8 @@ def test_maintenance_panel_stays_connected_project_scoped(tmp_path):
     assert result["card_visible"] is True
     assert result["panel_title"] == "Storage & lifecycle"
     assert "Review comes before any permanent cleanup" in result["panel_text"]
+    assert "Connected Project local state" in result["panel_text"]
+    assert "Storage review needed" in result["panel_text"]
     assert result["typed_gate"] is True
     assert result["enable_ready"] is True
     assert result["put"] == [[

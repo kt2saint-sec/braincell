@@ -17,6 +17,8 @@ import asyncio
 import hashlib
 import json
 import os
+import shutil
+import socket
 import statistics
 import subprocess
 import sys
@@ -53,6 +55,18 @@ def _unit_vec(label: str, dim: int) -> np.ndarray:
     rng = np.random.default_rng(seed)
     vec = rng.standard_normal(dim).astype(np.float32)
     return vec / np.linalg.norm(vec)
+
+
+def _member_counts(members: int) -> list[int]:
+    """Keep the bounded baseline useful on smaller local test machines."""
+    return [count for count in (1, 4, 8, 16) if count <= members]
+
+
+def _available_local_port() -> int:
+    """Reserve a currently unused loopback port for the short-lived Map probe."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
 
 
 def _children(pid: int) -> list[int]:
@@ -295,71 +309,89 @@ def main() -> None:
     parser.add_argument("--notes", type=int, default=40)
     parser.add_argument("--chunks", type=int, default=40)
     parser.add_argument("--members", type=int, default=16)
-    parser.add_argument("--port", type=int, default=8976)
+    parser.add_argument("--port", type=int, default=None)
+    parser.add_argument(
+        "--keep-workspace", action="store_true",
+        help="Retain the isolated temporary benchmark workspace for diagnosis.",
+    )
     args = parser.parse_args()
+    if args.iterations < 1 or args.notes < 0 or args.chunks < 0 or args.members < 1:
+        parser.error("iterations and members must be positive; notes and chunks cannot be negative")
+    if args.port is not None and not 1 <= args.port <= 65535:
+        parser.error("port must be between 1 and 65535")
 
     repo_root = Path(__file__).resolve().parents[1]
     workspace = Path(tempfile.mkdtemp(prefix="braincell-pool-bench-"))
-    os.environ["XDG_DATA_HOME"] = str(workspace / "xdg")
-    os.environ["BRAINCELL_DATA_NAMESPACE"] = "braincell_pool_bench"
-    os.environ["BRAINCELL_RERANK"] = "off"
+    try:
+        os.environ["XDG_DATA_HOME"] = str(workspace / "xdg")
+        os.environ["BRAINCELL_DATA_NAMESPACE"] = "braincell_pool_bench"
+        os.environ["BRAINCELL_RERANK"] = "off"
 
-    async def run() -> dict[str, Any]:
-        projects = []
-        for index in range(args.members):
-            root = workspace / f"project-{index:02d}"
-            project_id = await _seed_project(root, index, args.notes, args.chunks)
-            projects.append((root, project_id))
-        timings = await _measure_queries(
-            projects=projects,
-            iterations=args.iterations,
-            member_counts=[1, 4, 8, 16],
+        async def run() -> dict[str, Any]:
+            projects = []
+            for index in range(args.members):
+                root = workspace / f"project-{index:02d}"
+                project_id = await _seed_project(root, index, args.notes, args.chunks)
+                projects.append((root, project_id))
+            timings = await _measure_queries(
+                projects=projects,
+                iterations=args.iterations,
+                member_counts=_member_counts(args.members),
+            )
+            return {"projects": projects, "timings": timings}
+
+        run_result = asyncio.run(run())
+        connected_project_id = run_result["projects"][0][1]
+        connected_project_path = str(run_result["projects"][0][0])
+        env = os.environ.copy()
+        bin_dir = Path(
+            os.environ.get("BRAINCELL_BENCH_BIN_DIR", repo_root / ".venv" / "bin")
+        ).resolve()
+        env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+        env["BRAINCELL_PROJECT_ID"] = connected_project_id
+        env["BRAINCELL_STORE"] = "sqlite"
+        env["QT_QPA_PLATFORM"] = "offscreen"
+        env["QTWEBENGINE_CHROMIUM_FLAGS"] = "--no-sandbox"
+        port = args.port or _available_local_port()
+
+        console = {
+            "braincell_help_cold": _measure_command(
+                [str(bin_dir / "braincell"), "--help"], env=env
+            ),
+            "bound_mcp_startup": _measure_command(
+                [str(bin_dir / "braincell-mcp")], env=env, stdin=b""
+            ),
+        }
+        from braincell.gui import _resolve_gui_token
+
+        console["native_gui_startup"] = _measure_long_running_command(
+            [str(bin_dir / "braincell"), "start", connected_project_path, "--port", str(port)],
+            env=env,
+            port=port,
+            token=_resolve_gui_token(),
         )
-        return {"projects": projects, "timings": timings}
 
-    run_result = asyncio.run(run())
-    connected_project_id = run_result["projects"][0][1]
-    connected_project_path = str(run_result["projects"][0][0])
-    env = os.environ.copy()
-    env["PATH"] = f"{repo_root / '.venv' / 'bin'}:{env.get('PATH', '')}"
-    env["BRAINCELL_PROJECT_ID"] = connected_project_id
-    env["BRAINCELL_STORE"] = "sqlite"
-    env["QT_QPA_PLATFORM"] = "offscreen"
-    env["QTWEBENGINE_CHROMIUM_FLAGS"] = "--no-sandbox"
-
-    console = {
-        "braincell_help_cold": _measure_command(
-            [str(repo_root / ".venv" / "bin" / "braincell"), "--help"], env=env
-        ),
-        "bound_mcp_startup": _measure_command(
-            [str(repo_root / ".venv" / "bin" / "braincell-mcp")], env=env, stdin=b""
-        ),
-    }
-    from braincell.gui import _resolve_gui_token
-
-    console["native_gui_startup"] = _measure_long_running_command(
-        [str(repo_root / ".venv" / "bin" / "braincell"), "start", connected_project_path, "--port", str(args.port)],
-        env=env,
-        port=args.port,
-        token=_resolve_gui_token(),
-    )
-
-    payload = {
-        "metadata": {
-            "command": sys.argv,
-            "python": sys.version.split()[0],
-            "platform": sys.platform,
-            "workspace": str(workspace),
-            "iterations": args.iterations,
-            "notes_per_project": args.notes,
-            "chunks_per_project": args.chunks,
-            "members_seeded": args.members,
-        },
-        "console_and_processes": console,
-        "query_timings": run_result["timings"],
-        "hook_overhead": _hook_evidence(repo_root),
-    }
-    print(json.dumps(payload, indent=2, sort_keys=True))
+        payload = {
+            "metadata": {
+                "command": sys.argv,
+                "python": sys.version.split()[0],
+                "platform": sys.platform,
+                "workspace_retained": args.keep_workspace,
+                "iterations": args.iterations,
+                "notes_per_project": args.notes,
+                "chunks_per_project": args.chunks,
+                "members_seeded": args.members,
+            },
+            "console_and_processes": console,
+            "query_timings": run_result["timings"],
+            "hook_overhead": _hook_evidence(repo_root),
+        }
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    finally:
+        if args.keep_workspace:
+            print(f"Benchmark workspace retained: {workspace}", file=sys.stderr)
+        else:
+            shutil.rmtree(workspace, ignore_errors=True)
 
 
 if __name__ == "__main__":

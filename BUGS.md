@@ -11,8 +11,10 @@ branches.
 Identified 2026-08-02 by comparing the confirmed remote `v0.4.0` tag against
 the current `braincell-public` working tree.
 
-- **Later policy — storage budgets:** warnings, configurable budgets, and
-  explicit hard limits remain unimplemented and must not delete memory silently.
+- **Later policy — storage hard limits:** configurable warning thresholds are
+  now read-only, but a hard storage limit remains intentionally unimplemented.
+  Any future limit must never silently delete memory or block a write without a
+  separately reviewed product decision.
 
 **Do not merge `project-only-architecture`:** it is superseded by `main`'s
 preview-first, WAL-aware `legacy_recovery.py`; only its add-repo-runbook revision is worth cherry-picking. (Verdict recorded

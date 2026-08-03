@@ -169,6 +169,8 @@ Inspect persistent state without changing it:
 braincell storage .
 braincell storage . --keep-backups 3
 braincell storage . --keep-backups 3 --backup-root /path/to/recovery-backups
+# Warning-only review thresholds; values are bytes and never change memory.
+braincell storage . --warn-project-bytes 1073741824 --warn-free-bytes 2147483648
 ```
 
 The report includes file sizes and Project row counts. Retention output is a
@@ -176,6 +178,13 @@ dry-run plan by default: it never deletes backups, indexed transcripts,
 operation history, tombstones, or curated memory. Project databases grow with
 indexed content and retained history, so use this report to review storage
 deliberately.
+
+The optional `--warn-project-bytes` and `--warn-free-bytes` thresholds make a
+read-only review warning visible in CLI output. They are intentionally per
+command rather than a hidden machine assumption: choose margins that suit the
+actual disk. A warning never blocks normal use, deletes memory, or enables
+cleanup. The Memory Map also highlights when the exact optional snapshot or
+compaction workspace cannot fit on the local disk.
 
 Executing retention is a separate, explicit step:
 

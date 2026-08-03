@@ -33,6 +33,15 @@ details are intentionally excluded.
   full test suite remains in its isolated GUI runner, while package build,
   artifact checks, and clean-install smoke tests run from NVMe inside a separate
   no-swap cgroup with resource-event evidence.
+- Warning-only storage review thresholds for a Connected Project's local state
+  and remaining disk (`braincell storage --warn-project-bytes/--warn-free-bytes`).
+  The report and Memory Map also surface when the exact optional snapshot or
+  future compaction workspace cannot fit; neither path blocks writes or cleans
+  memory.
+- A bounded Connected Project/Pool/CLI/MCP/native-Map performance baseline in
+  the local NVMe release gate. It cleans its isolated workspace unless a
+  maintainer explicitly requests retention and records observations rather than
+  machine-specific pass/fail latency promises.
 
 ### Fixed
 
@@ -41,6 +50,10 @@ details are intentionally excluded.
   similarity, and LLM judgments remain outside permanent cleanup authority.
 - Cleared the remaining configured Ruff findings and prevented the Linux local
   CI mirror from starting an uncaged package/test workload.
+- Declared shipped `braincell.assets` and `braincell.skills` resource namespaces
+  explicitly to setuptools, clearing package-discovery ambiguity. Skill
+  discovery now requires a real `SKILL.md`, so source-checkout bytecode folders
+  cannot be mistaken for installable skills.
 
 ## 1.0.0 - 2026-08-01
 

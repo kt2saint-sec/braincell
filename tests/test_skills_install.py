@@ -38,8 +38,7 @@ def _project(tmp_path):
 def test_packaged_skills_are_discoverable():
     """Both skills must be readable from the installed package, not just the repo."""
     names = packaged_skills()
-    assert "braincell-init" in names
-    assert "braincell-sync" in names
+    assert names == ["braincell-init", "braincell-sync"]
 
 
 def test_skills_dirs_are_client_specific_and_project_local(tmp_path):

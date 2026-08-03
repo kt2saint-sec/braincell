@@ -410,6 +410,39 @@ class TestDatabaseDiagnostics:
         assert impact["memory_estimate_bytes"] is None
         assert "cannot be reliably estimated" in impact["memory_notice"]
 
+    def test_storage_budget_warns_without_changing_or_authorizing_memory(self, tmp_path, monkeypatch):
+        from braincell import storage_accounting
+        from braincell.storage_accounting import storage_report
+
+        project_id, database = _bootstrapped_project(tmp_path)
+        DiskUsage = namedtuple("DiskUsage", "total used free")
+        monkeypatch.setattr(
+            storage_accounting.shutil,
+            "disk_usage",
+            lambda _path: DiskUsage(total=10_000, used=9_900, free=100),
+        )
+
+        report = storage_report(
+            project_id,
+            warn_project_bytes=1,
+            warn_free_bytes=200,
+        )
+
+        budget = report["storage_budget"]
+        assert budget["warning_only"] is True
+        assert budget["project_footprint"]["bytes"] >= database.stat().st_size
+        assert budget["thresholds"] == {
+            "warn_project_bytes": 1,
+            "warn_free_bytes": 200,
+        }
+        assert {warning["code"] for warning in budget["warnings"]} >= {
+            "project-footprint-threshold",
+            "free-space-threshold",
+            "snapshot-space-insufficient",
+            "compaction-space-insufficient",
+        }
+        assert database.exists()
+
 
 class TestHardPruneWorkflow:
     """Digest-gated permanent retention: no active memory candidate path."""

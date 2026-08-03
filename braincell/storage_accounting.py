@@ -219,6 +219,77 @@ def _storage_impact(
     }
 
 
+def _storage_budget(
+    project_entries: Sequence[dict[str, Any]],
+    impact: dict[str, Any],
+    *,
+    warn_project_bytes: int | None,
+    warn_free_bytes: int | None,
+) -> dict[str, Any]:
+    """Describe storage pressure without changing data or enforcing a limit.
+
+    Thresholds are deliberately supplied by the caller instead of assumed from
+    a machine profile: an 8 GB laptop and a workstation have different safe
+    margins.  This remains visibility only; it neither blocks writes nor makes
+    any memory eligible for cleanup.
+    """
+    for name, value in (
+        ("warn_project_bytes", warn_project_bytes),
+        ("warn_free_bytes", warn_free_bytes),
+    ):
+        if value is not None and value < 0:
+            raise ValueError(f"{name} must be >= 0")
+
+    footprint = {
+        "files": len(project_entries),
+        "bytes": sum(int(entry["bytes"]) for entry in project_entries),
+    }
+    filesystem = impact["filesystem"]
+    free_bytes = filesystem["free_bytes"]
+    warnings: list[dict[str, Any]] = []
+    if warn_project_bytes is not None and footprint["bytes"] >= warn_project_bytes:
+        warnings.append({
+            "code": "project-footprint-threshold",
+            "message": "Connected Project storage has reached its review threshold.",
+            "observed_bytes": footprint["bytes"],
+            "threshold_bytes": warn_project_bytes,
+        })
+    if (
+        warn_free_bytes is not None
+        and free_bytes is not None
+        and free_bytes <= warn_free_bytes
+    ):
+        warnings.append({
+            "code": "free-space-threshold",
+            "message": "Local free disk space is below its review threshold.",
+            "observed_bytes": free_bytes,
+            "threshold_bytes": warn_free_bytes,
+        })
+    if impact["local_snapshot"]["fits_available_space"] is False:
+        warnings.append({
+            "code": "snapshot-space-insufficient",
+            "message": "The estimated optional local recovery snapshot does not fit on this disk.",
+        })
+    if impact["compaction"]["fits_available_space"] is False:
+        warnings.append({
+            "code": "compaction-space-insufficient",
+            "message": "The estimated compaction workspace does not fit on this disk.",
+        })
+    return {
+        "warning_only": True,
+        "project_footprint": footprint,
+        "thresholds": {
+            "warn_project_bytes": warn_project_bytes,
+            "warn_free_bytes": warn_free_bytes,
+        },
+        "warnings": warnings,
+        "notice": (
+            "Warnings ask for review only. They never block normal use, delete "
+            "memory, or authorize cleanup."
+        ),
+    }
+
+
 def referenced_backup_paths(database: Path) -> frozenset[str]:
     """Snapshot paths referenced by undo/operation history, as resolved strings.
 
@@ -319,6 +390,8 @@ def storage_report(
     backup_roots: Sequence[Path] = (),
     expire_operations_days: int | None = None,
     expire_tombstones_days: int | None = None,
+    warn_project_bytes: int | None = None,
+    warn_free_bytes: int | None = None,
 ) -> dict[str, Any]:
     """Account for namespace files and optionally plan retention.
 
@@ -389,6 +462,12 @@ def storage_report(
     from .project_registry import find_orphans
 
     diagnostics = _db_diagnostics(database, project_id)
+    impact = _storage_impact(database, diagnostics)
+    project_state = config.get_local_state_dir(project_id).resolve()
+    project_entries = [
+        entry for entry in entries
+        if Path(entry["path"]).is_relative_to(project_state)
+    ]
     return {
         "namespace_root": str(root),
         "scanned_roots": [str(item) for item in roots],
@@ -396,7 +475,13 @@ def storage_report(
         "project_database": str(database),
         "project_rows": _row_counts(database),
         "database_diagnostics": diagnostics,
-        "storage_impact": _storage_impact(database, diagnostics),
+        "storage_impact": impact,
+        "storage_budget": _storage_budget(
+            project_entries,
+            impact,
+            warn_project_bytes=warn_project_bytes,
+            warn_free_bytes=warn_free_bytes,
+        ),
         "orphans": find_orphans(),
         "totals": {
             "files": len(entries),

@@ -63,6 +63,33 @@ def test_storage_report_is_silent_when_wal_is_healthy(tmp_path, capsys):
     assert "WAL" not in err
 
 
+def test_storage_report_warns_at_explicit_review_thresholds(tmp_path, capsys):
+    root = tmp_path / "project"
+    root.mkdir()
+    project_id = get_project_id(root)
+    SqliteStore(get_db_path(project_id)).assert_schema_version()
+
+    main([
+        "storage", str(root), "--warn-project-bytes", "1", "--warn-free-bytes", str(2**63 - 1),
+    ])
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["storage_budget"]["warning_only"] is True
+    assert {item["code"] for item in report["storage_budget"]["warnings"]} >= {
+        "project-footprint-threshold", "free-space-threshold",
+    }
+
+
+def test_storage_warning_thresholds_cannot_be_mixed_with_apply(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    project_id = get_project_id(root)
+    SqliteStore(get_db_path(project_id)).assert_schema_version()
+
+    with pytest.raises(SystemExit, match="read-only report options"):
+        main(["storage", str(root), "--warn-project-bytes", "1", "--apply"])
+
+
 def test_hard_prune_cli_requires_preview_digest_and_final_phrase(tmp_path, capsys):
     root = tmp_path / "project"
     root.mkdir()
