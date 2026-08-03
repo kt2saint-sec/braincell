@@ -20,6 +20,18 @@ preview-first, WAL-aware `legacy_recovery.py`; only its add-repo-runbook revisio
 
 ## Resolved in Unreleased
 
+- **High — Memory Map skill actions could trust a renderer-supplied directory:**
+  the embedded UI could previously describe or operate on skills without a
+  backend-enforced Connected Project boundary. Resolved:
+  `mount_skill_status_api()` (`braincell/gui_install.py:154`) and
+  `api_skills()` (`:249`) resolve the launch session's Connected Project from
+  the local registry; requests contain only the client and add/remove action.
+  Project skill destinations are constrained below the selected root
+  (`braincell/install.py:187`), and edited same-name skills are protected from
+  overwrite and automatic removal (`:230`, `:290`). Regressions:
+  `tests/test_gui_install.py`, `tests/test_gui_layout.py`,
+  `tests/test_install.py`, and `tests/test_skills_install.py`.
+
 - **Medium — SQLite compaction/hard-prune workflow:** permanent cleanup had no
   authorized execution path: the product could only warn about WAL starvation.
   Resolved: `hard_prune_plan()` creates a deterministic review selection and

@@ -40,6 +40,7 @@ Choose a client explicitly:
 braincell connect . --client claude --scope local   # private to this Project
 braincell connect . --client claude --scope project # shareable .mcp.json
 braincell connect . --client vscode                 # .vscode/mcp.json
+braincell connect . --client opencode               # project opencode.json
 ```
 
 For Codex, BrainCell writes only `.codex/config.toml`; Codex loads it only in a
@@ -55,11 +56,17 @@ Optionally add BrainCell skills to this Project:
 ```bash
 braincell skills add . --client claude # .claude/skills
 braincell skills add . --client codex  # .agents/skills
+braincell skills add . --client opencode # .opencode/skills
 ```
 
 Skills are not added by `connect`, never install machine-wide, and can be
 removed with `braincell skills remove . --client <client>`. Edited same-name
 skills are reported as conflicts and left untouched.
+
+The Memory Map offers the same skills for the Connected Project only. Its
+**Install skills** and **Remove unchanged skills** controls never accept a
+directory, change Pool membership, or widen memory access. It reports each
+skill as **Not installed**, **Up to date**, or **Edited by you**.
 
 ## Recall and Search
 

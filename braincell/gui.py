@@ -712,6 +712,11 @@ def create_app(
 
     # ── Write endpoints (only mounted when allow_writes=True) ─────────────────
 
+    # The skills catalog is safe in read-only mode. It resolves only this
+    # launched window's Connected Project and never opens a memory database.
+    from .gui_install import mount_skill_status_api
+    mount_skill_status_api(app)
+
     if allow_writes:
 
         @app.get("/api/preferences/maintenance")
@@ -827,7 +832,7 @@ def create_app(
             pick_folder=(native_bridge.pick_folder if native_bridge is not None else None),
         )
 
-        # Project-local client connection and Project-skill management.
+        # Project-local client connection and Connected Project skill management.
         from .gui_install import mount_install_api
         mount_install_api(app, restart_argv=restart_argv)
 

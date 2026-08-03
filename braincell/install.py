@@ -165,6 +165,13 @@ def uninstall_hook() -> int:
 _PROJECT_SKILL_DIRS = {
     "claude": Path(".claude") / "skills",
     "codex": Path(".agents") / "skills",
+    "opencode": Path(".opencode") / "skills",
+}
+
+_SKILL_CLIENT_LABELS = {
+    "claude": "Claude Code",
+    "codex": "Codex",
+    "opencode": "OpenCode",
 }
 
 
@@ -182,7 +189,9 @@ def project_skills_dir(project_root: str | Path, client: str) -> Path:
     try:
         relative = _PROJECT_SKILL_DIRS[client]
     except KeyError:
-        raise ValueError("Project skills are supported only for Claude or Codex.") from None
+        raise ValueError(
+            "Project skills are supported only for Claude, Codex, or OpenCode."
+        ) from None
     root = Path(project_root).expanduser().resolve()
     target = (root / relative).resolve()
     try:
@@ -194,14 +203,52 @@ def project_skills_dir(project_root: str | Path, client: str) -> Path:
     return target
 
 
-def _packaged_skill_payloads() -> dict[str, str]:
+def _packaged_skill_payloads(client: str) -> dict[str, str]:
+    """Return skill content rendered for one supported project-local client."""
     from importlib.resources import files
 
+    try:
+        client_label = _SKILL_CLIENT_LABELS[client]
+    except KeyError:
+        raise ValueError(
+            "Project skills are supported only for Claude, Codex, or OpenCode."
+        ) from None
+
     root = files("braincell").joinpath("skills")
-    return {
+    payloads = {
         name: root.joinpath(name, "SKILL.md").read_text(encoding="utf-8")
         for name in packaged_skills()
     }
+    payloads["braincell-init"] = (
+        payloads["braincell-init"]
+        .replace("__BRAINCELL_CLIENT_LABEL__", client_label)
+        .replace("__BRAINCELL_CLIENT_KEY__", client)
+    )
+    return payloads
+
+
+def project_skills_status(
+    project_root: str | Path, client: str
+) -> list[tuple[str, str, Path]]:
+    """Inspect one project's packaged skills without changing its files.
+
+    Each result is ``(name, status, path)`` where status is ``not_installed``,
+    ``current``, or ``modified``. A modified skill is user-owned and must not
+    be overwritten or removed automatically.
+    """
+    dest_root = project_skills_dir(project_root, client)
+    results: list[tuple[str, str, Path]] = []
+    for name, payload in _packaged_skill_payloads(client).items():
+        dest = dest_root / name / "SKILL.md"
+        if not dest.exists():
+            results.append((name, "not_installed", dest))
+            continue
+        try:
+            current = dest.read_text(encoding="utf-8")
+        except OSError:
+            current = None
+        results.append((name, "current" if current == payload else "modified", dest))
+    return results
 
 
 def install_project_skills(
@@ -222,7 +269,7 @@ def install_project_skills(
     dest_root = project_skills_dir(project_root, client)
     results: list[tuple[str, str, Path]] = []
 
-    for name, payload in _packaged_skill_payloads().items():
+    for name, payload in _packaged_skill_payloads(client).items():
         dest = dest_root / name / "SKILL.md"
         if dest.exists():
             try:
@@ -250,7 +297,7 @@ def remove_project_skills(
     """
     dest_root = project_skills_dir(project_root, client)
     results: list[tuple[str, str, Path]] = []
-    for name, payload in _packaged_skill_payloads().items():
+    for name, payload in _packaged_skill_payloads(client).items():
         dest = dest_root / name / "SKILL.md"
         if not dest.exists():
             results.append((name, "absent", dest))

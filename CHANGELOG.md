@@ -8,6 +8,13 @@ details are intentionally excluded.
 
 ### Added
 
+- Project-local OpenCode skills in `.opencode/skills`, rendered with OpenCode
+  connection instructions. The same no-clobber add/remove protection used for
+  Claude and Codex applies.
+- Connected Project-only Memory Map skill review: the local app does not accept
+  a directory from its embedded interface, and read-only status reports whether
+  each skill is Not installed, Up to date, or Edited by you. Skills do not alter
+  Pool membership or memory access.
 - Digest-gated `braincell storage --hard-prune` preview/apply workflow for
   eligible expired tombstones, old operation history, and unprotected backups.
   The apply step re-plans under the destination lock, requires the reviewed

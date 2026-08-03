@@ -101,7 +101,7 @@ or misattributing memory context.
 
 | Module | Holds |
 |---|---|
-| `install.py` | Project-local client connections and Project skills. `_atomic_write_text` (`:408-428`) backs up, then writes via `mkstemp` + `os.replace`. Skill destinations: Claude `.claude/skills`, Codex `.agents/skills` (`:165`). |
+| `install.py` | Project-local client connections and Project skills. `_atomic_write_text` (`:408-428`) backs up, then writes via `mkstemp` + `os.replace`. Skill destinations: Claude `.claude/skills`, Codex `.agents/skills`, OpenCode `.opencode/skills` (`:165`). The Memory Map locally resolves skill status and mutations from its Connected Project identity, never a renderer-supplied path. |
 | `launch.py` | `braincell start` preflight — single-instance probe and pre-launch report. |
 | `automatic_pool_recall.py` | The opt-in Claude hook, project-local and disabled by default. |
 | `log.py` | Rotating file handler with a plain-handler fallback (`:68`). |
@@ -187,7 +187,8 @@ the namespace is overridable with `BRAINCELL_DATA_NAMESPACE`.
 Project-local files BrainCell writes inside a connected Project:
 `.codex/config.toml`, `.vscode/mcp.json`, `.mcp.json` (Claude project scope),
 `.claude/settings.local.json` or `.claude/settings.json` (Automatic Pool
-recall), `.claude/skills` and `.agents/skills` directories.
+recall), `.claude/skills`, `.agents/skills`, and `.opencode/skills`
+directories.
 
 ## Document set
 
@@ -202,6 +203,7 @@ One home per fact. When these disagree, the listed owner wins.
 | `CHANGELOG.md` | Release-facing verified changes |
 | `BUGS.md` | Verified faults, with `file:line` anchors |
 | `CONTRIBUTING.md` | Contribution rules, CLA, dev checks, invariants for contributors |
+| `docs/storage-lifecycle-maintenance-plan-2026-08-02.md` | Completed maintenance-workflow delivery record and safety decisions |
 | `AGENTS.md` (internal, gitignored) | Repair-worktree agent instructions and the pre-fix evidence ledger |
 | `COMMERCIAL-LICENSE.md` | Dual-licensing terms |
 

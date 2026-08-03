@@ -46,6 +46,7 @@ def test_skills_dirs_are_client_specific_and_project_local(tmp_path):
     project = _project(tmp_path)
     assert project_skills_dir(project, "claude") == project.resolve() / ".claude" / "skills"
     assert project_skills_dir(project, "codex") == project.resolve() / ".agents" / "skills"
+    assert project_skills_dir(project, "opencode") == project.resolve() / ".opencode" / "skills"
 
 
 # ── Placement ──────────────────────────────────────────────────────────────────
@@ -76,6 +77,19 @@ def test_reinstall_is_idempotent(tmp_path):
     assert {r[1] for r in results} == {"current"}, "re-run should report no-op, not rewrite"
     after = {p: p.read_text(encoding="utf-8") for p in target.rglob("SKILL.md")}
     assert after == before, "idempotent re-run modified a file"
+
+
+def test_opencode_install_uses_its_native_project_skill_directory(tmp_path):
+    project = _project(tmp_path)
+
+    results = install_project_skills(project, "opencode")
+
+    init = next(path for name, _status, path in results if name == "braincell-init")
+    assert init == project / ".opencode" / "skills" / "braincell-init" / "SKILL.md"
+    text = init.read_text(encoding="utf-8")
+    assert "--client opencode" in text
+    assert "OpenCode" in text
+    assert "connect BrainCell to Claude" not in text
 
 
 def test_existing_different_skill_is_refused_not_clobbered(tmp_path):
@@ -131,7 +145,7 @@ def test_unknown_skill_client_is_rejected(tmp_path):
     try:
         project_skills_dir(project, "vscode")
     except ValueError as exc:
-        assert "Claude or Codex" in str(exc)
+        assert "Claude, Codex, or OpenCode" in str(exc)
     else:
         raise AssertionError("VS Code must not receive unsupported BrainCell skills")
 

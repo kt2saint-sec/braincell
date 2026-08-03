@@ -20,6 +20,10 @@ and code identifiers.
   Map session. New memory always saves here, and ordinary Memory Map Search and
   Recent notes read here. When it differs from the Viewed project, say:
   “Viewing Project B's catalog. Connected Project A memory remains shown.”
+- **Locally resolved Connected Project** — the Connected Project identified by
+  the local Memory Map session and its local Project registry. Use this only in
+  technical documentation. Never say “server-resolved” in user-facing text;
+  BrainCell is a local desktop application, not a remote service.
 
 ## Everyday actions
 
@@ -76,8 +80,17 @@ for display.
 
 ## Skills and legacy language
 
-- **Project skill** — a BrainCell skill installed in a selected Project.
-  Use **Add skills** and **Remove skills**; never imply machine-wide install.
+- **Project skill** — a BrainCell skill installed project-locally. In the
+  Memory Map, it belongs only to the **Connected Project**; the UI never asks
+  for or accepts another directory. In the CLI, the person explicitly supplies
+  the Project path.
+- **Skill status** — use **Not installed**, **Up to date**, or **Edited by
+  you**. “Edited by you” means BrainCell protects that copy from overwrite and
+  automatic removal.
+- In the Memory Map, use **Install skills** and **Remove unchanged skills**.
+  In CLI help, use `braincell skills add` and `braincell skills remove`.
+  Never imply a machine-wide install or that skill actions change Pool
+  membership or memory access.
 - Legacy terms such as Global, Family, Federate, Unpool, Register MCP,
   Deregister MCP, Active Project, Launch Project, and Supersede may appear only
   in migration help, changelog history, compatibility notices, internal code,

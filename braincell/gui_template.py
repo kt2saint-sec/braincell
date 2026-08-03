@@ -1941,16 +1941,16 @@ function openCommandsModal(){
        <div class="fs-list" id="cmd-pool-results" style="max-height:160px;margin-top:6px;display:none"></div></div>
 
      <div class="note"><div class="k">Project skills</div>
-       <div class="c">Adds BrainCell skills inside the Viewed project. Existing edited copies are
-       never overwritten or removed.</div>
+       <div class="c">Connected Project only. Skills are local instructions for this Project;
+       they never change Pool membership or memory access. Edited copies are never overwritten or removed.</div>
        <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
-         <select class="mo-input" id="cmd-skills-client" style="width:auto;padding:4px 8px">
-           <option value="claude">Claude</option><option value="codex">Codex</option>
+         <select class="mo-input" id="cmd-skills-client" onchange="loadSkillsStatus()" style="width:auto;padding:4px 8px">
+           <option value="claude">Claude</option><option value="codex">Codex</option><option value="opencode">OpenCode</option>
          </select>
-         <button class="btn"${wdis()} onclick="cmdSkills('add')">Add skills</button>
-         <button class="btn"${wdis()} onclick="cmdSkills('remove')">Remove skills</button>
+         <button class="btn"${wdis()} onclick="cmdSkills('add')">Install skills</button>
+         <button class="btn"${wdis()} onclick="cmdSkills('remove')">Remove unchanged skills</button>
        </div>
-       <div class="fs-list" id="cmd-skills-list" style="max-height:120px;margin-top:6px;display:none"></div></div>
+       <div class="fs-list" id="cmd-skills-list" style="max-height:120px;margin-top:6px">Loading skill status…</div></div>
 
      <div class="note"><div class="k">Automatic Pool recall</div>
        <div class="c">Optional Claude hook for the Viewed project. Disabled by default. It queries
@@ -2013,6 +2013,7 @@ function openCommandsModal(){
      <div style="margin-top:12px;text-align:center;font-size:11px;color:var(--mut)">BrainCell MCP © 2026 Karl Toussaint.</div>`,
     `<button class="btn" onclick="closeModal()">Close</button>`);
   if(_opsPoll===null)opsResume();
+  loadSkillsStatus();
 }
 
 /* inline confirm strip — destructive runs pass through here */
@@ -2142,23 +2143,41 @@ async function cmdLivePool(kind){
     toast(`${kind==="search"?"Search":"Recall"} Pool returned ${rows.length} result(s)`);
   }catch(err){toast(`Pool ${kind} failed: ${err.message}`,"err");}
 }
+function skillStatusLabel(status){
+  return ({not_installed:"Not installed",current:"Up to date",modified:"Edited by you"})[status]||status;
+}
+function renderSkills(rows){
+  const el=document.getElementById("cmd-skills-list");
+  if(!el)return;
+  el.innerHTML=rows.length
+    ?rows.map(s=>`<div class="fs-item" style="cursor:default"><span style="flex:1"><b>${esc(s.name)}</b> — ${esc(skillStatusLabel(s.status))}${s.status==="modified"?" · BrainCell will leave your copy untouched":""}</span></div>`).join("")
+    :`<div class="fs-empty">No packaged skills found.</div>`;
+}
+async function loadSkillsStatus(){
+  const client=((document.getElementById("cmd-skills-client")||{}).value||"claude");
+  const el=document.getElementById("cmd-skills-list");
+  if(el)el.textContent="Loading skill status…";
+  try{
+    const r=await apiFetch(`/api/skills/status?client=${encodeURIComponent(client)}`);
+    if(!r)throw new Error("status unavailable");
+    renderSkills(r.skills||[]);
+  }catch(err){if(el)el.textContent=`Skills status unavailable: ${err.message}`;}
+}
 async function cmdSkills(action){
   if(!requireWrites())return;
   const el=document.getElementById("cmd-skills-list");
-  const nd=nodes.find(n=>n.id===selected);
-  if(!nd||!nd.path){toast("Select a Viewed project first","err");return;}
   const client=((document.getElementById("cmd-skills-client")||{}).value||"claude");
   try{
-    const r=await apiPost("/api/skills",{path:nd.path,client,action});
+    const r=await apiPost("/api/skills",{client,action});
     const rows=Array.isArray(r)?r:((r&&(r.skills||r.results))||[]);
     if(el){
-      el.style.display="";
-      el.innerHTML=rows.length
-        ?rows.map(s=>`<div class="fs-item" style="cursor:default"><span style="flex:1">${esc(s.name)} — ${esc(s.status)}${s.status==="conflict"?" · your copy left untouched — move it, then retry":""} · ${esc(s.path||"")}</span></div>`).join("")
-        :`<div class="fs-empty">No skills returned.</div>`;
+      renderSkills(rows.map(s=>({
+        ...s,
+        status:s.status==="installed"?"current":s.status==="conflict"?"modified":s.status,
+      })));
     }
     const conflicts=rows.filter(s=>s.status==="conflict").length;
-    const verb=action==="remove"?"removed":"added";
+    const verb=action==="remove"?"removed":"installed";
     toast(conflicts?`Skills ${verb} with ${conflicts} conflict(s) — see the list`:`Skills ${verb} (${rows.length})`);
   }catch(err){toast(`Skills failed: ${err.message}`,"err");}
 }

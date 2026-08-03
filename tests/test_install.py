@@ -334,6 +334,15 @@ def test_cli_skills_add_and_remove_are_project_local(tmp_path, capsys):
     assert not (project / ".agents" / "skills" / "braincell-init" / "SKILL.md").exists()
 
 
+def test_cli_skills_supports_opencode_project_local_directory(tmp_path, capsys):
+    project = _codex_repo(tmp_path)
+
+    main(["skills", "add", str(project), "--client", "opencode"])
+
+    assert "installed: braincell-init" in capsys.readouterr().out
+    assert (project / ".opencode" / "skills" / "braincell-init" / "SKILL.md").is_file()
+
+
 # ── retired global hook command ───────────────────────────────────────────────
 
 def test_global_hook_command_is_retired():

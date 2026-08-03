@@ -3,20 +3,25 @@
 """
 gui_install.py — MCP client install/uninstall + hook management for the Memory-Map GUI.
 
+Read-only endpoint mounted for every Memory Map:
+
+  GET  /api/skills/status inspect packaged skills for the Connected Project
+
 Write-gated endpoints mounted by gui.create_app(allow_writes=True):
 
   POST /api/install      connect the BrainCell MCP server to one selected Project
   POST /api/uninstall    disconnect it without changing Project memory
-  POST /api/skills       add/remove packaged skills inside one selected project
+  POST /api/skills       add/remove packaged skills for the Connected Project
   POST /api/restart      re-exec the GUI server process (server-recorded argv only)
 
 This is the GUI counterpart of `braincell install`/`uninstall`/`hook` (cli.py
 cmd_install/cmd_uninstall/cmd_hook) — it reuses the exact same library functions
 (install.py) rather than re-implementing client wiring. The MCP command and env are
-always assembled server-side from those functions; the request supplies paths and
-closed enums only (never a command/args/env — a security invariant). /api/restart
-follows the same posture: the argv it execs is recorded server-side at launch and
-never taken from the request.
+always assembled locally by those functions; skill routes resolve the Connected
+Project locally rather than accepting a client path. No request can supply a
+command, args, environment, or skill target. /api/restart follows the same
+posture: the argv it execs is recorded locally at launch and never taken from
+the request.
 """
 
 from __future__ import annotations
@@ -33,8 +38,10 @@ from .config import get_project_id
 from .install import (
     get_client,
     install_project_skills,
+    project_skills_status,
     remove_project_skills,
 )
+from .project_registry import resolve_ulid_to_path
 from .project_target import ProjectTarget, ProjectTargetError, validate_project_target
 
 # Delay before the restart re-exec fires — lets the 200 response flush first.
@@ -76,7 +83,26 @@ def _validate_gui_target(
         raise _target_http_exception(exc) from exc
 
 
-# ── Request bodies (path + closed enums/booleans only — SI-3) ──────────────────
+def _connected_skills_target(app: FastAPI) -> ProjectTarget:
+    """Resolve the launched Connected Project; never accept a client path."""
+    project_id = getattr(app.state, "seed_project_id", None)
+    if not project_id:
+        raise HTTPException(409, "Skills require a Connected Project session.")
+    path = resolve_ulid_to_path(project_id)
+    if path is None:
+        raise HTTPException(409, "The Connected Project has no registered directory.")
+    try:
+        return validate_project_target(
+            path,
+            acknowledge_home=True,
+            acknowledge_non_git=True,
+            allow_privileged=True,
+        )
+    except ProjectTargetError as exc:
+        raise _target_http_exception(exc) from exc
+
+
+# ── Request bodies (closed enums/booleans; paths only where needed — SI-3) ────
 
 class InstallBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -92,12 +118,8 @@ class InstallBody(BaseModel):
 class SkillsBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    path: str
-    client: Literal["claude", "codex"]
+    client: Literal["claude", "codex", "opencode"]
     action: Literal["add", "remove"]
-    acknowledge_home: bool = False
-    acknowledge_non_git: bool = False
-    allow_privileged: bool = False
 
 
 class AutomaticPoolRecallBody(BaseModel):
@@ -127,7 +149,34 @@ class UninstallBody(BaseModel):
     allow_privileged: bool = False
 
 
-# ── Route mounting (called by gui.create_app when allow_writes=True) ──────────
+# ── Route mounting ────────────────────────────────────────────────────────────
+
+def mount_skill_status_api(app: FastAPI) -> None:
+    """Register the read-only Connected Project skills status route."""
+
+    @app.get("/api/skills/status")
+    async def api_skills_status(
+        client: Literal["claude", "codex", "opencode"] = "claude",
+    ) -> dict:  # type: ignore[type-arg]
+        target = _connected_skills_target(app)
+        import anyio
+        try:
+            results = await anyio.to_thread.run_sync(
+                project_skills_status, target.path, client
+            )
+        except (RuntimeError, ValueError) as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return {
+            "connected_project_id": app.state.seed_project_id,
+            "client": client,
+            "skills": [
+                {"name": name, "status": status, "path": str(path)}
+                for name, status, path in results
+            ],
+        }
+
+
+# ── Write routes (called by gui.create_app when allow_writes=True) ────────────
 
 def mount_install_api(app: FastAPI, *, restart_argv: list[str] | None = None) -> None:
     """Register the install/uninstall/hook/skills/restart routes on *app*.
@@ -199,12 +248,12 @@ def mount_install_api(app: FastAPI, *, restart_argv: list[str] | None = None) ->
 
     @app.post("/api/skills")
     async def api_skills(body: SkillsBody) -> dict:  # type: ignore[type-arg]
-        """Add or remove packaged skills inside one selected project.
+        """Add or remove packaged skills for the Connected Project only.
 
         Existing same-name skills with different content are reported as
         ``conflict`` and left untouched.
         """
-        target = _validate_gui_target(body)
+        target = _connected_skills_target(app)
         import anyio
         operation = install_project_skills if body.action == "add" else remove_project_skills
         try:

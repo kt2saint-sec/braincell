@@ -2,14 +2,9 @@
 name: braincell-init
 description: |
   Build memory for the CURRENT Project with the local qwen3-embedding:4b
-  embedder, then connect BrainCell to Claude for that Project only. Run once per
+  embedder, then connect BrainCell to __BRAINCELL_CLIENT_LABEL__ for that Project only. Run once per
   Project. Use when: "braincell-init", "init braincell memory", "set up
   braincell for this project", "bootstrap braincell".
-triggers:
-  - braincell-init
-  - init braincell memory
-  - set up braincell for this project
-  - bootstrap braincell
 allowed-tools:
   - Bash
   - Read
@@ -21,8 +16,8 @@ allowed-tools:
 # /braincell-init — build and connect BrainCell for this Project
 
 Activates **BrainCell**, the local-first project-memory engine (SQLite, hybrid
-vector + FTS5). After it runs and you restart Claude Code, BrainCell's MCP
-tools become available for this Project only. Normal Recall and Search do not
+vector + FTS5). After it runs, BrainCell's MCP tools are configured for this
+Project only. Normal Recall and Search do not
 read another Project unless you deliberately invoke a named Pool operation.
 
 **Engine:** braincell-mcp — its own CLI (`braincell`), environment, Project
@@ -61,18 +56,17 @@ BC="$(command -v braincell || true)"
    the Project tree. On existing Project memory the build is incremental (mtime→SHA / cluster
    skip); add `--reembed` only for a clean rebuild after an embedder change.
 
-3. **Connect BrainCell to Claude.** The default is Claude's private
-   local-Project connection. It does not create a user-wide registration or
-   install a machine-wide hook:
+3. **Connect BrainCell to __BRAINCELL_CLIENT_LABEL__.** This is a project-local
+   connection. It does not create a user-wide registration or install a
+   machine-wide hook:
    ```bash
-   command -v claude >/dev/null || { echo "ERROR: claude CLI not found (needed to register the MCP)."; exit 1; }
-   "$BC" connect . --client claude --scope local
+   "$BC" connect . --client __BRAINCELL_CLIENT_KEY__
    ```
 
-4. **Verdict + restart note.** Report Project memory built (note + transcript counts from the
-   build output) and BrainCell connected. Then tell the user plainly:
-   > **Restart Claude Code** — `mcp__braincell__*` tools load at session start. After
-  > restart, `/braincell-sync` keeps this Project's memory current.
+4. **Verdict.** Report Project memory built (note + transcript counts from the
+   build output) and BrainCell connected. The user controls whether and how to
+   reload their client if its current session has not detected the new project
+   configuration.
 
 ## Guardrails
 - **Local qwen3-embedding:4b by default — one embedder per Project memory store.** The store is fingerprint-gated

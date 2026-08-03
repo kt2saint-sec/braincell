@@ -136,10 +136,15 @@ Skills are a separate, explicit choice:
 ```bash
 braincell skills add . --client claude
 braincell skills add . --client codex
+braincell skills add . --client opencode
 braincell skills remove . --client claude
 ```
 
-BrainCell never installs these skills machine-wide. Add and Remove preserve an edited same-name skill and report it as a conflict.
+BrainCell never installs these skills machine-wide. Installing and removing
+skills preserves an edited same-name skill and reports it as protected.
+In the Memory Map, **Install skills** and **Remove unchanged skills** apply
+only to the Connected Project. They never change Pool membership or widen
+memory access.
 
 ## Use Project memory
 

@@ -2071,7 +2071,7 @@ def main(argv: list[str] | None = None) -> None:
     pskills.add_argument("skills_action", choices=["add", "remove"])
     pskills.add_argument("path", nargs="?", default=".",
                          help="Project path (default: cwd).")
-    pskills.add_argument("--client", choices=["claude", "codex"], default="claude",
+    pskills.add_argument("--client", choices=["claude", "codex", "opencode"], default="claude",
                          help="Project-local skill format (default: Claude).")
     pskills.add_argument("--acknowledge-home", action="store_true")
     pskills.add_argument("--acknowledge-non-git", action="store_true")
