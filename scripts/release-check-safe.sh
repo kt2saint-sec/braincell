@@ -146,7 +146,12 @@ run_inside_scope() {
 
     python -m ruff check --select E9,F63,F7,F82 braincell tests
     python scripts/lint_changed_python.py --base origin/main
-    "$PROJECT_ROOT/scripts/test-gui-safe.sh" tests
+    # QtWebEngine's offscreen renderer can retain platform state inside a broad
+    # pytest selection. Run the real hittest subprocess module in its own fresh
+    # cgroup after the rest of the suite, rather than weakening renderer coverage
+    # or allowing one renderer run to affect another.
+    "$PROJECT_ROOT/scripts/test-gui-safe.sh" tests --ignore=tests/test_gui_hittest.py
+    "$PROJECT_ROOT/scripts/test-gui-safe.sh" tests/test_gui_hittest.py
 
     mkdir -p "$run_dir/dist"
     python -m build --outdir "$run_dir/dist"

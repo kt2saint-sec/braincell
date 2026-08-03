@@ -26,7 +26,8 @@ def test_release_runner_retains_nvme_cgroup_and_monitoring_guards():
         "memory-pressure",
         "refuses an uncaged packaging run",
         "cleanup_run $(printf '%q'",
-        "test-gui-safe.sh\" tests",
+        "test-gui-safe.sh\" tests --ignore=tests/test_gui_hittest.py",
+        "test-gui-safe.sh\" tests/test_gui_hittest.py",
         "python -m build --outdir",
         "python -m twine check",
     )

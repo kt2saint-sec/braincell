@@ -203,7 +203,6 @@ One home per fact. When these disagree, the listed owner wins.
 | `CHANGELOG.md` | Release-facing verified changes |
 | `BUGS.md` | Verified faults, with `file:line` anchors |
 | `CONTRIBUTING.md` | Contribution rules, CLA, dev checks, invariants for contributors |
-| `docs/storage-lifecycle-maintenance-plan-2026-08-02.md` | Completed maintenance-workflow delivery record and safety decisions |
 | `AGENTS.md` (internal, gitignored) | Repair-worktree agent instructions and the pre-fix evidence ledger |
 | `COMMERCIAL-LICENSE.md` | Dual-licensing terms |
 
