@@ -11,13 +11,6 @@ branches.
 Identified 2026-08-02 by comparing the confirmed remote `v0.4.0` tag against
 the current `braincell-public` working tree.
 
-
-- **Medium — SQLite compaction/hard-prune workflow:** a WAL-starvation warning
-  now exists (see Resolved: stats/storage diagnostics), but there is still no
-  authorized hard-prune plus `VACUUM` execution workflow — VACUUM/hard-prune
-  execution is deliberately unimplemented; only detection/warning is in scope
-  until that workflow is authorized. (`braincell/storage_accounting.py:86`,
-  thresholds at `:80-84`)
 - **Later policy — storage budgets:** warnings, configurable budgets, and
   explicit hard limits remain unimplemented and must not delete memory silently.
 
@@ -26,6 +19,23 @@ preview-first, WAL-aware `legacy_recovery.py`; only its add-repo-runbook revisio
 2026-07-31.)
 
 ## Resolved in Unreleased
+
+- **Medium — SQLite compaction/hard-prune workflow:** permanent cleanup had no
+  authorized execution path: the product could only warn about WAL starvation.
+  Resolved: `hard_prune_plan()` creates a deterministic review selection and
+  approval digest (`braincell/storage_accounting.py:459`); `execute_hard_prune()`
+  recomputes that selection under the destination lock, requires the exact
+  final confirmation, records durable started/completed/failed audit events,
+  optionally makes a same-host recovery copy, then verifies SQLite integrity
+  (`:787`). Only expired tombstones, old operation history, and unprotected
+  backups are eligible. Active/superseded memory, indexed documents/chunks,
+  semantic similarity, and LLM judgments are never deletion authority.
+  `VACUUM` follows WAL TRUNCATE; a live reader is reported for retry rather
+  than forced closed. The CLI preview/apply path is `braincell storage
+  --hard-prune` (`braincell/cli.py:630`) and the Connected Project Memory Map
+  uses the same plan/apply endpoints (`braincell/gui_ops.py:445`). Regressions:
+  `tests/test_storage_accounting.py`, `tests/test_storage_cli.py`,
+  `tests/test_gui_ops.py`, and `tests/test_gui_maintenance_panel.py`.
 
 - **High — selected map Project could be mistaken for the source of ordinary
   memory panels:** exact evidence observed in the v1.0.0 working tree on
@@ -267,9 +277,9 @@ preview-first, WAL-aware `legacy_recovery.py`; only its add-repo-runbook revisio
   Project stays the existing `reassociate_project_path` workflow,
   `braincell/cli.py:318`, parser at `:1785`). Surfaced through the new
   `"orphans"` key in `storage_report()`
-  (`braincell/storage_accounting.py:252`) and a standalone
+  (`braincell/storage_accounting.py:315`) and a standalone
   `braincell storage --list-orphans` listing that needs no registered project
-  (`braincell/cli.py:639`, parser at `braincell/cli.py:2155`). Regressions in
+  (`braincell/cli.py:639`, parser at `braincell/cli.py:2284`). Regressions in
   `tests/test_project_orphans.py` (stale path, orphaned database, reassociate
   clearing the orphan, non-mutation adversarial check) and
   `tests/test_storage_cli.py`.
@@ -277,16 +287,16 @@ preview-first, WAL-aware `legacy_recovery.py`; only its add-repo-runbook revisio
   WAL/SHM, Project row counts, and backup retention but not freelist,
   embedding, foreign-document, or orphan-database detail; `braincell stats`
   surfaced none of it. Resolved: `storage_report()` now includes
-  `"database_diagnostics"` (`braincell/storage_accounting.py:86`) —
+  `"database_diagnostics"` (`braincell/storage_accounting.py:99`) —
   `PRAGMA freelist_count`/`page_count`/`page_size`, embedded/null-embedding
   chunk counts plus total vector bytes, and a count of `bc_documents` rows
   owned by a different project — and a WAL-starvation warning (WAL file past
   both a byte floor and a ratio against the database's own size; constants
   `_WAL_STARVATION_MIN_BYTES` / `_WAL_STARVATION_RATIO`), printed by
-  `braincell storage` (`braincell/cli.py:674`). Orphan-database detail is the
+  `braincell storage` (`braincell/cli.py:695`). Orphan-database detail is the
   same `find_orphans()` from the orphan-reconciliation entry above, built once
-  and reused rather than duplicated. VACUUM/hard-prune execution remains out
-  of scope — see the open SQLite compaction/hard-prune-workflow entry. Regressions in
+  and reused rather than duplicated. Hard-prune and `VACUUM` execution are
+  covered by the resolved workflow entry above. Regressions in
   `tests/test_storage_accounting.py:289` (`TestDatabaseDiagnostics`,
   `TestOrphansSurfacedInStorageReport`) and `tests/test_storage_cli.py`
   (WAL-warning printed / silent cases).
@@ -308,7 +318,7 @@ preview-first, WAL-aware `legacy_recovery.py`; only its add-repo-runbook revisio
   regressions in `tests/test_transcript_ingest.py:450`.
 - **Medium — retention policy:** Disappeared transcripts, tombstones, and
   operation history had no expiry mechanism. Resolved: explicit, opt-in
-  retention apply (`braincell/storage_accounting.py:322`, CLI
+  retention apply (`braincell/storage_accounting.py:605`, CLI
   `braincell storage --apply`) covering backup pruning, operation-history
   expiry, and tombstone purge — dry-run plan first, executed only under the
   destination mutation lock, every axis disabled by default and an
@@ -318,7 +328,7 @@ preview-first, WAL-aware `legacy_recovery.py`; only its add-repo-runbook revisio
   `tests/test_storage_accounting.py:187`.
 - **Medium — future pruning safety:** The retention plan did not identify
   snapshots referenced by undo history as protected. Resolved: undo-referenced
-  snapshots are planned as protected (`braincell/storage_accounting.py:77`),
+  snapshots are planned as protected (`braincell/storage_accounting.py:222`),
   re-verified at delete time, and unreadable operation history fails the whole
   apply closed; a tombstoned note referenced by recorded undo history is
   likewise never purged. Regressions in

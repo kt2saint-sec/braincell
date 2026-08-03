@@ -125,7 +125,7 @@ applies a user-cgroup memory/task/CPU/time limit; it refuses an uncaged run:
 ```bash
 scripts/test-gui-safe.sh tests/test_native_shell.py \
   tests/test_gui_commands_modal.py tests/test_gui_hittest.py \
-  tests/test_native_pool_surface.py
+  tests/test_native_pool_surface.py tests/test_gui_maintenance_panel.py
 ```
 
 SQLite changes must preserve one transaction owner from `BEGIN` through
@@ -133,6 +133,13 @@ commit/rollback. Any multi-statement mutation needs a fault-injection regression
 that proves the prior committed state survives a failure. Project database
 mutations must also use the destination-scoped process lock so CLI and Memory
 Map writers cannot interleave.
+
+Hard-prune changes require additional safety regressions: preview selection
+must contain only explicit expired/retention evidence; a stale digest, wrong
+confirmation, corrupt audit catalog, or failed requested snapshot must leave
+memory untouched; and a blocked WAL truncate must report a retry state rather
+than close a reader. Never grant semantic similarity, an LLM judgment, or an
+automation schedule independent authority to permanently delete memory.
 
 The Memory Map is a native desktop application backed internally by the existing
 localhost-only FastAPI/uvicorn transport and embedded SPA. Changes must preserve the

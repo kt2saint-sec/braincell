@@ -91,6 +91,20 @@ Deleting anything requires an explicitly configured
 `braincell storage . --keep-backups N --apply`, and snapshots referenced by
 undo history are always kept.
 
+For permanent stale-state cleanup, first review a digest-gated plan:
+
+```bash
+braincell storage . --hard-prune --expire-tombstones-days 180
+braincell storage . --hard-prune --expire-tombstones-days 180 \
+  --apply --approve <digest> \
+  --confirm "DELETE WITHOUT LOCAL RECOVERY SNAPSHOT"
+```
+
+This workflow can only remove eligible expired tombstones, old operation
+history, and unprotected backups. Use `--local-recovery-snapshot` when local
+disk space permits, then type `DELETE` instead. The Memory Map provides the
+same Connected Project-only review flow.
+
 ## Optional: create a Pool
 
 Use a Pool only when you deliberately want a live, read-only query across named

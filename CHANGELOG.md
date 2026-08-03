@@ -4,6 +4,31 @@ Release-facing notes for the public BrainCell project. This file records
 verified product changes only; private engineering history and machine-specific
 details are intentionally excluded.
 
+## Unreleased
+
+### Added
+
+- Digest-gated `braincell storage --hard-prune` preview/apply workflow for
+  eligible expired tombstones, old operation history, and unprotected backups.
+  The apply step re-plans under the destination lock, requires the reviewed
+  digest and an exact confirmation phrase, and records durable per-Project
+  started/completed/failed audit events.
+- Optional same-host local recovery snapshot before hard-prune. It is clearly
+  optional and never represented as a guaranteed backup; a requested snapshot
+  failure aborts before deletion.
+- SQLite integrity/foreign-key verification and WAL TRUNCATE + `VACUUM` after
+  hard-prune. Live readers are never forced closed: the GUI waits briefly then
+  reports a safe compaction retry state.
+- Connected Project-only Memory Map Storage & lifecycle review surface with
+  disk-impact estimates, candidate proof, approval digest, explicit final
+  confirmation, and the deliberately narrow Trust verified maintenance setting.
+
+### Fixed
+
+- Resolved the missing authorized SQLite compaction/hard-prune execution
+  workflow. Active/superseded notes, indexed documents/chunks, semantic
+  similarity, and LLM judgments remain outside permanent cleanup authority.
+
 ## 1.0.0 - 2026-08-01
 
 ### Added
@@ -145,8 +170,6 @@ details are intentionally excluded.
 - BrainCell never expires anything on its own. Retention runs only when you pass
   an explicit window and `--apply`; there is no default retention age, and
   indexed transcripts and curated memory are never expiry candidates.
-- There is still no authorized compaction (`VACUUM`) or hard-prune execution
-  workflow; `braincell storage` only detects and warns.
 - Storage budgets, configurable warnings, and hard limits remain unimplemented;
   BrainCell does not delete memory to enforce them.
 

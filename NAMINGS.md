@@ -43,6 +43,19 @@ and code identifiers.
 - **Storage report** — a read-only account of BrainCell state and an optional
   backup-retention dry run. Never call a dry-run candidate list a cleanup or
   imply that BrainCell deleted memory.
+- **Hard-prune review** — the Connected Project-only, preview-first review of
+  eligible expired tombstones, old operation history, and unprotected backups.
+  Say **review** or **plan** until the person has approved its exact digest.
+- **Approval digest** — the exact stable value that binds final Apply to the
+  reviewed hard-prune selection. Never describe it as a password or an LLM
+  instruction.
+- **Local recovery snapshot** — an optional same-host copy made before
+  hard-prune. Always say it is not a guaranteed backup and describe its local
+  disk growth.
+- **Trust verified maintenance** — a per-Project setting that skips only the
+  typed `DELETE` confirmation after its serious acknowledgement. Never imply
+  that it permits unattended LLM cleanup or bypasses review, proof, digest,
+  final Apply, snapshot choice, or execution safeguards.
 
 ## Pools
 

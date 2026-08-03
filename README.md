@@ -184,6 +184,31 @@ retention option is configured, snapshots referenced by undo history (and
 tombstoned notes referenced by recorded operations) are never deleted, and
 active or superseded memory is never touched.
 
+### Permanent stale-state cleanup and compaction
+
+For the smaller, evidence-backed permanent workflow, preview first and retain
+the printed digest:
+
+```bash
+braincell storage . --hard-prune --keep-backups 3 --expire-tombstones-days 180
+braincell storage . --hard-prune --keep-backups 3 --expire-tombstones-days 180 \
+  --apply --approve <digest> \
+  --confirm "DELETE WITHOUT LOCAL RECOVERY SNAPSHOT"
+```
+
+Hard-prune can only remove expired tombstones, old operation history, and
+unprotected backup files. It never selects active/superseded memory, indexed
+documents/chunks, semantic similarity matches, or LLM suggestions. Add
+`--local-recovery-snapshot` to request a same-host copy first, then confirm
+with `DELETE`; a snapshot is optional and is not a guaranteed backup. If a
+live reader blocks WAL truncation, cleanup remains recorded and consistent,
+while compaction reports a safe retry state instead of closing clients.
+
+The Memory Map offers the same Connected Project-only Analyze → Review →
+Confirm → Run flow. Its optional trust setting only skips retyping `DELETE`;
+it never skips evidence, digest verification, final Apply, or execution
+safeguards.
+
 ## Pools: intentional, live cross-Project reads
 
 A **Pool** is a named set of stable Project ULIDs. It stores memberships only: it never contains copied notes, documents, chunks, or vectors. Pool Search and Recall resolve members through the registry at query time and open their databases read-only. Missing, inaccessible, corrupt, or incompatible members are reported and skipped without failing the whole query.

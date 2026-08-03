@@ -38,7 +38,7 @@ embeddings) and `dev` (pytest, ruff) are the functional optional extras.
 | `store.py` (the largest module) | The `Store` protocol and `SqliteStore`. One coroutine owns a write transaction from `BEGIN` through commit via `_write_transaction` (`store.py:1167`). Document replacement is atomic across hash, chunks, and FTS (`replace_document`, `store.py:2984`). |
 | `schema.py` | Raw DDL only. |
 | `compaction.py` | Pure transcript-page compaction; no I/O. |
-| `storage_accounting.py` | `storage_report` (`:170`) — read-only file/row accounting plus a dry-run retention plan that lists backups referenced by undo history as *protected* rather than as candidates (`referenced_backup_paths`, `:77`). `apply_retention` (`:322`) is the only executor. |
+| `storage_accounting.py` | `storage_report` (`:315`) — read-only file/row accounting plus retention planning. `hard_prune_plan` (`:459`) creates a deterministic eligible selection and approval digest; `execute_hard_prune` (`:787`) re-plans under `mutation_lock`, records durable audit events, optionally snapshots, performs eligible retention, then verifies integrity and attempts WAL TRUNCATE + `VACUUM`. |
 
 Tables created by `schema.py`: `bc_documents`, `bc_chunks`, `bc_chunks_fts`
 (FTS5 virtual), `bc_note_links`, `bc_operations`, `bc_operation_notes`,
@@ -50,7 +50,7 @@ virtual). Everything for one Project lives in that Project's single
 
 | Module | Holds |
 |---|---|
-| `config.py` | XDG path resolution — the only place that decides where state goes. |
+| `config.py` | XDG path resolution — the only place that decides where state goes, including per-Project maintenance preferences and audit catalogs. |
 | `project_registry.py` | The path↔ULID registry (`load_path_registry`, `:76`), safe-identity validation (`is_safe_project_id`, `:37`), Pool membership (`load_pools`, `:228`), and retired family helpers. |
 | `project_target.py` | Shared safety checks for a selected Project — refuses `/`, requires acknowledgement for home, non-Git, and privileged targets. |
 | `catalog_io.py` | The two concurrency primitives: `catalog_lock` (`:19`), `mutation_lock` (`:47`), and the durable `atomic_write_json` (`:89`) that fsyncs the parent directory before returning. |
@@ -83,7 +83,7 @@ virtual). Everything for one Project lives in that Project's single
 | `gui_template.py` | The single-page app, inlined as HTML+CSS+JS. |
 | `gui_mutation.py` | `GuiMutationCoordinator` (`:12`) — one ownership gate across ingest, maintenance, clear, and undo. |
 | `gui_ingest.py` | Build subprocess management, schedules, and `clear_project`; ties a child build to the GUI with Linux `PR_SET_PDEATHSIG`, a Windows Job Object, or a macOS watchdog. |
-| `gui_ops.py` | Maintenance endpoints. |
+| `gui_ops.py` | Maintenance endpoints, including Connected-Project hard-prune preview/apply workers. |
 | `gui_install.py` | Client connect/disconnect from the GUI. |
 
 The Memory Map is window-owned: closing the window stops the server. There is
@@ -145,9 +145,13 @@ add|remove`.
 `memory log|undo`, `backup`, `stats`, `storage`, `legacy-service`,
 `legacy-recovery preview|apply`.
 
-`storage` is read-only unless `--apply` is passed, and `--apply` is refused
-unless at least one of `--keep-backups`, `--expire-operations-days`, or
-`--expire-tombstones-days` is configured.
+`storage` is read-only unless `--apply` is passed. Ordinary retention apply is
+refused unless at least one of `--keep-backups`, `--expire-operations-days`,
+or `--expire-tombstones-days` is configured. `storage --hard-prune` is a
+separate preview-first path: its `--apply` requires the exact digest from the
+preview plus `DELETE`, or `DELETE WITHOUT LOCAL RECOVERY SNAPSHOT` when no
+local snapshot was requested. It can touch only eligible expired tombstones,
+old operation history, and unprotected backups.
 
 **Memory Map** — `start`, `gui`.
 
@@ -156,9 +160,10 @@ Every path-taking command that mints or writes routes through
 destination-scoped `mutation_lock`.
 
 `stats` and `storage` are different instruments and are not interchangeable:
-`cmd_stats` (`cli.py:590`) prints chunk/doc counts and a vector-search p95
-benchmark via `_stats_async` (`cli.py:556`); `cmd_storage` (`cli.py:610`)
-delegates to `storage_accounting.storage_report`.
+`cmd_stats` (`cli.py:610`) prints chunk/doc counts and a vector-search p95
+benchmark via `_stats_async` (`cli.py:576`); `cmd_storage` (`cli.py:630`)
+delegates to `storage_accounting.storage_report` or the digest-gated
+hard-prune planner/executor when explicitly requested.
 
 ## On-disk state
 
@@ -170,6 +175,8 @@ the namespace is overridable with `BRAINCELL_DATA_NAMESPACE`.
 | `projects/<ulid>/braincell.db` | The Project's entire memory |
 | `projects/<ulid>/transcript_ingest_ledger.json` | Ingest checkpoint |
 | `projects/<ulid>/braincell.db.mutation.lock` | Fixed per-destination interprocess lock |
+| `projects/<ulid>/maintenance-preferences.json` | Per-Project typed-delete bypass preference; default false |
+| `projects/<ulid>/maintenance-audit.json` | Durable hard-prune started/completed/failed evidence; not a recovery copy |
 | `path-registry.json` | Absolute Project path → ULID |
 | `pools.json` | ULID-only Pool membership; never copied memory or paths |
 | `families.json` | Retired family memberships |
