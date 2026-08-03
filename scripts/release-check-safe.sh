@@ -36,6 +36,16 @@ die() {
     exit 2
 }
 
+cleanup_run() {
+    local run_dir=$1 cleanup_status=$2
+    if [ "$cleanup_status" -ne 0 ] || [ "$KEEP_RUN" = "1" ]; then
+        printf 'Release-check artifacts retained: %s\n' "$run_dir" >&2
+    else
+        rm -rf -- "$run_dir"
+    fi
+    exit "$cleanup_status"
+}
+
 read_cgroup_value() {
     local path=$1 key=$2
     awk -v key="$key" '$1 == key { print $2; exit }' "$path" 2>/dev/null || true
@@ -180,16 +190,7 @@ run_release_check() {
     local run_dir unit_name launcher_pid monitor_pid status
     run_dir=$(mktemp -d "$SANDBOX_ROOT/run-$(date +%Y%m%d-%H%M%S)-XXXXXX")
     unit_name="braincell-release-check-$(date +%Y%m%d%H%M%S)-$$"
-    cleanup() {
-        local cleanup_status=$?
-        if [ "$cleanup_status" -ne 0 ] || [ "$KEEP_RUN" = "1" ]; then
-            printf 'Release-check artifacts retained: %s\n' "$run_dir" >&2
-        else
-            rm -rf -- "$run_dir"
-        fi
-        exit "$cleanup_status"
-    }
-    trap cleanup EXIT
+    trap "cleanup_run $(printf '%q' "$run_dir") \$?" EXIT
 
     flock -n "$SANDBOX_ROOT/release-check.lock" \
         systemd-run --user --scope --quiet --collect --unit="$unit_name" \
