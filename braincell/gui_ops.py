@@ -279,7 +279,8 @@ def run_contradictions(
 
     judge = None
     if not no_llm:
-        judge = lambda a, b: ollama_judge(a, b, model=model)
+        def judge(a: str, b: str) -> bool:
+            return ollama_judge(a, b, model=model)
 
     store = SqliteStore(db_path)
     store.assert_schema_version()

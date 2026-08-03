@@ -3,6 +3,14 @@
 # Run from repo root: bash scripts/multi-os-smoke/run_ci.sh
 set -euo pipefail
 
+# Linux workstations must never recreate an uncaged Qt/package validation run.
+# The dedicated runner isolates state on NVMe and puts tests and packaging in
+# separate systemd cgroups. Other platforms retain this portable CI mirror.
+if [ "$(uname -s)" = "Linux" ]; then
+    SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+    exec "$SCRIPT_DIR/release-check-safe.sh"
+fi
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 NC='\033[0m'

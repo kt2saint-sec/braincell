@@ -14,6 +14,7 @@ through to the real package.
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import sys
 import types
@@ -22,6 +23,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+from braincell import embed as _embmod
 from braincell import embed_spec
 from braincell.embed import _batched_by_size, embed_query, embed_texts
 
@@ -507,12 +509,6 @@ class TestOllamaDimGuardWithConfiguredDim:
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECTION 8: P0-2 asymmetric query/document prefix injection
 # ═══════════════════════════════════════════════════════════════════════════════
-
-# Deliberately mid-file: grouped with the P0-2 section these imports support.
-import hashlib
-
-from braincell import embed as _embmod
-
 
 def _configure(monkeypatch, model: str, dim: int):
     """Reload embed_spec for (model, dim) and clear the query-embed cache."""

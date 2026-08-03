@@ -36,6 +36,7 @@ from .compaction import compact_pages
 from .config import get_db_path
 from .embed import embed_texts
 from .log import get as _get_log
+from .platform import get_claude_config_dir, get_codex_config_dir
 from .project_registry import (
     load_path_registry,
     resolve_claude_dir_to_ulid,
@@ -64,7 +65,6 @@ log = _get_log("braincell.transcript_ingest")
 # and ingested only if that project is in the build's family. Codex
 # payload-nesting extraction + cwd attribution keep ~/.codex in scope;
 # un-attributable files are skipped (files_unattributed), never mis-tagged.
-from .platform import get_claude_config_dir, get_codex_config_dir
 
 _TRANSCRIPT_ROOTS: list[Path] = [
     get_claude_config_dir() / "projects",

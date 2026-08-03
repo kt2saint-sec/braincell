@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from typing import Literal
+from typing import Literal, Protocol
 
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
@@ -51,14 +51,25 @@ def _target_http_exception(exc: ProjectTargetError) -> HTTPException:
     )
 
 
-def _validate_gui_target(body: object, *, require_git: bool = False) -> ProjectTarget:
+class _TargetAcknowledgementBody(Protocol):
+    """The closed request-body fields required for Project target validation."""
+
+    path: str
+    acknowledge_home: bool
+    acknowledge_non_git: bool
+    allow_privileged: bool
+
+
+def _validate_gui_target(
+    body: _TargetAcknowledgementBody, *, require_git: bool = False
+) -> ProjectTarget:
     """Validate a closed request body and expose structured target failures."""
     try:
         return validate_project_target(
-            getattr(body, "path"),
-            acknowledge_home=getattr(body, "acknowledge_home"),
-            acknowledge_non_git=getattr(body, "acknowledge_non_git"),
-            allow_privileged=getattr(body, "allow_privileged"),
+            body.path,
+            acknowledge_home=body.acknowledge_home,
+            acknowledge_non_git=body.acknowledge_non_git,
+            allow_privileged=body.allow_privileged,
             require_git=require_git,
         )
     except ProjectTargetError as exc:

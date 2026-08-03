@@ -29,6 +29,9 @@ import sys
 from pathlib import Path
 
 from .log import get as _get_log
+from .platform import _legacy_linux_style_data_home, _platform_data_home_default
+
+# Platform data-home resolution is delegated to braincell.platform.
 
 log = _get_log("braincell.config")
 
@@ -43,10 +46,6 @@ DATA_NAMESPACE = os.environ.get("BRAINCELL_DATA_NAMESPACE", "braincell")
 # (see `_xdg_data_home`) — every project-path resolution calls this function,
 # and re-warning on every call would flood the log for no added information.
 _data_home_mismatch_warned = False
-
-
-# Delegated to braincell.platform (single source of truth).
-from .platform import _legacy_linux_style_data_home, _platform_data_home_default
 
 
 def _xdg_data_home() -> Path:

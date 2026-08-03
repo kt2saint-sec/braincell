@@ -22,12 +22,18 @@ details are intentionally excluded.
 - Connected Project-only Memory Map Storage & lifecycle review surface with
   disk-impact estimates, candidate proof, approval digest, explicit final
   confirmation, and the deliberately narrow Trust verified maintenance setting.
+- Linux local release validation through `scripts/release-check-safe.sh`: the
+  full test suite remains in its isolated GUI runner, while package build,
+  artifact checks, and clean-install smoke tests run from NVMe inside a separate
+  no-swap cgroup with resource-event evidence.
 
 ### Fixed
 
 - Resolved the missing authorized SQLite compaction/hard-prune execution
   workflow. Active/superseded notes, indexed documents/chunks, semantic
   similarity, and LLM judgments remain outside permanent cleanup authority.
+- Cleared the remaining configured Ruff findings and prevented the Linux local
+  CI mirror from starting an uncaged package/test workload.
 
 ## 1.0.0 - 2026-08-01
 

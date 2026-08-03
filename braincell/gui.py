@@ -36,6 +36,7 @@ from .gui_template import INDEX_HTML
 from .install import claude_registered_map, registration_status
 from .log import get as _get_log
 from .mode import resolve_mode
+from .platform import install_launcher  # noqa: F401 — re-exported for tests
 from .project_registry import (
     add_to_pool,
     create_pool,
@@ -1029,10 +1030,3 @@ def run_gui(
     native_shell.serve_native(
         app, port=port, url=open_url, bridge=native_bridge
     )
-
-
-
-# ── Desktop launcher installer (A3) ─────────────────────────────────────────
-# Delegated to braincell.platform (single source of truth).
-
-from .platform import install_launcher  # noqa: F401 — re-exported for tests

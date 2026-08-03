@@ -128,6 +128,19 @@ scripts/test-gui-safe.sh tests/test_native_shell.py \
   tests/test_native_pool_surface.py tests/test_gui_maintenance_panel.py
 ```
 
+On Linux, run the complete local release gate only through the NVMe-backed,
+cgroup-contained runner:
+
+```bash
+scripts/release-check-safe.sh
+```
+
+It first delegates the test suite to `test-gui-safe.sh`, then builds and checks
+the wheel and sdist in a separate no-swap cgroup. Its per-run directory records
+memory peak, process count, and cgroup pressure events; any pressure event fails
+the release check and retains the artifacts for inspection. It refuses an
+uncaged invocation, a non-NVMe workspace, or insufficient free disk space.
+
 SQLite changes must preserve one transaction owner from `BEGIN` through
 commit/rollback. Any multi-statement mutation needs a fault-injection regression
 that proves the prior committed state survives a failure. Project database
