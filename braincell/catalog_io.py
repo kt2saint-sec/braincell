@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -20,15 +21,40 @@ def catalog_lock(catalog_path: Path) -> Iterator[None]:
     """Hold an exclusive process lock associated with *catalog_path*."""
     catalog_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = catalog_path.with_name(f"{catalog_path.name}.lock")
-    with lock_path.open("a+b") as lock_file:
+    # r+b after touch, mirroring mutation_lock: append mode sent the one-byte
+    # seed to EOF on every acquisition, growing the lockfile forever.
+    lock_path.touch(exist_ok=True)
+    with lock_path.open("r+b") as lock_file:
         if os.name == "nt":
             import msvcrt
 
-            lock_file.seek(0)
-            lock_file.write(b"\0")
-            lock_file.flush()
-            lock_file.seek(0)
-            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+            # Seed exactly one byte BEFORE locking, never write while locked
+            # (same CRT region-bookkeeping constraint as mutation_lock).
+            # Windows region locks are MANDATORY: while a contender holds
+            # byte 0, even reading it raises EACCES — which itself proves the
+            # byte exists, so treat any OSError here as already-seeded. The
+            # same race can hit the seed write; a failed seed means another
+            # process seeded and locked first, which is equally fine.
+            try:
+                lock_file.seek(0)
+                if lock_file.read(1) == b"":
+                    lock_file.seek(0)
+                    lock_file.write(b"\0")
+                    lock_file.flush()
+            except OSError:
+                pass
+            # A real blocking acquire. msvcrt's LK_LOCK is NOT one: it retries
+            # ten times a second apart, then raises EDEADLK ("Resource
+            # deadlock avoided") — observed in CI with 16 contending catalog
+            # writers on a slow runner. POSIX flock blocks indefinitely, and
+            # this loop matches that contract.
+            while True:
+                lock_file.seek(0)
+                try:
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    time.sleep(0.05)
         else:
             import fcntl
 
@@ -37,8 +63,14 @@ def catalog_lock(catalog_path: Path) -> Iterator[None]:
             yield
         finally:
             if os.name == "nt":
-                lock_file.seek(0)
-                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                try:
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    # The handle close (next) releases the OS region lock; a
+                    # CRT-level unlock failure must not fail the completed
+                    # catalog write.
+                    pass
             else:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 

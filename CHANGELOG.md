@@ -94,6 +94,9 @@ details are intentionally excluded.
   locked operation (build, re-embed, maintenance, retention, hard-prune) at
   completion on Windows; lock metadata also no longer accumulates across
   acquisitions.
+- Windows: the shared catalog lock now blocks until the lock frees instead
+  of failing with "Resource deadlock avoided" after ten seconds of
+  contention, and its lockfile no longer grows with every acquisition.
 - Windows: legacy recovery closes its read-only snapshot connections, so
   refused-preview snapshot cleanup and backup retention work on Windows,
   where files with open handles cannot be deleted.
