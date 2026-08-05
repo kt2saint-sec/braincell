@@ -224,6 +224,11 @@ svg.stage:active{cursor:grabbing}
 .dr-actions .btn{font-size:11.5px;padding:6px 11px}
 .dr-sched{display:flex;align-items:center;gap:8px;margin-top:10px;font-size:11.5px;color:var(--mut)}
 .dr-sched select{border:1px solid rgba(200,207,216,.18);background:rgba(0,0,0,.35);color:var(--ink);border-radius:8px;padding:5px 8px;font:inherit;font-size:12px;outline:0}
+.maintenance-card{width:100%;display:flex;align-items:center;gap:10px;text-align:left;margin-top:12px;padding:9px 10px;color:var(--silver-h);cursor:pointer;background:rgba(24,201,138,.06);border:1px solid rgba(24,201,138,.25);border-radius:11px;box-shadow:inset 0 1px 0 rgba(255,255,255,.05)}
+.maintenance-card:hover{background:rgba(24,201,138,.12);border-color:var(--gold)}
+.maintenance-card:focus-visible{outline:2px solid var(--gold-h);outline-offset:2px}
+.maintenance-icon{color:var(--gold-h);font-size:16px}.maintenance-copy{min-width:0;flex:1}.maintenance-title{display:block;font-family:var(--disp);font-size:12px;font-weight:600}.maintenance-sub{display:block;margin-top:1px;font-size:10.5px;color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.maintenance-arrow{color:var(--silver);font-size:16px}
+.maint-step{display:flex;gap:10px;padding:10px 0;border-bottom:1px solid rgba(200,207,216,.1)}.maint-step:last-child{border-bottom:0}.maint-num{flex:0 0 22px;height:22px;display:grid;place-items:center;border:1px solid rgba(24,201,138,.45);border-radius:50%;font:600 11px var(--disp);color:var(--gold-h)}.maint-step h3{font:600 13px var(--disp);color:var(--silver-h);margin:0}.maint-step p{font-size:11.5px;color:var(--mut);margin:2px 0 0}.maint-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin-top:9px}.maint-metric{padding:8px;border:1px solid rgba(200,207,216,.12);border-radius:9px;background:rgba(0,0,0,.18)}.maint-metric b{display:block;font:600 13px var(--disp);color:var(--silver-h)}.maint-metric span{display:block;margin-top:1px;font-size:10px;color:var(--mut)}.maint-warning{margin-top:12px;padding:10px 11px;border:1px solid rgba(220,80,80,.45);border-radius:10px;background:rgba(220,80,80,.08);font-size:11.5px;color:#ffd7d7}.maint-warning b{color:#fff0f0}.maint-setting{display:flex;gap:8px;align-items:flex-start;margin-top:10px;font-size:12px;color:var(--silver-h)}.maint-setting input{margin-top:3px}.maint-setting small{display:block;margin-top:2px;color:var(--mut);line-height:1.4}.maint-ack{margin-top:10px}.maint-ack code{font-size:10px;word-break:break-word;color:#fff0f0}.maint-empty{font-size:12px;color:var(--faint);padding:10px 0}
 #chip-job{cursor:default}
 #chip-job .dot{background:var(--gold);box-shadow:0 0 9px var(--glow-g);animation:pulse 1.1s ease-in-out infinite}
 /* embedder header chip — quiet when ok; loud + clickable (fix modal) when down */
@@ -410,6 +415,9 @@ svg.stage:active{cursor:grabbing}
         <div class="stat"><b id="dr-chunks">0</b><span>chunks</span></div>
         <div class="stat"><b id="dr-notes">0</b><span>notes</span></div>
       </div>
+      <button class="maintenance-card" id="dr-maintenance-card" style="display:none" onclick="openMaintenanceReview()" title="Review storage health and maintenance safeguards for the Connected Project">
+        <span class="maintenance-icon">◇</span><span class="maintenance-copy"><span class="maintenance-title">Storage &amp; lifecycle</span><span class="maintenance-sub" id="dr-maintenance-sub">Review disk impact and safeguards</span></span><span class="maintenance-arrow">›</span>
+      </button>
       <div class="dr-actions" id="dr-actions" style="display:none">
         <button class="btn" id="dr-rebuild-btn" onclick="reingestSelected()">⟳ Rebuild now</button>
         <button class="btn" id="dr-reassociate-btn" onclick="reassociateSelected()">↪ Reassociate path</button>
@@ -437,15 +445,15 @@ svg.stage:active{cursor:grabbing}
       <div class="mcp-note" id="dr-mcp-note">To restart the MCP server, reconnect in your client — run <b>/mcp</b> in Claude Code. The GUI cannot restart it; it runs inside your MCP client.</div>
     </div>
     <div class="col c-search">
-      <div class="sec">Search this project</div>
+      <div class="sec">Search Connected Project memory</div>
       <div class="dr-search">
-        <input id="dr-q" placeholder="Search this project's memory…" onkeydown="if(event.key==='Enter')drawerSearch()">
+        <input id="dr-q" placeholder="Search Connected Project memory…" onkeydown="if(event.key==='Enter')drawerSearch()">
         <button class="btn" onclick="drawerSearch()">Go</button>
       </div>
       <div id="dr-hits-list"></div>
     </div>
     <div class="col c-notes">
-      <div class="sec">Recent notes</div>
+      <div class="sec">Recent Connected Project notes</div>
       <div id="dr-notes-list"></div>
     </div>
   </div>
@@ -584,16 +592,52 @@ async function apiPost(url,body){
     const r=await fetch(withTok(url),{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
     if(!r.ok){
       if(r.status===401){on401();throw new Error("401: session expired — reloading");}
-      let msg=r.statusText;try{const j=await r.json();msg=j.detail||JSON.stringify(j);}catch(_){}
+      let msg=r.statusText,detail=null;
+      try{
+        const j=await r.json();detail=j.detail;
+        msg=typeof detail==="string"?detail:(detail&&detail.message)||JSON.stringify(j);
+      }catch(_){}
+      const err=new Error(`${r.status}: ${msg}`);
+      if(detail&&typeof detail==="object")err.code=detail.code;
+      throw err;
+    }
+    authOk();
+    return await r.json();
+  }catch(e){throw e;}
+}
+async function apiPut(url,body){
+  try{
+    const r=await fetch(withTok(url),{method:"PUT",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    if(!r.ok){
+      if(r.status===401){on401();throw new Error("401: session expired — reloading");}
+      let msg=r.statusText;
+      try{const j=await r.json();msg=typeof j.detail==="string"?j.detail:JSON.stringify(j);}catch(_){}
       throw new Error(`${r.status}: ${msg}`);
     }
     authOk();
     return await r.json();
   }catch(e){throw e;}
 }
-/* Like apiFetch, but surfaces the backend's 404 "not built" answer (a sibling
-   project whose brain doesn't exist yet) as {notBuilt:true} instead of
-   collapsing it into null — the drawer maps it to an honest empty state. */
+let _nonGitRetry=null;
+function requestNonGitAcknowledgement(err,body,retry){
+  if(!err||err.code!=="non_git_acknowledgement_required")return false;
+  _nonGitRetry=()=>retry({...body,acknowledge_non_git:true});
+  openModal("Use non-Git Project?",
+    `This folder has no <code>.git</code> marker. BrainCell supports intentional non-Git Projects, but will not change client configuration until you confirm it. GitLab clones normally have <code>.git</code> and do not need this confirmation.`,
+    "",
+    `<button class="btn" onclick="cancelNonGitAcknowledgement()">Cancel</button>
+     <button class="btn primary" onclick="confirmNonGitAcknowledgement()">Use this non-Git Project</button>`);
+  return true;
+}
+function cancelNonGitAcknowledgement(){_nonGitRetry=null;closeModal();}
+async function confirmNonGitAcknowledgement(){
+  const retry=_nonGitRetry;_nonGitRetry=null;closeModal();
+  try{if(retry)await retry();}
+  catch(err){toast(`Operation failed: ${err.message}`,"err");}
+}
+/* Like apiFetch, but surfaces the backend's 404 "not built" answer for the
+   connected Project as {notBuilt:true}; the drawer maps it to an honest empty
+   state instead of collapsing it into null. */
 async function apiFetchView(url){
   try{
     const r=await fetch(withTok(url),{credentials:"same-origin"});
@@ -611,15 +655,14 @@ async function apiFetchView(url){
 let seedProjectId=null;
 function scopeParams(){return "";}
 
-/* ════════ VIEWED PROJECT vs CONNECTED PROJECT ════════
-   activeProjectId = whose memory the GUI is showing: map focus, inspector,
-   drawer notes/search. Switching it is a VIEW change only; writes stay pinned
-   to the connected project's opened store. Init: ?active= URL param → connected
-   seed → null (rides the URL like ?scope=,
-   so a view is shareable/bookmarkable). */
+/* ════════ SELECTED PROJECT vs CONNECTED PROJECT ════════
+   activeProjectId selects a Project's map cell, catalog statistics, inspector,
+   and membership controls. Ordinary notes/search and every write remain pinned
+   to the connected Project's opened store. Cross-Project reads require an
+   explicit named Pool. Init: ?active= URL param → connected seed → null. */
 let activeProjectId=null,_activeInit=false;
 const _urlActive=new URLSearchParams(location.search).get("active");
-const RO_VIEW_TITLE="read-only view — launch braincell gui on this folder to manage it";
+const RO_VIEW_TITLE="Selected Project is catalog-only. Memory panels show the Connected Project. Use an explicit Pool query for live read-only cross-Project memory.";
 function isLaunch(){
   /* Seedless test factories have no connected project to pin to. */
   if(!seedProjectId)return true;
@@ -702,18 +745,12 @@ function setActiveProject(pid){
   history.replaceState(null,"",u.toString());
   renderActiveChip();
   feedFilterSync();
-  /* re-run the open drawer view immediately (same pattern as setScope);
-     following the active node keeps header + notes on one project */
+  /* Selection changes catalog focus; ordinary memory never changes Project. */
   const dk=document.getElementById("drawer");
   if(dk&&dk.classList.contains("open")){
     const nd=nodes.find(n=>n.id===activeProjectId);
     if(nd&&selected!==nd.id)openDock(nd);
-    else{
-      paintInspectorRo();
-      loadDrawerNotes();
-      const dq=document.getElementById("dr-q");
-      if(dq&&dq.value.trim())drawerSearch();
-    }
+    else paintInspectorRo();
   }
   draw();
 }
@@ -1175,6 +1212,15 @@ async function arStepBuild(){
   try{
     await apiPost("/api/ingest",{path:arPath});
   }catch(err){
+    if(/limited to the connected Project/i.test(err.message||"")){
+      openModal("Add a project — one Project per Memory Map",esc(arPath),
+        `<div style="font-size:12.5px;line-height:1.5">This Memory Map manages only the
+         <b>connected Project</b>. To add a different project, run
+         <code>braincell setup ${esc(arPath)}</code> in a terminal, then launch that
+         project's own Memory Map with <code>braincell start ${esc(arPath)}</code>.</div>`,
+        `<button class="btn primary" onclick="closeModal()">OK</button>`);
+      return;
+    }
     const st=document.getElementById("ar-build-status");
     if(st)st.textContent=`Failed to start: ${err.message}`;
     return;
@@ -1215,6 +1261,8 @@ function arStepInstall(){
      <select class="mo-input" id="ar-client">
        <option value="claude">claude</option>
        <option value="codex">codex</option>
+       <option value="vscode">vscode</option>
+       <option value="opencode">opencode</option>
      </select>
      <div class="mo-label">Scope</div>
      <select class="mo-input" id="ar-scope">
@@ -1228,13 +1276,18 @@ function arStepInstall(){
 async function arDoInstall(){
   const client=document.getElementById("ar-client").value;
   const scope=document.getElementById("ar-scope").value;
+  await submitInstall({path:arPath,client,scope});
+}
+async function submitInstall(body){
   const errBox=document.getElementById("ar-install-err");
   try{
-    const res=await apiPost("/api/install",{path:arPath,client,scope});
-    arProjectId=res.project_id;arClient=client;
+    const res=await apiPost("/api/install",body);
+    arProjectId=res.project_id;arClient=body.client;
     arStepPool();
   }catch(err){
+    if(requestNonGitAcknowledgement(err,body,submitInstall))return;
     if(errBox){errBox.style.display="";errBox.textContent=err.message;}
+    else toast(`Connect BrainCell failed: ${err.message}`,"err");
   }
 }
 async function arStepPool(){
@@ -1374,6 +1427,7 @@ function openDock(nd){
   document.getElementById("dr-chunks").textContent=nd.chunks.toLocaleString();
   document.getElementById("dr-notes").textContent=nd.notes;
   renderFamTags(nd);
+  paintMaintenanceCard(nd);
   document.getElementById("dr-actions").style.display=status.allow_writes?"":"none";
   syncSchedUi(nd);
   paintInspectorRo();
@@ -1382,6 +1436,189 @@ function openDock(nd){
   document.getElementById("drawer").classList.add("open");
   size();   /* the dock changes the stage's height — resize the sim viewport */
   loadDrawerNotes();
+}
+
+function paintMaintenanceCard(nd){
+  const card=document.getElementById("dr-maintenance-card");
+  if(!card)return;
+  const connected=isLaunch()&&!!seedProjectId&&nd.id===seedProjectId;
+  card.style.display=connected?"":"none";
+  if(connected){
+    const sub=document.getElementById("dr-maintenance-sub");
+    if(sub)sub.textContent="Review disk impact and safeguards";
+  }
+}
+
+function maintenanceBytes(value){
+  if(typeof value!=="number"||value<0)return "unavailable";
+  const units=["B","KB","MB","GB","TB"];let n=value,i=0;
+  while(n>=1024&&i<units.length-1){n/=1024;i++;}
+  return `${n>=10||i===0?n.toFixed(0):n.toFixed(1)} ${units[i]}`;
+}
+const MAINTENANCE_ACKNOWLEDGEMENT="ENABLING THIS FEATURE MEANS I AGREE BRAINCELL IS NOT RESPONSIBLE SINCE I WAS ADVISED OF RISKS";
+
+async function openMaintenanceReview(){
+  if(!isLaunch()||!seedProjectId){toast(RO_VIEW_TITLE,"err");return;}
+  openModal("Storage & lifecycle","Connected Project only — this panel reviews state; it does not delete or compact memory.",
+    `<div class="maint-empty">Loading storage health…</div>`,
+    `<button class="btn" onclick="closeModal()">Close</button>`);
+  const overview=await apiFetch("/api/maintenance/overview");
+  if(!overview){
+    const body=document.getElementById("mo-body");
+    if(body)body.innerHTML=`<div class="maint-warning"><b>Storage health could not be loaded.</b><br>Nothing was changed. Close this panel and retry.</div>`;
+    return;
+  }
+  const impact=overview.storage_impact||{},fs=impact.filesystem||{},snapshot=impact.local_snapshot||{},compact=impact.compaction||{},budget=overview.storage_budget||{},footprint=budget.project_footprint||{},storageWarnings=Array.isArray(budget.warnings)?budget.warnings:[];
+  const prefs=overview.preferences||{},trusted=!!prefs.bypass_delete_confirmation;
+  const writable=!!status.allow_writes;
+  const body=document.getElementById("mo-body");
+  if(!body)return;
+  body.innerHTML=`
+    <div class="maint-step"><span class="maint-num">1</span><div><h3>Storage health</h3><p>Read-only measurements for this Connected Project. Review comes before any permanent cleanup.</p>
+      <div class="maint-metrics">
+        <div class="maint-metric"><b>${esc(maintenanceBytes(fs.free_bytes))}</b><span>free local disk</span></div>
+        <div class="maint-metric"><b>${esc(maintenanceBytes(footprint.bytes))}</b><span>Connected Project local state</span></div>
+        <div class="maint-metric"><b>${esc(maintenanceBytes(snapshot.estimated_retained_bytes))}</b><span>future local snapshot growth</span></div>
+        <div class="maint-metric"><b>${esc(maintenanceBytes(compact.conservative_temporary_bytes))}</b><span>conservative compaction workspace</span></div>
+        <div class="maint-metric"><b>${esc(maintenanceBytes(compact.estimated_reclaimable_bytes))}</b><span>SQLite reclaimable estimate</span></div>
+      </div>
+      <p>${esc(impact.memory_notice||"Runtime memory is not estimated.")}</p>
+      ${storageWarnings.length?`<div class="maint-warning"><b>Storage review needed.</b><br>${storageWarnings.map(item=>esc(item.message||"Storage warning.")).join("<br>")}<br>${esc(budget.notice||"Nothing was changed.")}</div>`:`<p>${esc(budget.notice||"Storage warnings are review-only; nothing was changed.")}</p>`}</div></div>
+    <div class="maint-step"><span class="maint-num">2</span><div style="min-width:0"><h3>Review candidates</h3><p>Choose at least one explicit age/count policy, then analyze. Semantic or LLM suggestions never authorize deletion.</p>
+      <div class="maint-metrics" style="margin-top:8px">
+        <label class="maint-metric"><span>keep newest backups</span><input class="mo-input" id="hp-keep" type="number" min="0" placeholder="off" style="margin-top:5px;padding:5px 7px"></label>
+        <label class="maint-metric"><span>expire operation days</span><input class="mo-input" id="hp-ops-days" type="number" min="0" placeholder="off" style="margin-top:5px;padding:5px 7px"></label>
+        <label class="maint-metric"><span>expire tombstone days</span><input class="mo-input" id="hp-tomb-days" type="number" min="0" placeholder="off" style="margin-top:5px;padding:5px 7px"></label>
+        <div class="maint-metric"><b>Project only</b><span>documents, chunks, active and superseded notes are excluded</span></div>
+      </div>
+      <div style="margin-top:9px"><button class="btn" ${writable?"":'disabled title="read-only: launch with --allow-writes"'} onclick="analyzeHardPrune()">Analyze candidates</button></div>
+      <div id="hp-review" class="maint-empty">No candidate analysis yet.</div></div></div>
+    <div class="maint-step"><span class="maint-num">3</span><div style="min-width:0"><h3>Confirm and run</h3><p>Apply stays unavailable until the current reviewed digest and final confirmation are present. A local snapshot is optional; no snapshot never means no review.</p><div id="hp-confirm" class="maint-empty">Analyze eligible candidates first.</div><div id="cmd-op-status" style="font-size:12px;color:var(--gold-h);margin-top:8px"></div><div class="joblog" id="cmd-op-log" style="display:none"></div></div></div>
+    <div class="maint-warning"><b>Trust verified maintenance is serious.</b><br>It only skips typing <code>DELETE</code> in a future run. It never skips review, proof, approval digest, final Apply, snapshot choice, or execution safeguards. It does not authorize unattended LLM deletion.</div>
+    <label class="maint-setting"><input type="checkbox" id="mt-bypass" data-trusted="${trusted?"true":"false"}" ${trusted?"checked":""} ${writable?"":'disabled title="read-only: launch with --allow-writes"'} onchange="maintenanceBypassToggled()"><span>Trust verified maintenance for this Connected Project<small>${trusted?"Enabled: typing DELETE will be skipped only after all other future safeguards.":"Off by default: typing DELETE will remain required for future permanent cleanup."}</small></span></label>
+    <div id="mt-setting-action"></div>`;
+  maintenanceBypassToggled();
+}
+
+function maintenanceBypassToggled(){
+  const toggle=document.getElementById("mt-bypass"),zone=document.getElementById("mt-setting-action");
+  if(!toggle||!zone)return;
+  if(!status.allow_writes){zone.innerHTML="";return;}
+  if(!toggle.checked){
+    zone.innerHTML=toggle.dataset.trusted==="true"
+      ?`<div class="maint-ack"><button class="btn" onclick="disableMaintenanceBypass()">Keep typed DELETE required</button></div>`
+      :"";
+    return;
+  }
+  zone.innerHTML=`<div class="maint-ack"><div class="mo-label">Type this exact acknowledgement</div><code>${esc(MAINTENANCE_ACKNOWLEDGEMENT)}</code><input class="mo-input" id="mt-ack" autocomplete="off" oninput="syncMaintenanceAcknowledgement()"><div style="margin-top:8px"><button class="btn danger" id="mt-enable" disabled onclick="enableMaintenanceBypass()">Enable trust bypass</button></div></div>`;
+}
+
+function syncMaintenanceAcknowledgement(){
+  const input=document.getElementById("mt-ack"),button=document.getElementById("mt-enable");
+  if(button)button.disabled=!input||input.value!==MAINTENANCE_ACKNOWLEDGEMENT;
+}
+
+async function enableMaintenanceBypass(){
+  const input=document.getElementById("mt-ack");
+  if(!input||input.value!==MAINTENANCE_ACKNOWLEDGEMENT)return;
+  try{
+    await apiPut("/api/preferences/maintenance",{bypass_delete_confirmation:true,acknowledgement:input.value});
+    toast("Trust bypass enabled for this Connected Project");
+    await openMaintenanceReview();
+  }catch(err){toast(`Could not enable trust bypass: ${err.message}`,"err");}
+}
+
+async function disableMaintenanceBypass(){
+  try{
+    await apiPut("/api/preferences/maintenance",{bypass_delete_confirmation:false});
+    toast("Typed DELETE will remain required");
+    await openMaintenanceReview();
+  }catch(err){toast(`Could not change trust bypass: ${err.message}`,"err");}
+}
+
+let _hardPrunePlan=null,_hardPruneTrusted=false;
+function hardPruneNumber(id){
+  const raw=((document.getElementById(id)||{}).value||"").trim();
+  if(!raw)return null;
+  const value=Number(raw);
+  return Number.isInteger(value)&&value>=0?value:null;
+}
+function hardPrunePolicy(){
+  return {
+    project_id:seedProjectId,
+    keep_backups:hardPruneNumber("hp-keep"),
+    expire_operations_days:hardPruneNumber("hp-ops-days"),
+    expire_tombstones_days:hardPruneNumber("hp-tomb-days"),
+  };
+}
+function hardPruneConfirmationPhrase(){
+  return (document.getElementById("hp-snapshot")||{}).checked
+    ?"DELETE":"DELETE WITHOUT LOCAL RECOVERY SNAPSHOT";
+}
+function renderHardPruneConfirmation(){
+  const box=document.getElementById("hp-confirm");
+  if(!box||!_hardPrunePlan)return;
+  const existingSnapshot=document.getElementById("hp-snapshot");
+  const snapshotChecked=!!(existingSnapshot&&existingSnapshot.checked);
+  const count=_hardPrunePlan.candidate_count||0;
+  if(!count){box.innerHTML=`<div class="maint-empty">No eligible candidates under this policy. Nothing can be applied.</div>`;return;}
+  const snapshot=_hardPrunePlan.storage_impact.local_snapshot||{};
+  const snapshotSpace=snapshot.fits_available_space===false
+    ?`<div class="maint-warning">This device does not currently have the estimated local disk space for a retained snapshot. You may proceed without one only with the stronger confirmation phrase.</div>`:"";
+  const phrase=snapshotChecked?"DELETE":"DELETE WITHOUT LOCAL RECOVERY SNAPSHOT";
+  const typed=_hardPruneTrusted
+    ?`<div class="warn-note">Trust verified maintenance is enabled for this Connected Project. Review, proof, this digest, final Apply, and execution safeguards still apply.</div>`
+    :`<div class="maint-ack"><div class="mo-label">Type this exact phrase</div><code id="hp-phrase">${esc(phrase)}</code><input class="mo-input" id="hp-typed" autocomplete="off" oninput="syncHardPruneApply()"></div>`;
+  box.innerHTML=`<div class="maint-ack"><label class="maint-setting"><input type="checkbox" id="hp-snapshot" ${snapshotChecked?"checked":""} onchange="renderHardPruneConfirmation()"><span>Create an optional local recovery snapshot<small>It uses about ${esc(maintenanceBytes(snapshot.estimated_retained_bytes))} of local disk. It is a same-host copy, not a guaranteed backup.</small></span></label>${snapshotSpace}${typed}<div style="margin-top:9px"><button class="btn danger" id="hp-apply" disabled onclick="startHardPrune()">Apply reviewed cleanup</button></div></div>`;
+  syncHardPruneApply();
+}
+function syncHardPruneApply(){
+  const button=document.getElementById("hp-apply");
+  if(!button)return;
+  if(_hardPruneTrusted){button.disabled=false;return;}
+  const input=document.getElementById("hp-typed");
+  button.disabled=!input||input.value!==hardPruneConfirmationPhrase();
+}
+async function analyzeHardPrune(){
+  if(!requireWrites())return;
+  const policy=hardPrunePolicy();
+  if(policy.keep_backups===null&&policy.expire_operations_days===null&&policy.expire_tombstones_days===null){toast("Set at least one retention policy before analysis","err");return;}
+  const review=document.getElementById("hp-review");
+  if(review)review.textContent="Analyzing eligible stale state…";
+  try{
+    const plan=await apiPost("/api/ops/hard-prune/plan",policy);
+    _hardPrunePlan=plan;
+    _hardPruneTrusted=!!((plan.preferences||{}).bypass_delete_confirmation);
+    const selection=plan.selection||{};
+    const noteIds=(selection.expired_tombstone_note_ids||[]).map(Number).join(", ")||"none";
+    const opIds=(selection.expired_operation_ids||[]).map(Number).join(", ")||"none";
+    const backupNames=(selection.unprotected_backup_paths||[]).map(path=>String(path).split("/").pop()).join(", ")||"none";
+    if(review)review.innerHTML=`<div class="note"><div class="k">Reviewed digest</div><div class="c"><code>${esc(plan.approval_digest)}</code></div><div class="m">${Number(plan.candidate_count||0)} eligible: ${Number((selection.expired_tombstone_note_ids||[]).length)} tombstones, ${Number((selection.expired_operation_ids||[]).length)} operation rows, ${Number((selection.unprotected_backup_paths||[]).length)} backups.</div><div class="m">Tombstone IDs: ${esc(noteIds)} · operation IDs: ${esc(opIds)} · backups: ${esc(backupNames)}</div><div class="m">Proof: explicit tombstone marker + age, operation age, or unprotected backup retention. Protected undo history is excluded.</div></div>`;
+    renderHardPruneConfirmation();
+  }catch(err){
+    _hardPrunePlan=null;
+    if(review)review.innerHTML=`<div class="maint-warning">Analysis failed: ${esc(err.message)}</div>`;
+    toast(`Hard-prune analysis failed: ${err.message}`,"err");
+  }
+}
+async function startHardPrune(){
+  if(!_hardPrunePlan||!requireWrites())return;
+  const snapshot=!!(document.getElementById("hp-snapshot")||{}).checked;
+  const typed=document.getElementById("hp-typed");
+  const phrase=_hardPruneTrusted?null:(typed?typed.value:null);
+  if(!_hardPruneTrusted&&phrase!==hardPruneConfirmationPhrase())return;
+  const policy=hardPrunePolicy();
+  try{
+    await apiPost("/api/ops/hard-prune/apply",{
+      ...policy,
+      approval_digest:_hardPrunePlan.approval_digest,
+      confirmation_phrase:phrase,
+      create_local_snapshot:snapshot,
+    });
+    const button=document.getElementById("hp-apply");if(button)button.disabled=true;
+    toast("Hard-prune started — the map will wait briefly for live readers before compaction");
+    opsWatch();
+  }catch(err){toast(`Hard-prune failed to start: ${err.message}`,"err");}
 }
 /* A viewed Project can be read-only. The write endpoints act on the connected
    store only, so managing another Project from
@@ -1444,9 +1681,17 @@ function mcpRegisterSelected(){
   arStepInstall();
 }
 /* shared POST — the dock's Deregister modal and the Commands row both land here */
-async function mcpDeregister(path,client,scope){
-  const r=await apiPost("/api/uninstall",{path,client,scope});
-  toast(`Disconnected from ${client}: BrainCell ${r.mcp_removed?"removed":"not removed"}`);
+async function mcpDeregister(path,client,scope,acknowledge_non_git=false,onSuccess=null){
+  const body={path,client,scope,acknowledge_non_git};
+  try{
+    const r=await apiPost("/api/uninstall",body);
+    toast(`Disconnected from ${client}: BrainCell ${r.mcp_removed?"removed":"not removed"}`);
+    if(onSuccess)await onSuccess();
+    return true;
+  }catch(err){
+    if(requestNonGitAcknowledgement(err,body,next=>mcpDeregister(next.path,next.client,next.scope,next.acknowledge_non_git,onSuccess)))return false;
+    throw err;
+  }
 }
 function mcpDeregisterSelected(){
   const nd=nodes.find(n=>n.id===selected);if(!nd)return;
@@ -1456,7 +1701,7 @@ function mcpDeregisterSelected(){
     `Remove <b>${esc(nd.name)}</b>'s braincell MCP registration from a client. The brain data itself is untouched.`,
     `<div class="mo-label">MCP client</div>
      <select class="mo-input" id="dm-client">
-       <option value="claude">claude</option><option value="codex">codex</option><option value="vscode">vscode</option>
+       <option value="claude">claude</option><option value="codex">codex</option><option value="vscode">vscode</option><option value="opencode">opencode</option>
      </select>
      <div class="mo-label">Scope</div>
      <select class="mo-input" id="dm-scope">
@@ -1473,10 +1718,12 @@ async function doDeregisterSelected(){
   try{
     /* VS Code removal is manual — the server's 409 instructions surface
        verbatim in the error toast below. */
-    await mcpDeregister(nd.path,client,scope);
-    await loadAll();   /* repaint registration state from the server's answer */
-    const nd2=nodes.find(n=>n.id===nd.id);
-    if(nd2)openDock(nd2);
+    const repaint=async()=>{
+      await loadAll();   /* repaint registration state from the server's answer */
+      const nd2=nodes.find(n=>n.id===nd.id);
+      if(nd2)openDock(nd2);
+    };
+    if(!await mcpDeregister(nd.path,client,scope,false,repaint))return;
   }catch(err){toast(`Deregister failed: ${err.message}`,"err");}
 }
 function closeDock(){selected=null;document.getElementById("drawer").classList.remove("open");size();}
@@ -1523,7 +1770,7 @@ async function removeFamTag(nodeId,famName){
   }
 }
 
-/* honest empty state for a sibling whose brain doesn't exist yet (backend 404) */
+/* Honest empty state when the connected Project has not been built yet (backend 404). */
 function notBuiltHtml(){
   return `<div style="color:var(--faint);font-size:12px">Not built yet — <b>Build memory</b> to absorb this folder.</div>`;
 }
@@ -1543,8 +1790,8 @@ async function loadDrawerNotes(){
     const ts=(n.created_at||"").slice(0,10);
     /* forget = the GUI face of `braincell forget` (soft-delete). Write-gated:
        the button renders only when writes are on (/api/forget is unmounted
-       read-only, so a click would 404 anyway). On a read-only sibling view it
-       renders DISABLED (never hidden) — writes act on the launch store only. */
+       read-only, so a click would 404 anyway). A selected non-connected
+       Project keeps the control disabled — writes act on the launch store only. */
     const del=status.allow_writes&&n.id!=null
       ?(launchView
         ?`<span class="ftag-x" style="float:right" title="Forget this note (soft-delete — hidden from recall, kept for audit)" onclick="confirmForgetNote(${Number(n.id)},'${esc(n.project_id||"").replace(/'/g,"\\'")}')">✕</span>`
@@ -1696,16 +1943,16 @@ function openCommandsModal(){
        <div class="fs-list" id="cmd-pool-results" style="max-height:160px;margin-top:6px;display:none"></div></div>
 
      <div class="note"><div class="k">Project skills</div>
-       <div class="c">Adds BrainCell skills inside the Viewed project. Existing edited copies are
-       never overwritten or removed.</div>
+       <div class="c">Connected Project only. Skills are local instructions for this Project;
+       they never change Pool membership or memory access. Edited copies are never overwritten or removed.</div>
        <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
-         <select class="mo-input" id="cmd-skills-client" style="width:auto;padding:4px 8px">
-           <option value="claude">Claude</option><option value="codex">Codex</option>
+         <select class="mo-input" id="cmd-skills-client" onchange="loadSkillsStatus()" style="width:auto;padding:4px 8px">
+           <option value="claude">Claude</option><option value="codex">Codex</option><option value="opencode">OpenCode</option>
          </select>
-         <button class="btn"${wdis()} onclick="cmdSkills('add')">Add skills</button>
-         <button class="btn"${wdis()} onclick="cmdSkills('remove')">Remove skills</button>
+         <button class="btn"${wdis()} onclick="cmdSkills('add')">Install skills</button>
+         <button class="btn"${wdis()} onclick="cmdSkills('remove')">Remove unchanged skills</button>
        </div>
-       <div class="fs-list" id="cmd-skills-list" style="max-height:120px;margin-top:6px;display:none"></div></div>
+       <div class="fs-list" id="cmd-skills-list" style="max-height:120px;margin-top:6px">Loading skill status…</div></div>
 
      <div class="note"><div class="k">Automatic Pool recall</div>
        <div class="c">Optional Claude hook for the Viewed project. Disabled by default. It queries
@@ -1739,7 +1986,7 @@ function openCommandsModal(){
        run /mcp in Claude Code.</div>
        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:11.5px;color:var(--mut)">
          <select class="mo-input" id="cmd-un-client" style="width:auto;padding:4px 8px">
-           <option value="claude">claude</option><option value="codex">codex</option><option value="vscode">vscode</option>
+           <option value="claude">claude</option><option value="codex">codex</option><option value="vscode">vscode</option><option value="opencode">opencode</option>
          </select>
          <select class="mo-input" id="cmd-un-scope" style="width:auto;padding:4px 8px">
            <option value="local">local</option><option value="project">project</option>
@@ -1768,6 +2015,7 @@ function openCommandsModal(){
      <div style="margin-top:12px;text-align:center;font-size:11px;color:var(--mut)">BrainCell MCP © 2026 Karl Toussaint.</div>`,
     `<button class="btn" onclick="closeModal()">Close</button>`);
   if(_opsPoll===null)opsResume();
+  loadSkillsStatus();
 }
 
 /* inline confirm strip — destructive runs pass through here */
@@ -1897,23 +2145,41 @@ async function cmdLivePool(kind){
     toast(`${kind==="search"?"Search":"Recall"} Pool returned ${rows.length} result(s)`);
   }catch(err){toast(`Pool ${kind} failed: ${err.message}`,"err");}
 }
+function skillStatusLabel(status){
+  return ({not_installed:"Not installed",current:"Up to date",outdated:"Update available",modified:"Edited by you"})[status]||status;
+}
+function renderSkills(rows){
+  const el=document.getElementById("cmd-skills-list");
+  if(!el)return;
+  el.innerHTML=rows.length
+    ?rows.map(s=>`<div class="fs-item" style="cursor:default"><span style="flex:1"><b>${esc(s.name)}</b> — ${esc(skillStatusLabel(s.status))}${s.status==="modified"?" · BrainCell will leave your copy untouched":""}</span></div>`).join("")
+    :`<div class="fs-empty">No packaged skills found.</div>`;
+}
+async function loadSkillsStatus(){
+  const client=((document.getElementById("cmd-skills-client")||{}).value||"claude");
+  const el=document.getElementById("cmd-skills-list");
+  if(el)el.textContent="Loading skill status…";
+  try{
+    const r=await apiFetch(`/api/skills/status?client=${encodeURIComponent(client)}`);
+    if(!r)throw new Error("status unavailable");
+    renderSkills(r.skills||[]);
+  }catch(err){if(el)el.textContent=`Skills status unavailable: ${err.message}`;}
+}
 async function cmdSkills(action){
   if(!requireWrites())return;
   const el=document.getElementById("cmd-skills-list");
-  const nd=nodes.find(n=>n.id===selected);
-  if(!nd||!nd.path){toast("Select a Viewed project first","err");return;}
   const client=((document.getElementById("cmd-skills-client")||{}).value||"claude");
   try{
-    const r=await apiPost("/api/skills",{path:nd.path,client,action});
+    const r=await apiPost("/api/skills",{client,action});
     const rows=Array.isArray(r)?r:((r&&(r.skills||r.results))||[]);
     if(el){
-      el.style.display="";
-      el.innerHTML=rows.length
-        ?rows.map(s=>`<div class="fs-item" style="cursor:default"><span style="flex:1">${esc(s.name)} — ${esc(s.status)}${s.status==="conflict"?" · your copy left untouched — move it, then retry":""} · ${esc(s.path||"")}</span></div>`).join("")
-        :`<div class="fs-empty">No skills returned.</div>`;
+      renderSkills(rows.map(s=>({
+        ...s,
+        status:(s.status==="installed"||s.status==="updated")?"current":s.status==="conflict"?"modified":s.status,
+      })));
     }
     const conflicts=rows.filter(s=>s.status==="conflict").length;
-    const verb=action==="remove"?"removed":"added";
+    const verb=action==="remove"?"removed":"installed";
     toast(conflicts?`Skills ${verb} with ${conflicts} conflict(s) — see the list`:`Skills ${verb} (${rows.length})`);
   }catch(err){toast(`Skills failed: ${err.message}`,"err");}
 }
@@ -1982,8 +2248,8 @@ function cmdUninstall(){
   cmdConfirm(`Remove this project's braincell MCP registration from ${client}? The brain data itself is untouched.`,
     async()=>{
       try{
-        await mcpDeregister(path,client,scope);
-        await loadAll();   /* refresh mcp_registered so the dock repaints honestly */
+        const refresh=async()=>{await loadAll();};
+        if(!await mcpDeregister(path,client,scope,false,refresh))return;
       }catch(err){toast(`Deregister failed: ${err.message}`,"err");}
     });
 }

@@ -65,7 +65,12 @@ def test_native_memory_map_exercises_all_pool_actions(tmp_path):
     process = subprocess.run(
         [sys.executable, str(runner), str(page)], capture_output=True, text=True,
         timeout=60, check=False,
-        env={**os.environ, "QT_QPA_PLATFORM": "offscreen", "QTWEBENGINE_CHROMIUM_FLAGS": "--no-sandbox"},
+        env={
+            **os.environ,
+            "QT_QPA_PLATFORM": "offscreen",
+            "QTWEBENGINE_CHROMIUM_FLAGS": "--no-sandbox --disable-gpu --disable-gpu-compositing",
+            "LIBGL_ALWAYS_SOFTWARE": "1",
+        },
     )
     assert process.returncode == 0, process.stderr[-2000:]
     result = json.loads(process.stdout.strip().splitlines()[-1])

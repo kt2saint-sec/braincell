@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import os
+import signal
+import subprocess
 import sys
 
 import pytest
@@ -32,19 +35,59 @@ class TestNativeAvailable:
 
     def test_explicit_platform_counts_as_display(self, monkeypatch):
         """QT_QPA_PLATFORM=offscreen (tests/CI) satisfies the display check —
-        the remaining verdict is the real PySide6 import."""
+        the remaining verdict is the real PySide6 import.
+
+        Run that import in a bounded child process. QtWebEngine may launch
+        Chromium helpers merely by loading the module; they must never become
+        long-lived children of the pytest process.
+        """
         monkeypatch.delenv("DISPLAY", raising=False)
         monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
         monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+        env = {
+            **os.environ,
+            "QT_QPA_PLATFORM": "offscreen",
+            "QTWEBENGINE_CHROMIUM_FLAGS": "--no-sandbox --disable-gpu --disable-gpu-compositing",
+            "LIBGL_ALWAYS_SOFTWARE": "1",
+        }
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys\n"
+                    "from braincell.native_shell import native_unavailable_reason\n"
+                    "reason = native_unavailable_reason()\n"
+                    "if reason is not None:\n"
+                    "    print(reason, file=sys.stderr)\n"
+                    "raise SystemExit(0 if reason is None else 1)"
+                ),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+            start_new_session=os.name == "posix",
+        )
         try:
-            import PySide6.QtWebEngineWidgets  # noqa: F401
-        except ImportError:
-            assert native_shell.native_available() is False
-        else:
-            assert native_shell.native_available() is True
+            _stdout, stderr = process.communicate(timeout=45)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            _stdout, stderr = process.communicate()
+            pytest.fail(f"native runtime probe timed out:\n{stderr[-2000:]}")
+        finally:
+            # QtWebEngine can leave Chromium helpers alive after the Python
+            # probe exits. They share the probe's new process group on POSIX;
+            # reap that group so later pytest tests never inherit them.
+            if os.name == "posix":
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        assert process.returncode == 0, stderr[-2000:]
 
-    def test_never_raises(self, monkeypatch):
-        """A broken PySide6 install must yield False, not an exception."""
+    def test_broken_required_runtime_has_repair_guidance(self, monkeypatch):
+        """A broken required runtime must give repair guidance, not an extra."""
         import builtins
         real_import = builtins.__import__
 
@@ -55,6 +98,12 @@ class TestNativeAvailable:
 
         monkeypatch.setenv("DISPLAY", ":0")
         monkeypatch.setattr(builtins, "__import__", _boom)
+        reason = native_shell.native_unavailable_reason()
+        assert reason is not None
+        assert "required native Memory Map runtime" in reason
+        assert "force-reinstall braincell-mcp" in reason
+        assert "optional" not in reason
+        assert "[gui]" not in reason
         assert native_shell.native_available() is False
 
 
@@ -65,7 +114,7 @@ class TestStartNativeWiring:
         from braincell.cli import cmd_start
         repo = tmp_path / "repo"
         repo.mkdir()
-        monkeypatch.setattr(native_shell, "native_available", lambda: True)
+        monkeypatch.setattr(native_shell, "native_unavailable_reason", lambda: None)
         monkeypatch.setattr(
             launch, "preflight", lambda *a, **k: launch.Preflight(action="launch")
         )
@@ -80,7 +129,7 @@ class TestStartNativeWiring:
         from braincell.cli import cmd_start
         repo = tmp_path / "repo"
         repo.mkdir()
-        monkeypatch.setattr(native_shell, "native_available", lambda: True)
+        monkeypatch.setattr(native_shell, "native_unavailable_reason", lambda: None)
         monkeypatch.setattr(
             launch, "preflight", lambda *a, **k: launch.Preflight(action="launch")
         )
@@ -93,7 +142,7 @@ class TestStartNativeWiring:
         from braincell.cli import cmd_start
         repo = tmp_path / "repo"
         repo.mkdir()
-        monkeypatch.setattr(native_shell, "native_available", lambda: True)
+        monkeypatch.setattr(native_shell, "native_unavailable_reason", lambda: None)
         monkeypatch.setattr(
             launch,
             "preflight",
@@ -117,7 +166,11 @@ class TestStartNativeWiring:
         from braincell.cli import cmd_start
         repo = tmp_path / "repo"
         repo.mkdir()
-        monkeypatch.setattr(native_shell, "native_available", lambda: False)
+        monkeypatch.setattr(
+            native_shell,
+            "native_unavailable_reason",
+            lambda: "No graphical display detected. Run BrainCell from a graphical desktop session.",
+        )
         alerts: list = []
         monkeypatch.setattr(native_shell, "alert", lambda msg: alerts.append(msg))
         with pytest.raises(SystemExit) as exc:
@@ -129,7 +182,7 @@ class TestStartNativeWiring:
         from braincell.cli import cmd_start
         repo = tmp_path / "repo"
         repo.mkdir()
-        monkeypatch.setattr(native_shell, "native_available", lambda: True)
+        monkeypatch.setattr(native_shell, "native_unavailable_reason", lambda: None)
         monkeypatch.setattr(
             launch,
             "preflight",
@@ -155,7 +208,11 @@ class TestRunGuiNative:
         monkeypatch.setattr(
             gui, "create_app", lambda **k: captured.update(k) or object()
         )
-        monkeypatch.setattr(native_shell, "native_available", lambda: available)
+        monkeypatch.setattr(
+            native_shell,
+            "native_unavailable_reason",
+            lambda: None if available else "unavailable",
+        )
         monkeypatch.setattr(
             native_shell, "serve_native", lambda app, **k: served.append(k)
         )
@@ -188,7 +245,11 @@ class TestRunGuiNative:
 
     def test_unavailable_native_never_builds_the_app(self, tmp_path, monkeypatch):
         from braincell import gui
-        monkeypatch.setattr(native_shell, "native_available", lambda: False)
+        monkeypatch.setattr(
+            native_shell,
+            "native_unavailable_reason",
+            lambda: "No graphical display detected. Run BrainCell from a graphical desktop session.",
+        )
         built: list = []
         monkeypatch.setattr(gui, "create_app", lambda **k: built.append(k))
         with pytest.raises(RuntimeError, match="graphical desktop"):
@@ -289,6 +350,7 @@ class TestServeNative:
 # ── launcher Exec uses the native-by-default command ──────────────────────────
 
 class TestLauncherNativeExec:
+    @pytest.mark.skipif(sys.platform != "linux", reason="reads .desktop file (Linux launcher)")
     def test_desktop_exec_needs_no_mode_flag(self, tmp_path, monkeypatch):
         xdg = tmp_path / "xdg"
         proj = tmp_path / "proj"

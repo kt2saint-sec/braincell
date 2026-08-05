@@ -20,6 +20,8 @@ import asyncio
 import os
 import sqlite3 as _sqlite3
 import sys
+import uuid
+from contextlib import nullcontext
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -32,7 +34,7 @@ from .config import (
     get_project_id,
     resolve_project_id_readonly,
 )
-from .embed import embed_texts, prewarm_embed_model
+from .embed import embed_texts, prewarm_embed_model, unload_embed_model
 from .mode import resolve_mode
 from .project_registry import register_path
 from .store import EmbedderMismatchError, SqliteStore
@@ -85,8 +87,8 @@ def _reembed_wipe(project_id: str, store: SqliteStore) -> None:
     """Unconditional clean slate for --reembed: drop ALL braincell docs/chunks +
     clear the transcript ledger, so the rebuild re-embeds EVERYTHING with the
     current embedder (handles dimension changes AND null-embedded rows)."""
-    removed = store.wipe_project_embeddings(project_id)
     cleared = _clear_transcript_ledger(store)
+    removed = store.wipe_project_embeddings(project_id)
     print(
         f"  --reembed: wiped {removed} documents + "
         f"{'cleared' if cleared else 'no'} transcript ledger → full clean rebuild."
@@ -119,6 +121,50 @@ def _warn_null_embeddings(project_id: str, db_path: Path) -> None:
 # ── commands ──────────────────────────────────────────────────────────────────
 
 
+def _validated_project_path(args: argparse.Namespace) -> Path:
+    """Validate a path-bearing command before any identity or state mutation."""
+    if getattr(args, "_project_target_validated", False):
+        return Path(args.path).resolve()
+    # Programmatic callers historically construct a minimal Namespace rather
+    # than entering through argparse. The user-facing parser always installs all
+    # three safety fields; preserve the internal callable contract while keeping
+    # every actual CLI path gated.
+    safety_fields = ("acknowledge_home", "acknowledge_non_git", "allow_privileged")
+    if not any(hasattr(args, field) for field in safety_fields):
+        return Path(args.path).resolve()
+    from .project_target import ProjectTargetError, validate_project_target
+
+    try:
+        target = validate_project_target(
+            args.path,
+            acknowledge_home=getattr(args, "acknowledge_home", False),
+            acknowledge_non_git=getattr(args, "acknowledge_non_git", False),
+            allow_privileged=getattr(args, "allow_privileged", False),
+        )
+    except ProjectTargetError as exc:
+        command = getattr(args, "cmd", "command")
+        raise SystemExit(f"braincell {command}: {exc}") from exc
+    for warning in target.warnings:
+        print(f"WARNING: {warning}", file=sys.stderr)
+    return target.path
+
+
+def _add_project_target_flags(parser: argparse.ArgumentParser) -> None:
+    """Expose the shared explicit acknowledgements on path-mutating commands."""
+    parser.add_argument("--acknowledge-home", action="store_true")
+    parser.add_argument("--acknowledge-non-git", action="store_true")
+    parser.add_argument("--allow-privileged", action="store_true")
+
+
+def _gui_safety_kwargs(args: argparse.Namespace) -> dict[str, bool]:
+    """Carry only explicit acknowledgements into a GUI restart command."""
+    return {
+        key: True
+        for key in ("acknowledge_home", "acknowledge_non_git", "allow_privileged")
+        if getattr(args, key, False)
+    }
+
+
 def _run_build(
     root: Path,
     *,
@@ -126,6 +172,7 @@ def _run_build(
     reembed: bool,
     verbose: bool,
     mode: str | None = None,
+    no_backup: bool = False,
 ) -> None:
     root = root.resolve()
     project_id = get_project_id(root)  # resolves via path-registry; mints + registers a new ULID if absent
@@ -140,77 +187,129 @@ def _run_build(
     m = resolve_mode(mode)
     db_path = get_global_db_path() if m == "global" else get_db_path(project_id)
 
-    store = SqliteStore(db_path)
+    from .catalog_io import MutationBusyError, mutation_lock
+
     try:
-        store.assert_schema_version()
-    except EmbedderMismatchError as exc:
-        if not reembed:
-            raise
-        print(
-            f"  --reembed: switching embedding space "
-            f"{exc.built_with!r} -> {exc.configured!r} "
-            f"(wiping all documents/chunks, clearing note embeddings)."
-        )
-        stats = store.reset_embedding_space()
-        print(
-            f"  --reembed: reset {stats['docs_wiped']} documents, "
-            f"cleared {stats['note_embeddings_cleared']} note embeddings, "
-            f"restamped fingerprint."
-        )
-        store.assert_schema_version()  # must pass now — restamped
+        with mutation_lock(db_path, operation="build"):
+            _execute_build(
+                project_id,
+                db_path,
+                skip_transcripts=skip_transcripts,
+                reembed=reembed,
+                verbose=verbose,
+                no_backup=no_backup,
+            )
+    except MutationBusyError as exc:
+        raise SystemExit(f"braincell build: {exc}") from exc
 
-    if reembed:
-        _reembed_wipe(project_id, store)
-    else:
-        _embed_dim_guard(project_id, db_path)
 
-    if not skip_transcripts:
-        print("  Ingesting agent transcripts...")
-        prewarm_embed_model()
+def _execute_build(
+    project_id: str,
+    db_path: Path,
+    *,
+    skip_transcripts: bool,
+    reembed: bool,
+    verbose: bool,
+    no_backup: bool = False,
+) -> None:
+    """Run one build while the caller owns the destination mutation lock."""
+    if reembed and db_path.is_file():
+        # --reembed always ends in a full wipe of docs/chunks (either via the
+        # dimension-mismatch reset below or via _reembed_wipe further down) —
+        # require the same safety snapshot consolidate/reflect require before
+        # any destructive --apply. --no-backup is an explicit, off-by-default
+        # escape hatch for callers who have their own backup story (mirrors
+        # the loud-warning convention used elsewhere in this CLI).
+        if no_backup:
+            print(
+                "WARNING: --no-backup set — proceeding with --reembed with NO "
+                "safety snapshot. This wipe cannot be undone if it goes wrong.",
+                file=sys.stderr,
+            )
+        else:
+            _required_auto_backup(db_path, "reembed")
 
-        def _progress(msg: str) -> None:
-            if verbose:
-                print(f"    {msg}")
+    store = SqliteStore(db_path)
+    unload_after_build = False
+    try:
+        try:
+            store.assert_schema_version()
+        except EmbedderMismatchError as exc:
+            if not reembed:
+                raise
+            print(
+                f"  --reembed: switching embedding space "
+                f"{exc.built_with!r} -> {exc.configured!r} "
+                f"(wiping all documents/chunks, clearing note embeddings)."
+            )
+            # Checkpoint invalidation precedes the destructive reset. A later
+            # failure therefore causes a safe full retry, never a false skip.
+            _clear_transcript_ledger(store)
+            stats = store.reset_embedding_space()
+            print(
+                f"  --reembed: reset {stats['docs_wiped']} documents, "
+                f"cleared {stats['note_embeddings_cleared']} note embeddings, "
+                f"restamped fingerprint."
+            )
+            store.assert_schema_version()  # must pass now — restamped
 
-        stats = asyncio.run(ingest_transcripts(
-            store, project_id, incremental=True, progress_cb=_progress,
-        ))
-        print(
-            f"  Transcript ingest: {stats['files_ingested']} ingested, "
-            f"{stats['files_skipped']} skipped, {stats.get('files_failed', 0)} failed, "
-            f"{stats.get('files_unattributed', 0)} unattributed, "
-            f"{stats.get('files_out_of_scope', 0)} out-of-family, "
-            f"{stats['chunks_written']} chunks, {stats['secrets_rejected']} secret-rejections, "
-            f"{stats.get('skill_docs_created', 0)} skill-docs created."
-        )
-    else:
-        print("  Transcript ingest skipped (--skip-transcripts).")
+        if reembed:
+            _reembed_wipe(project_id, store)
+        else:
+            _embed_dim_guard(project_id, db_path)
 
-    _warn_null_embeddings(project_id, db_path)
-    store.close()
+        if not skip_transcripts:
+            print("  Ingesting agent transcripts...")
+            unload_after_build = True
+            prewarm_embed_model()
+
+            def _progress(msg: str) -> None:
+                if verbose:
+                    print(f"    {msg}")
+
+            stats = asyncio.run(ingest_transcripts(
+                store, project_id, incremental=True, progress_cb=_progress,
+            ))
+            print(
+                f"  Transcript ingest: {stats['files_ingested']} ingested, "
+                f"{stats['files_skipped']} skipped, {stats.get('files_failed', 0)} failed, "
+                f"{stats.get('files_unattributed', 0)} unattributed, "
+                f"{stats.get('files_out_of_scope', 0)} out-of-family, "
+                f"{stats['chunks_written']} chunks, {stats['secrets_rejected']} secret-rejections, "
+                f"{stats.get('skill_docs_created', 0)} skill-docs created."
+            )
+        else:
+            print("  Transcript ingest skipped (--skip-transcripts).")
+
+        _warn_null_embeddings(project_id, db_path)
+    finally:
+        if unload_after_build:
+            unload_embed_model()
+        store.close()
     print("BrainCell build complete.")
 
 
 def cmd_build(args: argparse.Namespace) -> None:
-    root = Path(args.path).resolve()
+    root = _validated_project_path(args)
     if args.no_mint and resolve_project_id_readonly(root) is None:
         print(f"{root} is not a registered project and --no-mint set. "
               f"Run `braincell register {root}` first, or omit --no-mint.",
               file=sys.stderr)
         raise SystemExit(1)
     _run_build(root, skip_transcripts=args.skip_transcripts, reembed=args.reembed,
-               verbose=args.verbose, mode=args.mode)
+               verbose=args.verbose, mode=args.mode,
+               no_backup=getattr(args, "no_backup", False))
 
 
 def cmd_sync(args: argparse.Namespace) -> None:
     # sync == build in incremental mode (no reembed). Build is already incremental
     # (content-hash + mtime→SHA gated), so this is a thin, intention-revealing alias.
-    _run_build(Path(args.path).resolve(), skip_transcripts=args.skip_transcripts,
+    _run_build(_validated_project_path(args), skip_transcripts=args.skip_transcripts,
                reembed=False, verbose=args.verbose, mode=getattr(args, "mode", None))
 
 
 def cmd_register(args: argparse.Namespace) -> None:
-    root = Path(args.path).resolve()
+    root = _validated_project_path(args)
     pid = get_project_id(root)            # resolves via path-registry; mints + registers if absent
     register_path(str(root), pid)         # workspace path→ULID map (idempotent re-affirm)
     print(f"Registered {root} → {pid}")
@@ -250,17 +349,18 @@ def cmd_reembed_notes(args: argparse.Namespace) -> None:
     using the configured embed provider, and UPDATEs the rows. Prints a summary
     line on completion.
     """
-    root = Path(args.path).resolve()
+    root = _validated_project_path(args)
     project_id = get_project_id(root)
     register_path(str(root), project_id)
 
-    store = SqliteStore(get_db_path(project_id))
-    store.assert_schema_version()
-
-    try:
-        count = asyncio.run(store.reembed_notes(project_id, embed_texts))
-    finally:
-        store.close()
+    db = get_db_path(project_id)
+    with _cli_mutation_lock(db, "reembed-notes"):
+        store = SqliteStore(db)
+        store.assert_schema_version()
+        try:
+            count = asyncio.run(store.reembed_notes(project_id, embed_texts))
+        finally:
+            store.close()
 
     print(f"Re-embedded {count} notes.")
 
@@ -370,6 +470,7 @@ async def _consolidate_async(
     use_llm: bool,
     verbose: bool,
     backup_path: str | None = None,
+    backup_factory=None,
 ) -> None:
     """Core async logic for `braincell consolidate`."""
     clusters = await store.find_note_clusters(project_id, threshold=threshold)
@@ -391,6 +492,9 @@ async def _consolidate_async(
             f"Re-run with --apply to merge (keeps newest note, tombstones the rest)."
         )
         return
+
+    if backup_factory is not None:
+        backup_path = backup_factory()
 
     # One operation covers this whole --apply run, so `memory undo <n>` reverses
     # the run as a unit — which is how a user thinks about "undo that merge".
@@ -437,38 +541,36 @@ def cmd_consolidate(args: argparse.Namespace) -> None:
     soft-tombstone the rest). Pass --llm (with --apply) for an opt-in
     ollama-synthesis pass before the deterministic fallback.
     """
-    root = Path(args.path).resolve()
-    project_id = get_project_id(root)
-    register_path(str(root), project_id)
+    root = _validated_project_path(args)
+    if not args.apply:
+        project_id = resolve_project_id_readonly(root)
+        if project_id is None or not get_db_path(project_id).is_file():
+            print("No existing BrainCell memory to inspect. Nothing to do.")
+            return
+    else:
+        project_id = get_project_id(root)
+        register_path(str(root), project_id)
 
     db = get_db_path(project_id)
-    # Snapshot the brain before any destructive --apply. Cheap insurance, and
-    # the coarse counterpart to `memory undo` — if the operation log itself is not
-    # enough, the whole pre-merge brain is one file copy away.
-    backup_path = None
-    if args.apply:
-        bp = _auto_backup(db, "consolidate")
-        if bp is not None:
-            backup_path = str(bp)
-            print(f"Pre-merge backup: {bp}")
-        else:
-            print("Proceeding WITHOUT a pre-merge backup.", file=sys.stderr)
-
-    store = SqliteStore(db)
-    store.assert_schema_version()
-
-    try:
-        asyncio.run(_consolidate_async(
-            store,
-            project_id,
-            threshold=args.threshold,
-            apply=args.apply,
-            use_llm=args.llm,
-            verbose=args.verbose,
-            backup_path=backup_path,
-        ))
-    finally:
-        store.close()
+    lock = _cli_mutation_lock(db, "consolidate") if args.apply else nullcontext()
+    with lock:
+        store = SqliteStore(db)
+        store.assert_schema_version()
+        try:
+            asyncio.run(_consolidate_async(
+                store,
+                project_id,
+                threshold=args.threshold,
+                apply=args.apply,
+                use_llm=args.llm,
+                verbose=args.verbose,
+                backup_factory=(
+                    lambda: _required_auto_backup(db, "consolidate")
+                    if args.apply else None
+                ),
+            ))
+        finally:
+            store.close()
 
 
 async def _stats_async(store: SqliteStore, iters: int) -> None:
@@ -509,7 +611,11 @@ def cmd_stats(args: argparse.Namespace) -> None:
     """Show store size + a vector-search p95 benchmark (the sqlite-vec adopt-decision instrument)."""
     resolve_mode(args.mode)
     root = Path(args.path).resolve()
-    db = get_db_path(get_project_id(root))
+    project_id = resolve_project_id_readonly(root)
+    if project_id is None:
+        print(f"No brain registered for {root} — run `braincell build` first.", file=sys.stderr)
+        raise SystemExit(1)
+    db = get_db_path(project_id)
     if not db.exists():
         print(f"No brain at {db} — run `braincell build` first.", file=sys.stderr)
         raise SystemExit(1)
@@ -519,6 +625,102 @@ def cmd_stats(args: argparse.Namespace) -> None:
         asyncio.run(_stats_async(store, iters=args.iters))
     finally:
         store.close()
+
+
+def cmd_storage(args: argparse.Namespace) -> None:
+    """Report persistent-state size and plan — or explicitly apply — retention.
+
+    Dry run by default; --apply executes the freshly recomputed plan under the
+    destination mutation lock. Every retention axis is disabled until the owner
+    configures it, and snapshots referenced by undo history are never deleted.
+    """
+    import json
+
+    if getattr(args, "list_orphans", False):
+        from .project_registry import find_orphans
+        print(json.dumps(find_orphans(), indent=2, sort_keys=True))
+        return
+
+    root = Path(args.path).resolve()
+    project_id = resolve_project_id_readonly(root)
+    if project_id is None:
+        raise SystemExit(
+            f"No BrainCell Project registered for {root}; storage inspection never mints."
+        )
+    from .catalog_io import MutationBusyError
+    from .storage_accounting import (
+        RetentionRefusedError,
+        apply_retention,
+        execute_hard_prune,
+        hard_prune_plan,
+        storage_report,
+    )
+
+    retention_kwargs = dict(  # noqa: C408 — keyword form mirrors apply_retention()'s signature at the call site
+        keep_backups=args.keep_backups,
+        backup_roots=[Path(item) for item in args.backup_root],
+        expire_operations_days=args.expire_operations_days,
+        expire_tombstones_days=args.expire_tombstones_days,
+    )
+    warning_kwargs = {
+        "warn_project_bytes": args.warn_project_bytes,
+        "warn_free_bytes": args.warn_free_bytes,
+    }
+    if args.apply and any(value is not None for value in warning_kwargs.values()):
+        raise SystemExit(
+            "braincell storage: warning thresholds are read-only report options; "
+            "run them without --apply"
+        )
+    if args.hard_prune:
+        if args.apply:
+            try:
+                result = execute_hard_prune(
+                    project_id,
+                    approval_digest=args.approve or "",
+                    confirmation_phrase=args.confirm,
+                    create_local_snapshot=args.local_recovery_snapshot,
+                    wait_for_readers_seconds=args.wait_for_readers_seconds,
+                    **retention_kwargs,
+                )
+            except (RetentionRefusedError, MutationBusyError) as exc:
+                raise SystemExit(f"braincell storage: {exc}") from exc
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return
+        plan = hard_prune_plan(project_id, **retention_kwargs)
+        print(json.dumps(plan, indent=2, sort_keys=True))
+        return
+
+    if args.apply:
+        try:
+            result = apply_retention(project_id, **retention_kwargs)
+        except (RetentionRefusedError, MutationBusyError) as exc:
+            raise SystemExit(f"braincell storage: {exc}") from exc
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return
+    report = storage_report(project_id, **retention_kwargs, **warning_kwargs)
+    print(json.dumps(report, indent=2, sort_keys=True))
+
+    wal = report["database_diagnostics"]["wal"]
+    if wal["starved"]:
+        print(
+            f"WARNING: WAL file is {wal['wal_bytes']} bytes against a "
+            f"{wal['db_bytes']}-byte database — checkpoints are not keeping up. "
+            "(Detection only; this CLI does not force a checkpoint or VACUUM.)",
+            file=sys.stderr,
+        )
+    orphans = report["orphans"]
+    n_paths = len(orphans["orphaned_registry_entries"])
+    n_dbs = len(orphans["orphaned_project_databases"])
+    if n_paths or n_dbs:
+        print(
+            f"WARNING: {n_paths} orphaned registry path(s), {n_dbs} orphaned "
+            "project database(s) found across the namespace (see 'orphans' "
+            "above, or `braincell storage --list-orphans`). Preview only — "
+            "nothing was changed.",
+            file=sys.stderr,
+        )
+    for warning in report["storage_budget"]["warnings"]:
+        print(f"WARNING: {warning['message']} Nothing was changed.", file=sys.stderr)
 
 
 def cmd_reflect(args: argparse.Namespace) -> None:
@@ -532,38 +734,38 @@ def cmd_reflect(args: argparse.Namespace) -> None:
     from .embed import embed_query_async
     from .reflect import reflect
 
-    root = Path(args.path).resolve()
-    project_id = get_project_id(root)
-    register_path(str(root), project_id)
+    root = _validated_project_path(args)
+    if not args.apply:
+        project_id = resolve_project_id_readonly(root)
+        if project_id is None or not get_db_path(project_id).is_file():
+            print("No existing BrainCell memory to inspect. Nothing to do.")
+            return
+    else:
+        project_id = get_project_id(root)
+        register_path(str(root), project_id)
 
     db = get_db_path(project_id)
-    # Snapshot before any destructive --apply (see cmd_consolidate).
-    backup_path = None
-    if args.apply:
-        bp = _auto_backup(db, "reflect")
-        if bp is not None:
-            backup_path = str(bp)
-            print(f"Pre-reflect backup: {bp}")
-        else:
-            print("Proceeding WITHOUT a pre-reflect backup.", file=sys.stderr)
-
-    store = SqliteStore(db)
-    store.assert_schema_version()
-
-    try:
-        asyncio.run(reflect(
-            store,
-            project_id,
-            threshold=args.threshold,
-            since_days=args.since,
-            apply=args.apply,
-            model=args.model,
-            embed_fn=embed_query_async if args.apply else None,
-            verbose=args.verbose,
-            backup_path=backup_path,
-        ))
-    finally:
-        store.close()
+    lock = _cli_mutation_lock(db, "reflect") if args.apply else nullcontext()
+    with lock:
+        store = SqliteStore(db)
+        store.assert_schema_version()
+        try:
+            asyncio.run(reflect(
+                store,
+                project_id,
+                threshold=args.threshold,
+                since_days=args.since,
+                apply=args.apply,
+                model=args.model,
+                embed_fn=embed_query_async if args.apply else None,
+                verbose=args.verbose,
+                backup_factory=(
+                    lambda: _required_auto_backup(db, "reflect")
+                    if args.apply else None
+                ),
+            ))
+        finally:
+            store.close()
 
 
 def cmd_contradictions(args: argparse.Namespace) -> None:
@@ -654,15 +856,16 @@ def cmd_memory_undo(args: argparse.Namespace) -> None:
     are REPORTED, never clobbered.
     """
     db, pid = _open_project_brain(args.path)
-    store = SqliteStore(db)
-    store.assert_schema_version()
-    try:
-        result = asyncio.run(store.undo_operation(args.op_id, pid))
-    except ValueError as exc:
-        print(f"braincell memory undo: {exc}", file=sys.stderr)
-        raise SystemExit(2) from exc
-    finally:
-        store.close()
+    with _cli_mutation_lock(db, "memory-undo"):
+        store = SqliteStore(db)
+        store.assert_schema_version()
+        try:
+            result = asyncio.run(store.undo_operation(args.op_id, pid))
+        except ValueError as exc:
+            print(f"braincell memory undo: {exc}", file=sys.stderr)
+            raise SystemExit(2) from exc
+        finally:
+            store.close()
 
     print(f"Undid {result['kind']} operation {result['op_id']}: "
           f"{len(result['restored'])} note(s) restored.")
@@ -854,13 +1057,42 @@ def _auto_backup(src: Path, tag: str) -> Path | None:
     the caller MUST surface a None so the user knows the safety net is missing
     before the merge proceeds.
     """
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    dest = src.parent / f"braincell-pre{tag}-{timestamp}.db"
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
+    dest = src.parent / f"braincell-pre{tag}-{timestamp}-{uuid.uuid4().hex[:8]}.db"
     try:
         return _vacuum_into(src, dest)
     except Exception as exc:  # noqa: BLE001  # Backup failure must be reported without blocking the command.
         print(f"WARNING: pre-{tag} backup failed ({exc}).", file=sys.stderr)
         return None
+
+
+def _required_auto_backup(src: Path, tag: str) -> str:
+    """Create a unique safety snapshot or abort the destructive operation."""
+    backup = _auto_backup(src, tag)
+    if backup is None:
+        raise RuntimeError(
+            f"Refusing {tag}: the required pre-mutation backup could not be created."
+        )
+    print(f"Pre-{tag} backup: {backup}")
+    return str(backup)
+
+
+def _cli_mutation_lock(db: Path, operation: str):
+    """Convert a destination-lock collision into a concise CLI failure."""
+    from .catalog_io import MutationBusyError, mutation_lock
+
+    class _Lock:
+        def __enter__(self):
+            try:
+                self._manager = mutation_lock(db, operation=operation)
+                return self._manager.__enter__()
+            except MutationBusyError as exc:
+                raise SystemExit(f"braincell {operation}: {exc}") from exc
+
+        def __exit__(self, exc_type, exc, traceback):
+            return self._manager.__exit__(exc_type, exc, traceback)
+
+    return _Lock()
 
 
 def cmd_backup(args: argparse.Namespace) -> None:
@@ -1117,14 +1349,18 @@ def cmd_pool_recall(args: argparse.Namespace) -> None:
 
 def cmd_gui(args: argparse.Namespace) -> None:
     """Launch the native BrainCell GUI (or install its desktop launcher)."""
+    root = _validated_project_path(args)
     if getattr(args, "install_launcher", False):
         from .gui import install_launcher
-        root = Path(args.path).resolve()
         icon, desktop = install_launcher(root)
         print(f"Installed BrainCell Map launcher:\n  icon:    {icon}\n  desktop: {desktop}")
         print(f"The icon runs `braincell start {root}`.")
         print("Open your app menu and search for “BrainCell Map”.")
         return
+    from . import native_shell
+    unavailable = native_shell.native_unavailable_reason()
+    if unavailable:
+        raise RuntimeError(unavailable)
     if getattr(args, "rotate_token", False):
         from .config import get_gui_token_path
         token_path = get_gui_token_path()
@@ -1135,8 +1371,9 @@ def cmd_gui(args: argparse.Namespace) -> None:
         mode=getattr(args, "mode", None),
         port=args.port,
         allow_writes=args.allow_writes,
-        path=args.path,
+        path=str(root),
         restart_command="gui",
+        **_gui_safety_kwargs(args),
     )
 
 
@@ -1152,16 +1389,15 @@ def cmd_start(args: argparse.Namespace) -> None:
     """
     from . import launch, native_shell
 
+    root = _validated_project_path(args)
     mode = "project"
-    if not native_shell.native_available():
-        msg = (
-            "BrainCell requires a graphical desktop session with "
-            "PySide6/QtWebEngine available."
-        )
-        print(f"ERROR: {msg}", file=sys.stderr)
-        native_shell.alert(msg)
+    unavailable = native_shell.native_unavailable_reason()
+    if unavailable:
+        print(f"ERROR: {unavailable}", file=sys.stderr)
+        native_shell.alert(unavailable)
         raise SystemExit(1)
-    pre = launch.preflight(Path(args.path), mode=mode, port=args.port)
+    get_project_id(root)
+    pre = launch.preflight(root, mode=mode, port=args.port)
 
     if pre.action == "reuse":
         print(
@@ -1181,7 +1417,7 @@ def cmd_start(args: argparse.Namespace) -> None:
         conflict_msg = (
             f"Port {args.port} already serves a DIFFERENT brain:\n"
             f"  running: {pre.conflict_db}\n"
-            f"  target:  {pre.expected_db or Path(args.path).resolve()}\n"
+            f"  target:  {pre.expected_db or root}\n"
             f"Pick another port: braincell start --port <port>"
         )
         print(f"ERROR: {conflict_msg}", file=sys.stderr)
@@ -1198,9 +1434,10 @@ def cmd_start(args: argparse.Namespace) -> None:
             mode=mode,
             port=args.port,
             allow_writes=True,
-            path=args.path,
+            path=str(root),
             url_extra_query="tour=1" if pre.first_run else None,
             restart_command="start",
+            **_gui_safety_kwargs(args),
         )
     except Exception as exc:
         msg = f"BrainCell failed to start: {exc}"
@@ -1238,6 +1475,10 @@ def main_map(argv: list[str] | None = None) -> None:
         argparse.Namespace(
             path=str(target.path),
             port=ns.port,
+            acknowledge_home=ns.acknowledge_home,
+            acknowledge_non_git=ns.acknowledge_non_git,
+            allow_privileged=ns.allow_privileged,
+            _project_target_validated=True,
         )
     )
 
@@ -1302,7 +1543,10 @@ def cmd_install(args: argparse.Namespace) -> None:
     if args.client == "codex":
         print("  Codex loads this connection only after this project is trusted.")
 
-    restart = {"claude": "Claude Code", "codex": "Codex", "vscode": "VS Code"}[args.client]
+    restart = {
+        "claude": "Claude Code", "codex": "Codex",
+        "vscode": "VS Code", "opencode": "OpenCode",
+    }[args.client]
     print("\nNext steps:")
     print(f"  1. Restart {restart} so it loads the new MCP server.")
 
@@ -1533,6 +1777,42 @@ def cmd_legacy_recovery(args: argparse.Namespace) -> None:
     print(json.dumps(result, indent=2, sort_keys=True))
 
 
+def cmd_reconcile_foreign(args: argparse.Namespace) -> None:
+    """Preview, or explicitly apply, migration of one Project's foreign-owned
+    `bc_documents` rows into their true owners' own databases."""
+    import json
+
+    from .catalog_io import MutationBusyError
+    from .transcript_ingest import (
+        ForeignDocumentReconciliationError,
+        apply_foreign_document_migration,
+        preview_foreign_documents,
+    )
+
+    root = Path(args.path).resolve()
+    project_id = resolve_project_id_readonly(root)
+    if project_id is None:
+        raise SystemExit(
+            f"No BrainCell Project registered for {root}; reconciliation never mints."
+        )
+    try:
+        if args.reconcile_foreign_action == "preview":
+            result = preview_foreign_documents(project_id)
+        else:
+            result = apply_foreign_document_migration(
+                project_id,
+                owner_project_ids=args.owner,
+                approval_digest=args.approve,
+                backup_dir=(
+                    Path(args.backup_dir).expanduser().resolve()
+                    if args.backup_dir else None
+                ),
+            )
+    except (ForeignDocumentReconciliationError, MutationBusyError) as exc:
+        raise SystemExit(f"braincell reconcile-foreign-documents: {exc}") from exc
+    print(json.dumps(result, indent=2, sort_keys=True))
+
+
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="braincell", description="Standalone BrainCell memory CLI.")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -1543,10 +1823,14 @@ def main(argv: list[str] | None = None) -> None:
                     help="Skip transcript ingestion (register + embed-safety checks only).")
     pb.add_argument("--reembed", action="store_true",
                     help="Wipe embeddings first (required when changing embed provider/dim).")
+    pb.add_argument("--no-backup", action="store_true",
+                    help="Skip the mandatory pre-wipe safety snapshot for --reembed "
+                         "(off by default; only for callers with their own backup story).")
     pb.add_argument("--no-mint", action="store_true",
                     help="Fail instead of registering/minting a new project ULID if unregistered.")
     pb.add_argument("-v", "--verbose", action="store_true")
     pb.add_argument("--mode", choices=["project"], default=None, help=argparse.SUPPRESS)
+    _add_project_target_flags(pb)
     pb.set_defaults(func=cmd_build)
 
     ps = sub.add_parser("sync", help="Incremental refresh (new/changed transcripts).")
@@ -1554,10 +1838,12 @@ def main(argv: list[str] | None = None) -> None:
     ps.add_argument("--skip-transcripts", action="store_true")
     ps.add_argument("-v", "--verbose", action="store_true")
     ps.add_argument("--mode", choices=["project"], default=None, help=argparse.SUPPRESS)
+    _add_project_target_flags(ps)
     ps.set_defaults(func=cmd_sync)
 
     pr = sub.add_parser("register", help="Mint/confirm the project ULID (no ingest).")
     pr.add_argument("path", nargs="?", default=".", help="Project path (default: cwd).")
+    _add_project_target_flags(pr)
     pr.set_defaults(func=cmd_register)
 
     pproject = sub.add_parser("project", help="Manage stable Project identity.")
@@ -1582,6 +1868,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     prn.add_argument("path", nargs="?", default=".", help="Project path (default: cwd).")
     prn.add_argument("-v", "--verbose", action="store_true")
+    _add_project_target_flags(prn)
     prn.set_defaults(func=cmd_reembed_notes)
 
     pc = sub.add_parser(
@@ -1605,6 +1892,7 @@ def main(argv: list[str] | None = None) -> None:
         ),
     )
     pc.add_argument("-v", "--verbose", action="store_true")
+    _add_project_target_flags(pc)
     pc.set_defaults(func=cmd_consolidate)
 
     prf = sub.add_parser(
@@ -1633,6 +1921,7 @@ def main(argv: list[str] | None = None) -> None:
         help="Ollama model for synthesis (default: $BRAINCELL_LLM_MODEL or qwen2.5:7b).",
     )
     prf.add_argument("-v", "--verbose", action="store_true")
+    _add_project_target_flags(prf)
     prf.set_defaults(func=cmd_reflect)
 
     pcx = sub.add_parser(
@@ -1740,12 +2029,12 @@ def main(argv: list[str] | None = None) -> None:
 
     pi = sub.add_parser(
         "connect", aliases=["install"],
-        help="Connect BrainCell to one project in Codex, Claude, or VS Code.",
+        help="Connect BrainCell to one project in Claude, Codex, VS Code, or OpenCode.",
     )
     pi.add_argument("path", nargs="?", default=".",
                     help="Project path to connect (default: cwd).")
-    pi.add_argument("--client", choices=["claude", "codex", "vscode"], default="claude",
-                    help="Target client (default: Claude).")
+    pi.add_argument("--client", choices=["claude", "codex", "vscode", "opencode"],
+                    default="claude", help="Target client (default: Claude).")
     pi.add_argument("--scope", choices=["local", "project"], default="local",
                     help="Claude scope: local private-project (default) or shareable project .mcp.json.")
     pi.add_argument("--acknowledge-home", action="store_true",
@@ -1761,7 +2050,8 @@ def main(argv: list[str] | None = None) -> None:
         help="Plan or apply Project database, client connection, and optional skills setup.",
     )
     psetup.add_argument("path", nargs="?", default=".", help="Project path (default: cwd).")
-    psetup.add_argument("--client", choices=["claude", "codex", "vscode"], default="claude")
+    psetup.add_argument("--client", choices=["claude", "codex", "vscode", "opencode"],
+                        default="claude")
     psetup.add_argument("--claude-scope", choices=["local", "project"], default="local")
     psetup.add_argument("--with-skills", action="store_true")
     psetup.add_argument("--automatic-pool-recall", metavar="POOL")
@@ -1776,8 +2066,8 @@ def main(argv: list[str] | None = None) -> None:
     pu = sub.add_parser("disconnect", aliases=["uninstall"], help="Disconnect BrainCell from one project client.")
     pu.add_argument("path", nargs="?", default=".",
                     help="Project path (default: cwd).")
-    pu.add_argument("--client", choices=["claude", "codex", "vscode"], default="claude",
-                    help="Client to disconnect (default: Claude).")
+    pu.add_argument("--client", choices=["claude", "codex", "vscode", "opencode"],
+                    default="claude", help="Client to disconnect (default: Claude).")
     pu.add_argument("--scope", choices=["local", "project"], default="local",
                     help="Claude scope to remove (must match the connection scope).")
     pu.add_argument("--acknowledge-home", action="store_true")
@@ -1792,7 +2082,7 @@ def main(argv: list[str] | None = None) -> None:
     pskills.add_argument("skills_action", choices=["add", "remove"])
     pskills.add_argument("path", nargs="?", default=".",
                          help="Project path (default: cwd).")
-    pskills.add_argument("--client", choices=["claude", "codex"], default="claude",
+    pskills.add_argument("--client", choices=["claude", "codex", "opencode"], default="claude",
                          help="Project-local skill format (default: Claude).")
     pskills.add_argument("--acknowledge-home", action="store_true")
     pskills.add_argument("--acknowledge-non-git", action="store_true")
@@ -1875,6 +2165,41 @@ def main(argv: list[str] | None = None) -> None:
     )
     precovery_apply.set_defaults(func=cmd_legacy_recovery)
 
+    precon = sub.add_parser(
+        "reconcile-foreign-documents",
+        help="Preview or migrate bc_documents rows owned by a different "
+             "Project out of this Project's database (BUGS.md: foreign "
+             "transcript cleanup).",
+    )
+    precon.add_argument(
+        "path", nargs="?", default=".", help="Registered Project path (default: cwd)."
+    )
+    reconsub = precon.add_subparsers(
+        dest="reconcile_foreign_action", required=True
+    )
+    precon_preview = reconsub.add_parser(
+        "preview", help="List foreign-owned rows without writing anything."
+    )
+    precon_preview.set_defaults(func=cmd_reconcile_foreign)
+    precon_apply = reconsub.add_parser(
+        "apply",
+        help="Migrate selected owners' rows into their own databases after "
+             "exact preview approval.",
+    )
+    precon_apply.add_argument(
+        "--owner", action="append", required=True,
+        help="Owner Project ULID to migrate; repeat for multiple owners.",
+    )
+    precon_apply.add_argument(
+        "--approve", required=True,
+        help="Exact approval_digest from the current preview.",
+    )
+    precon_apply.add_argument(
+        "--backup-dir",
+        help="Directory for the retained pre-migration source-database backup.",
+    )
+    precon_apply.set_defaults(func=cmd_reconcile_foreign)
+
     pst = sub.add_parser(
         "stats",
         help="Show store size + a vector-search p95 benchmark (backend decision).",
@@ -1888,6 +2213,112 @@ def main(argv: list[str] | None = None) -> None:
         help="Number of vector-search probes for the p95 benchmark (default: 20).",
     )
     pst.set_defaults(func=cmd_stats)
+
+    pstorage = sub.add_parser(
+        "storage",
+        help="Account for BrainCell state and print a backup-retention dry run.",
+    )
+    pstorage.add_argument(
+        "path", nargs="?", default=".", help="Registered Project path (default: cwd)."
+    )
+    pstorage.add_argument(
+        "--keep-backups",
+        type=int,
+        default=None,
+        help="Plan (never execute) keeping the newest N backups per directory.",
+    )
+    pstorage.add_argument(
+        "--backup-root",
+        action="append",
+        default=[],
+        help="Also account for an external recovery-backup directory (repeatable).",
+    )
+    pstorage.add_argument(
+        "--expire-operations-days",
+        type=int,
+        default=None,
+        help="Plan expiring undo/operation history older than N days "
+             "(rows only; a snapshot stays protected until its history row is gone).",
+    )
+    pstorage.add_argument(
+        "--expire-tombstones-days",
+        type=int,
+        default=None,
+        help="Plan hard-purging notes tombstoned more than N days ago "
+             "(never touches active/superseded notes or undo-referenced ones).",
+    )
+    pstorage.add_argument(
+        "--warn-project-bytes",
+        type=int,
+        default=None,
+        help=(
+            "Read-only warning when this Connected Project's local state reaches "
+            "N bytes; does not block writes or clean anything."
+        ),
+    )
+    pstorage.add_argument(
+        "--warn-free-bytes",
+        type=int,
+        default=None,
+        help=(
+            "Read-only warning when free local disk is at or below N bytes; "
+            "does not block writes or clean anything."
+        ),
+    )
+    pstorage.add_argument(
+        "--apply",
+        action="store_true",
+        help="Execute the printed plan (refused with no retention option "
+             "configured; undo-referenced snapshots are never deleted).",
+    )
+    pstorage.add_argument(
+        "--hard-prune",
+        action="store_true",
+        help=(
+            "Use the digest-gated permanent workflow for only eligible expired "
+            "tombstones, old operation history, and unprotected backups. "
+            "Preview first; with --apply requires --approve DIGEST and the "
+            "exact --confirm phrase."
+        ),
+    )
+    pstorage.add_argument(
+        "--approve",
+        help="Exact approval digest printed by a preceding --hard-prune preview.",
+    )
+    pstorage.add_argument(
+        "--confirm",
+        help=(
+            "Required final phrase for --hard-prune --apply: DELETE with a "
+            "requested snapshot, or DELETE WITHOUT LOCAL RECOVERY SNAPSHOT without one."
+        ),
+    )
+    pstorage.add_argument(
+        "--local-recovery-snapshot",
+        action="store_true",
+        help=(
+            "Request an optional same-host recovery copy before hard-prune. "
+            "If it cannot be created, nothing is deleted; retry without it only "
+            "with the stronger confirmation phrase."
+        ),
+    )
+    pstorage.add_argument(
+        "--wait-for-readers-seconds",
+        type=float,
+        default=0.0,
+        help=(
+            "Bounded wait for WAL TRUNCATE before compaction (default: 0 for CLI). "
+            "A live reader is reported, never forced closed."
+        ),
+    )
+    pstorage.add_argument(
+        "--list-orphans",
+        action="store_true",
+        help="Only print the read-only orphan inventory (registry entries whose "
+             "path no longer exists; project databases with no registry entry) "
+             "for the whole namespace. Detection only — no path argument needed, "
+             "nothing is repaired or deleted.",
+    )
+    pstorage.set_defaults(func=cmd_storage)
 
     pbk = sub.add_parser(
         "backup",
@@ -1962,6 +2393,7 @@ def main(argv: list[str] | None = None) -> None:
         "--native", action="store_true", default=False,
         help=argparse.SUPPRESS,
     )
+    _add_project_target_flags(pstart)
     pstart.set_defaults(func=cmd_start)
 
     pgui = sub.add_parser("gui", help="Launch the native BrainCell GUI.")
@@ -1993,6 +2425,7 @@ def main(argv: list[str] | None = None) -> None:
         ),
     )
     pgui.add_argument("-v", "--verbose", action="store_true")
+    _add_project_target_flags(pgui)
     pgui.set_defaults(func=cmd_gui)
 
     args = p.parse_args(argv)

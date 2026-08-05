@@ -12,11 +12,15 @@ cd braincell
 ./scripts/install.sh
 ```
 
-The installer creates a local environment and, when available, fetches the
-default Ollama embedding model. With an existing environment, use:
+The installer creates a local environment with the required native Memory Map
+GUI and, when available, fetches the default Ollama embedding model. There is
+no supported `--server-only` installation. Without the installer, use pipx
+(recommended, as in the README) or an existing virtual environment:
 
 ```bash
-python3 -m pip install "braincell-mcp @ git+https://github.com/kt2saint-sec/braincell.git"
+pipx install braincell-mcp
+# or, inside an activated virtual environment:
+python3 -m pip install braincell-mcp
 ollama pull qwen3-embedding:4b
 ```
 
@@ -39,6 +43,7 @@ Choose a client explicitly:
 braincell connect . --client claude --scope local   # private to this Project
 braincell connect . --client claude --scope project # shareable .mcp.json
 braincell connect . --client vscode                 # .vscode/mcp.json
+braincell connect . --client opencode               # project opencode.json
 ```
 
 For Codex, BrainCell writes only `.codex/config.toml`; Codex loads it only in a
@@ -54,11 +59,19 @@ Optionally add BrainCell skills to this Project:
 ```bash
 braincell skills add . --client claude # .claude/skills
 braincell skills add . --client codex  # .agents/skills
+braincell skills add . --client opencode # .opencode/skills
 ```
 
 Skills are not added by `connect`, never install machine-wide, and can be
 removed with `braincell skills remove . --client <client>`. Edited same-name
 skills are reported as conflicts and left untouched.
+
+The Memory Map offers the same skills for the Connected Project only. Its
+**Install skills** and **Remove unchanged skills** controls never accept a
+directory, change Pool membership, or widen memory access. It reports each
+skill as **Not installed**, **Up to date**, **Update available**, or
+**Edited by you**. Update available means an earlier BrainCell release wrote
+the installed copy; installing skills brings it current.
 
 ## Recall and Search
 
@@ -68,9 +81,48 @@ braincell search "throttle"
 braincell start .
 ```
 
-Recall and Search operate on the selected Project's memory. `braincell start`
+Recall and Search operate on the connected Project's memory. `braincell start`
 opens the native **Memory Map** for that Project. Its internal localhost
 transport is not an external browser UI or background service.
+
+Inside the Memory Map, a map selection is catalog context (Project identity,
+statistics, and Pool membership). Ordinary Search and Recent notes remain
+Connected-Project memory. Use a named Pool only for an intentional cross-Project
+read.
+
+To inspect disk use and preview backup retention without deleting anything:
+
+```bash
+braincell storage .
+braincell storage . --keep-backups 3
+# Warning-only thresholds, in bytes. They never block writes or remove memory.
+braincell storage . --warn-project-bytes 1073741824 --warn-free-bytes 2147483648
+```
+
+Project storage grows with indexed content and retained history. The retention
+list is a dry-run plan; BrainCell never silently expires curated memory.
+Deleting anything requires an explicitly configured
+`braincell storage . --keep-backups N --apply`, and snapshots referenced by
+undo history are always kept.
+
+Thresholds are an explicit per-command review aid, not a default reservation:
+choose values appropriate for the machine. The Memory Map also shows the
+Connected Project footprint and warns when its optional snapshot or future
+compaction workspace cannot fit. None of these warnings changes memory.
+
+For permanent stale-state cleanup, first review a digest-gated plan:
+
+```bash
+braincell storage . --hard-prune --expire-tombstones-days 180
+braincell storage . --hard-prune --expire-tombstones-days 180 \
+  --apply --approve <digest> \
+  --confirm "DELETE WITHOUT LOCAL RECOVERY SNAPSHOT"
+```
+
+This workflow can only remove eligible expired tombstones, old operation
+history, and unprotected backups. Use `--local-recovery-snapshot` when local
+disk space permits, then type `DELETE` instead. The Memory Map provides the
+same Connected Project-only review flow.
 
 ## Optional: create a Pool
 

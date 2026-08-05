@@ -7,11 +7,6 @@ description: |
   not re-embedded). Assumes /braincell-init already ran (BrainCell connected for
   this Project). Use when: "braincell-sync", "sync braincell", "refresh braincell
   memory", "update BrainCell for this project".
-triggers:
-  - braincell-sync
-  - sync braincell
-  - refresh braincell memory
-  - update braincell for this project
 allowed-tools:
   - Bash
   - Read

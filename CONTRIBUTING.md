@@ -97,7 +97,8 @@ break the dual-license). PRs without a sign-off will be asked to amend.
 
 ## Dev setup & checks
 
-The base package includes the native GUI runtime (PySide6/QtWebEngine). To work on it:
+The native GUI runtime (PySide6/QtWebEngine) is a required base dependency, so
+every development installation includes the Memory Map and its tests:
 
 ```bash
 python -m venv .venv && . .venv/bin/activate
@@ -110,13 +111,70 @@ ruff check braincell
 python -m pytest
 ```
 
+For changes under `braincell/`, run the repository-wide lint target used by the
+release checks:
+
+```bash
+ruff check braincell tests
+```
+
+Run GUI/QtWebEngine selections only through the host-safe runner. It isolates
+HOME/XDG/tmp/cache state, serializes renderer use, disables GPU compositing, and
+applies a user-cgroup memory/task/CPU/time limit; it refuses an uncaged run:
+
+```bash
+scripts/test-gui-safe.sh tests/test_native_shell.py \
+  tests/test_gui_commands_modal.py tests/test_gui_hittest.py \
+  tests/test_native_pool_surface.py tests/test_gui_maintenance_panel.py
+```
+
+On Linux, run the complete local release gate only through the NVMe-backed,
+cgroup-contained runner:
+
+```bash
+scripts/release-check-safe.sh
+```
+
+It runs the full suite through `test-gui-safe.sh`, then reruns the real
+QtWebEngine hittest module in a fresh cgroup so offscreen renderer state cannot
+cross-contaminate it. It records a small, deterministic local performance
+baseline for Connected Project and Pool reads plus native Map startup, then
+builds and checks the wheel and sdist in a separate no-swap cgroup. The baseline
+is an observation, not a hardware-specific latency promise. Its per-run
+directory records memory peak, process count, cgroup pressure events, and the
+baseline JSON. Soft `high` throttle events are recorded as evidence only — they
+are `MemoryHigh`'s normal operation; a hard `max`, `oom`, or `oom_kill` event
+fails the release check and retains the artifacts for inspection. It refuses an
+uncaged invocation or insufficient free disk space. The default workspace is
+`/mnt/nvme-fast/braincell-release-sandbox`; without that mount, point
+`BRAINCELL_RELEASE_CHECK_ROOT` (and `BRAINCELL_GUI_TEST_ROOT` for
+`test-gui-safe.sh`) at a dedicated absolute directory on a fast local disk.
+
+SQLite changes must preserve one transaction owner from `BEGIN` through
+commit/rollback. Any multi-statement mutation needs a fault-injection regression
+that proves the prior committed state survives a failure. Project database
+mutations must also use the destination-scoped process lock so CLI and Memory
+Map writers cannot interleave.
+
+Hard-prune changes require additional safety regressions: preview selection
+must contain only explicit expired/retention evidence; a stale digest, wrong
+confirmation, corrupt audit catalog, or failed requested snapshot must leave
+memory untouched; and a blocked WAL truncate must report a retry state rather
+than close a reader. Never grant semantic similarity, an LLM judgment, or an
+automation schedule independent authority to permanently delete memory.
+
 The Memory Map is a native desktop application backed internally by the existing
 localhost-only FastAPI/uvicorn transport and embedded SPA. Changes must preserve the
 window-owned lifecycle: `braincell start`, `braincell gui`, and `braincell-map` create or
 activate a native window, and closing it stops the server. Do not add an external-viewer or
-headless-GUI fallback, an always-on GUI service, or optionalize PySide6.
+headless-GUI fallback, or an always-on GUI service. PySide6 ships as a required
+base dependency; `gui` and `native` are empty compatibility aliases only. Never
+degrade to a browser or headless fallback.
 
 ## Scope
+
+[ARCHITECTURE.md](ARCHITECTURE.md) maps the modules, CLI surface, database
+schema, and on-disk state — read it before adding a module or a command.
 
 `braincell-mcp` is the **Project-memory serving and Build** layer
 (Search/Recall/Remember + Build/sync). It

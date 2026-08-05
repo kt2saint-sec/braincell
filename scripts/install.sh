@@ -17,6 +17,9 @@ Installs BrainCell into an isolated virtual environment. From a source checkout,
 the checkout is installed; when the script is downloaded on its own, the public
 GitHub main branch archive is installed instead.
 
+The native Memory Map GUI (PySide6/QtWebEngine) is mandatory and installed with
+every BrainCell environment.
+
 Environment:
   BRAINCELL_VENV_DIR       virtualenv location (default: ./.braincell-venv)
   BRAINCELL_EMBED_PROVIDER embedding provider (default: ollama)

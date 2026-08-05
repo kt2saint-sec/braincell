@@ -1,7 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (c) 2026 Karl Toussaint (kt2saint)
 """
-gui.py — BrainCell local web viewer (Phase K).
+gui.py — FastAPI application behind the native Memory Map.
+
+Not a browser product: the app is served on 127.0.0.1 exclusively to the
+native Memory Map shell (``native_shell.py``). The historical "local web
+viewer (Phase K)" framing is retired.
 
 A thin FastAPI read-mostly viewer/manager over the brain.  Reuses
 braincell.store, braincell.project_registry, braincell.embed, braincell.config,
@@ -32,6 +36,7 @@ from .gui_template import INDEX_HTML
 from .install import claude_registered_map, registration_status
 from .log import get as _get_log
 from .mode import resolve_mode
+from .platform import install_launcher  # noqa: F401 — re-exported for tests
 from .project_registry import (
     add_to_pool,
     create_pool,
@@ -82,6 +87,13 @@ class _ProjectReassociateBody(BaseModel):
     acknowledge_home: bool = False
     acknowledge_non_git: bool = False
     allow_privileged: bool = False
+
+
+class _MaintenancePreferencesBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    bypass_delete_confirmation: bool
+    acknowledgement: str | None = None
 
 
 # ── App factory ───────────────────────────────────────────────────────────────
@@ -353,6 +365,41 @@ def create_app(
             # profile is non-persistent, so a profile-local flag re-ambushes on
             # every native launch.
             "tour_seen": get_tour_seen_path().exists(),
+        }
+
+    @app.get("/api/maintenance/overview")
+    async def api_maintenance_overview(request: Request) -> dict:  # type: ignore[type-arg]
+        """Read Connected-Project storage health for the Memory Map.
+
+        This route intentionally exposes no candidate selection or execution.
+        It is available in read-only launches because understanding local disk
+        impact must not require permission to change memory.
+        """
+        import sqlite3
+
+        from .maintenance_preferences import (
+            MaintenancePreferencesError,
+            load_preferences,
+        )
+        from .storage_accounting import RetentionRefusedError, storage_report
+
+        project_id = _connected_pool_project(request)
+        try:
+            report = storage_report(project_id)
+            preferences = load_preferences(project_id)
+        except (
+            MaintenancePreferencesError,
+            RetentionRefusedError,
+            OSError,
+            sqlite3.Error,
+        ) as exc:
+            raise HTTPException(409, f"Maintenance health is unavailable: {exc}") from exc
+        return {
+            "connected_project_id": project_id,
+            "database_diagnostics": report["database_diagnostics"],
+            "storage_impact": report["storage_impact"],
+            "storage_budget": report["storage_budget"],
+            "preferences": preferences,
         }
 
     @app.post("/api/tour-seen")
@@ -666,7 +713,46 @@ def create_app(
 
     # ── Write endpoints (only mounted when allow_writes=True) ─────────────────
 
+    # The skills catalog is safe in read-only mode. It resolves only this
+    # launched window's Connected Project and never opens a memory database.
+    from .gui_install import mount_skill_status_api
+    mount_skill_status_api(app)
+
     if allow_writes:
+
+        @app.get("/api/preferences/maintenance")
+        async def api_maintenance_preferences(request: Request) -> dict:  # type: ignore[type-arg]
+            """Read destructive-maintenance confirmation settings for this Project."""
+            from .maintenance_preferences import (
+                MaintenancePreferencesError,
+                load_preferences,
+            )
+
+            project_id = _connected_pool_project(request)
+            try:
+                return load_preferences(project_id)
+            except MaintenancePreferencesError as exc:
+                raise HTTPException(409, str(exc)) from exc
+
+        @app.put("/api/preferences/maintenance")
+        async def api_set_maintenance_preferences(
+            request: Request, body: _MaintenancePreferencesBody
+        ) -> dict:  # type: ignore[type-arg]
+            """Change only the Connected Project's typed-delete bypass setting."""
+            from .maintenance_preferences import (
+                MaintenancePreferencesError,
+                set_bypass_delete_confirmation,
+            )
+
+            project_id = _connected_pool_project(request)
+            try:
+                return set_bypass_delete_confirmation(
+                    project_id,
+                    body.bypass_delete_confirmation,
+                    acknowledgement=body.acknowledgement,
+                )
+            except MaintenancePreferencesError as exc:
+                raise HTTPException(409, str(exc)) from exc
 
         @app.post("/api/pools")
         async def api_pool_membership(
@@ -735,28 +821,32 @@ def create_app(
 
         # Ingestion management (folder navigation / build jobs / clear / schedules).
         from .gui_ingest import IngestManager, mount_ingest_api
-        app.state.ingest_manager = IngestManager()
+        from .gui_mutation import GuiMutationCoordinator
+        app.state.mutation_coordinator = GuiMutationCoordinator()
+        app.state.ingest_manager = IngestManager(app.state.mutation_coordinator)
         mount_ingest_api(
             app,
             db_path=db_path,
             manager=app.state.ingest_manager,
             connected_project_id=seed_project_id or "",
+            coordinator=app.state.mutation_coordinator,
             pick_folder=(native_bridge.pick_folder if native_bridge is not None else None),
         )
 
-        # Project-local client connection and Project-skill management.
+        # Project-local client connection and Connected Project skill management.
         from .gui_install import mount_install_api
         mount_install_api(app, restart_argv=restart_argv)
 
         # Maintenance commands (consolidate/reflect/contradictions/reembed/
         # backup/memory log+undo) — the GUI counterparts of the remaining CLI.
         from .gui_ops import OpsJobManager, mount_ops_api
-        app.state.ops_manager = OpsJobManager()
+        app.state.ops_manager = OpsJobManager(app.state.mutation_coordinator)
         mount_ops_api(
             app,
             db_path=db_path,
             manager=app.state.ops_manager,
             connected_project_id=seed_project_id or "",
+            coordinator=app.state.mutation_coordinator,
         )
 
     return app
@@ -764,17 +854,66 @@ def create_app(
 
 # ── Server launcher (localhost-only) ──────────────────────────────────────────
 
+def _windows_restrict_token_acl(path: Path) -> None:
+    """Restrict *path* to the current user only via ``icacls``.
+
+    Windows has no POSIX chmod semantics: ``os.chmod(path, 0o600)`` there only
+    toggles the FILE_ATTRIBUTE_READONLY flag, never actual ACL permissions, so
+    it does nothing to stop another account on the same machine from reading
+    the token. ``icacls`` (stdlib-only — a subprocess call, not a new
+    dependency) removes inherited permissions and grants full control to only
+    the current user.
+
+    Fail-closed: any failure here — a missing ``USERNAME``, a non-NTFS volume
+    (FAT32/exFAT have no ACLs at all), ``icacls`` itself erroring — is
+    surfaced as a loud warning rather than silently leaving the token at
+    whatever ACL it inherited. This does not delete the token or block the
+    GUI from starting: the token already lives under the user's own config
+    directory, which carries a reasonably-scoped default ACL on Windows (real
+    exposure is a custom or relocated data root — see BUGS.md), so a failed
+    hardening attempt is a defense-in-depth gap to report, not a reason to
+    refuse to serve the GUI at all.
+    """
+    import os as _os
+    import subprocess
+
+    domain = _os.environ.get("USERDOMAIN", "")
+    username = _os.environ.get("USERNAME", "")
+    if not username:
+        log.warning(
+            "Cannot restrict the GUI token's ACL at %s: USERNAME is not set "
+            "in the environment — it may be readable by other accounts on "
+            "this machine.", path,
+        )
+        return
+    account = f"{domain}\\{username}" if domain else username
+    result = subprocess.run(
+        ["icacls", str(path), "/inheritance:r", "/grant:r", f"{account}:F"],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        log.warning(
+            "icacls failed to restrict the GUI token at %s to %s (exit %s): "
+            "%s — it may be readable by other accounts on this machine.",
+            path, account, result.returncode, result.stderr.strip(),
+        )
+
+
 def _resolve_gui_token() -> str:
     """Return the GUI auth token — durable across launches.
 
     Precedence: explicit ``BRAINCELL_GUI_TOKEN`` env override (ephemeral, NEVER
-    written) > persisted per-namespace file > mint + persist (0600, atomic
-    tmp-then-replace). Persisting means a GUI restart reuses the same token, so
-    the embedded renderer can reauthenticate instead of being stranded on 401.
-    Rotate via ``braincell gui --rotate-token``.
+    written) > persisted per-namespace file > mint + persist (atomic
+    tmp-then-replace, restricted to the current user only — POSIX/macOS via
+    ``os.chmod(0o600)``, Windows via ``icacls`` in `_windows_restrict_token_acl`
+    since ``os.chmod`` there cannot express real ACL permissions). Persisting
+    means a GUI restart reuses the same token, so the embedded renderer can
+    reauthenticate instead of being stranded on 401. Rotate via
+    ``braincell gui --rotate-token``.
     """
     import os
     import secrets
+    import sys
 
     from .config import get_gui_token_path
 
@@ -792,7 +931,10 @@ def _resolve_gui_token() -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(token, encoding="utf-8")
-    os.chmod(tmp, 0o600)
+    if sys.platform == "win32":
+        _windows_restrict_token_acl(tmp)
+    else:
+        os.chmod(tmp, 0o600)
     tmp.replace(path)
     return token
 
@@ -805,6 +947,9 @@ def run_gui(
     path: str = ".",
     url_extra_query: str | None = None,
     restart_command: str = "gui",
+    acknowledge_home: bool = False,
+    acknowledge_non_git: bool = False,
+    allow_privileged: bool = False,
 ) -> None:
     """Resolve the brain, build the app, and run the native GUI.
 
@@ -828,14 +973,13 @@ def run_gui(
     from . import native_shell
     from .config import get_db_path, get_project_id
 
-    if not native_shell.native_available():
-        raise RuntimeError(
-            "PySide6/QtWebEngine cannot open a native window in this session. "
-            "Run BrainCell from a graphical desktop session."
-        )
+    unavailable = native_shell.native_unavailable_reason()
+    if unavailable:
+        raise RuntimeError(unavailable)
 
     resolve_mode(mode)
-    project_id = get_project_id(Path(path).resolve())
+    project_root = Path(path).resolve()
+    project_id = get_project_id(project_root)
     db_path = get_db_path(project_id)
 
     # Gate the namespace-wide API even though it is localhost-only. The first
@@ -854,15 +998,21 @@ def run_gui(
     if restart_command == "start":
         restart_argv = [
             sys.executable, "-m", "braincell.cli", "start",
-            str(Path(path).resolve()), "--port", str(port),
+            str(project_root), "--port", str(port),
         ]
     else:
         restart_argv = [
-            sys.executable, "-m", "braincell.cli", "gui", str(Path(path).resolve()),
+            sys.executable, "-m", "braincell.cli", "gui", str(project_root),
             "--port", str(port),
         ]
         if allow_writes:
             restart_argv.append("--allow-writes")
+    if acknowledge_home:
+        restart_argv.append("--acknowledge-home")
+    if acknowledge_non_git:
+        restart_argv.append("--acknowledge-non-git")
+    if allow_privileged:
+        restart_argv.append("--allow-privileged")
 
     native_bridge = native_shell.NativeBridge()
     app = create_app(
@@ -877,139 +1027,12 @@ def run_gui(
         native_bridge=native_bridge,
     )
 
+    # Never log the tokened URL — anyone with the log sink could replay the
+    # bearer token against token-gated routes, including writes.
     log.info(
-        "BrainCell GUI starting at %s  allow_writes=%s  auth=%s  db=%s",
-        url, allow_writes, bool(auth_token), db_path,
+        "BrainCell GUI starting at http://127.0.0.1:%s  allow_writes=%s  auth=%s  db=%s",
+        port, allow_writes, bool(auth_token), db_path,
     )
     native_shell.serve_native(
         app, port=port, url=open_url, bridge=native_bridge
     )
-
-
-# ── Desktop launcher installer (A3, Linux XDG) ────────────────────────────────
-
-_DESKTOP_ENTRY_TEMPLATE = """\
-[Desktop Entry]
-Type=Application
-Name=BrainCell Map
-Comment=Local Memory Map for one connected Project and its explicit Pools
-Exec={exec}
-Icon=braincell
-Terminal=false
-Categories=Development;Utility;
-StartupNotify=true
-"""
-
-
-def _resolve_cli_exec() -> str:
-    """Absolute path to the ``braincell`` console script for the .desktop Exec.
-
-    A desktop environment launches ``.desktop`` entries with the *login/session*
-    PATH, which almost never includes a project virtualenv's ``bin`` dir. A bare
-    ``Exec=braincell …`` therefore fails silently (icon does nothing) whenever
-    braincell is installed in a venv. Resolve an absolute path so the launcher
-    works regardless of the session PATH; fall back to the bare name only if the
-    script cannot be located.
-    """
-    import shutil
-    import sys
-
-    found = shutil.which("braincell")
-    if found:
-        return found
-    sibling = Path(sys.executable).with_name("braincell")
-    if sibling.exists():
-        return str(sibling)
-    return "braincell"  # last resort — bare name (relies on session PATH)
-
-
-def _xdg_data_home() -> Path:
-    """Resolve $XDG_DATA_HOME (falling back to ~/.local/share)."""
-    import os
-    raw = os.environ.get("XDG_DATA_HOME")
-    return Path(raw) if raw else Path.home() / ".local" / "share"
-
-
-_ICON_PNG_SIZES = (48, 128, 256, 512)
-
-
-def install_launcher(project_path: Path | None = None) -> tuple[Path, Path]:
-    """Install the desktop icon + .desktop entry (idempotent). Returns (icon, desktop).
-
-    ``project_path`` is the project folder the icon launches (default: cwd).
-    The Exec line is ``braincell start "<project_path>"`` — the full one-command
-    launcher (single-instance reuse, preflight, per-project GUI). It was
-    Older launcher entries opened an empty map rather than the selected Project,
-    which made the launcher look broken on machines with Project memory.
-
-    Icons go into the XDG *hicolor* theme tree — the location GNOME/KDE actually
-    resolve ``Icon=braincell`` from:
-      ``$XDG_DATA_HOME/icons/hicolor/scalable/apps/braincell.svg``
-      ``$XDG_DATA_HOME/icons/hicolor/<S>x<S>/apps/braincell.png`` (48/128/256/512)
-    A legacy loose copy at ``$XDG_DATA_HOME/icons/braincell.svg`` is kept for
-    DEs that scan that directory. Writes
-    ``$XDG_DATA_HOME/applications/braincell-map.desktop`` — the FILENAME stays
-    ``braincell-map.desktop`` on purpose: GNOME favorites pin the desktop-file
-    id, so renaming it would silently unpin the icon. Then best-effort runs
-    ``update-desktop-database`` + ``gtk-update-icon-cache`` so the entry and
-    icon show up without a re-login.  Safe to re-run: files are overwritten,
-    no duplicates.
-    """
-    from importlib.resources import files
-
-    root = (project_path or Path.cwd()).resolve()
-
-    data_home = _xdg_data_home()
-    icons_dir = data_home / "icons"
-    hicolor = icons_dir / "hicolor"
-    apps_dir = data_home / "applications"
-    apps_dir.mkdir(parents=True, exist_ok=True)
-
-    assets = files("braincell").joinpath("assets")
-    svg_bytes = assets.joinpath("braincell.svg").read_bytes()
-
-    # hicolor theme tree (the reliable lookup path for Icon=braincell)
-    scalable = hicolor / "scalable" / "apps"
-    scalable.mkdir(parents=True, exist_ok=True)
-    (scalable / "braincell.svg").write_bytes(svg_bytes)
-    for size in _ICON_PNG_SIZES:
-        png = assets.joinpath(f"braincell-{size}.png")
-        try:
-            png_bytes = png.read_bytes()
-        except FileNotFoundError:  # pragma: no cover - defensive (partial install)
-            continue
-        size_dir = hicolor / f"{size}x{size}" / "apps"
-        size_dir.mkdir(parents=True, exist_ok=True)
-        (size_dir / "braincell.png").write_bytes(png_bytes)
-
-    # legacy loose copy (some DEs scan $XDG_DATA_HOME/icons directly)
-    icons_dir.mkdir(parents=True, exist_ok=True)
-    icon_dst = icons_dir / "braincell.svg"
-    icon_dst.write_bytes(svg_bytes)
-
-    desktop_dst = apps_dir / "braincell-map.desktop"
-    # Quote both parts (Desktop Entry spec quoting) so venv/project paths with
-    # spaces survive Desktop Entry argument splitting.
-    exec_line = f'"{_resolve_cli_exec()}" start "{root}"'
-    desktop_dst.write_text(
-        _DESKTOP_ENTRY_TEMPLATE.format(exec=exec_line), encoding="utf-8"
-    )
-
-    # Refresh menu + icon caches — best effort; absent on minimal distros.
-    import shutil
-    import subprocess
-    for cmd in (
-        ["update-desktop-database", str(apps_dir)],
-        ["gtk-update-icon-cache", "-f", "-t", str(hicolor)],
-    ):
-        if shutil.which(cmd[0]):
-            try:
-                subprocess.run(cmd, check=False, capture_output=True)
-            except OSError as exc:  # pragma: no cover - environment dependent
-                log.warning("%s failed (non-fatal): %s", cmd[0], exc)
-        else:
-            log.warning(
-                "%s not found — launcher installed; the app menu/icon may need "
-                "a manual refresh or re-login.", cmd[0],
-            )
-    return icon_dst, desktop_dst

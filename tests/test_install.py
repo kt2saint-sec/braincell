@@ -171,6 +171,15 @@ def test_portable_command_refuses_absolute_fallback(monkeypatch):
 
 
 def test_codex_config_preserves_unrelated_content_permissions_and_final_newline(tmp_path):
+    """BUGS.md "Windows POSIX-mode test-scoping": the `chmod(0o640)` / `S_IMODE`
+    round-trip below is a POSIX-only contract. Windows' `chmod` cannot express
+    arbitrary POSIX mode bits (it only toggles the read-only attribute, coming
+    back as something like 0o666 regardless of what was requested), and
+    `_atomic_write_text` here has no ACL-preservation step of its own to assert
+    in its place (unlike the GUI token's `_windows_restrict_token_acl` —
+    there is nothing to mock). The content/backup/newline assertions below are
+    genuinely platform-agnostic and stay unconditional.
+    """
     repo = _codex_repo(tmp_path)
     cfg = repo / ".codex" / "config.toml"
     cfg.parent.mkdir()
@@ -323,6 +332,15 @@ def test_cli_skills_add_and_remove_are_project_local(tmp_path, capsys):
     removed = capsys.readouterr().out
     assert "removed: braincell-init" in removed
     assert not (project / ".agents" / "skills" / "braincell-init" / "SKILL.md").exists()
+
+
+def test_cli_skills_supports_opencode_project_local_directory(tmp_path, capsys):
+    project = _codex_repo(tmp_path)
+
+    main(["skills", "add", str(project), "--client", "opencode"])
+
+    assert "installed: braincell-init" in capsys.readouterr().out
+    assert (project / ".opencode" / "skills" / "braincell-init" / "SKILL.md").is_file()
 
 
 # ── retired global hook command ───────────────────────────────────────────────

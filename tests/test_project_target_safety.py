@@ -76,3 +76,15 @@ def test_privileged_execution_requires_explicit_override(tmp_path, monkeypatch):
 
     target = validate_project_target(project, allow_privileged=True)
     assert "privileged" in " ".join(target.warnings)
+
+
+def test_register_rejects_unsafe_target_before_minting(tmp_path):
+    from braincell.cli import main
+    from braincell.project_registry import load_path_registry
+
+    non_git = tmp_path / "plain-directory"
+    non_git.mkdir()
+
+    with pytest.raises(SystemExit, match="acknowledge-non-git"):
+        main(["register", str(non_git)])
+    assert load_path_registry() == {}

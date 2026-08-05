@@ -1,12 +1,21 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (c) 2026 Karl Toussaint (kt2saint)
 """
-pool.py — merge existing per-project ``braincell.db`` files into the global brain.
+pool.py — RETIRED surface: materialized merging of per-project ``braincell.db``
+files into the retired shared "global brain".
+
+Not reachable from the CLI parser (its driver ``cmd_pool`` is wired to no
+subparser) and must not be re-exposed — see ARCHITECTURE.md, "Retired surfaces
+retained as code". Under the project-only architecture the live "Pool" is
+membership-only (``project_registry.py``); the only runtime consumer of legacy
+pooled rows is ``legacy_recovery.py``. The mechanics below are retained for
+that recovery path and its tests. (The ``build --mode global`` this module was
+once the cheap alternative to no longer exists; ``--mode`` accepts only
+``project``.)
 
 Copies ``bc_documents`` + ``bc_chunks`` + ``memory_notes`` from each source
-project DB into the global DB WITHOUT re-embedding (the stored float32 vectors
-are reused verbatim). This is the cheap alternative to ``build --mode global``,
-which re-ingests and re-embeds every repo.
+project DB into the destination DB WITHOUT re-embedding (the stored float32
+vectors are reused verbatim).
 
 Pooling CONVERGES, it does not merely copy. A re-pool re-synchronises what
 already exists instead of skipping it, so the global brain keeps telling the same

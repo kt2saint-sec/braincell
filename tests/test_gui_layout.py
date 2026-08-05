@@ -151,7 +151,9 @@ class TestPass2Commands:
         html = _page(tmp_path)
         assert "cmdSkills" in html, "Missing the cmdSkills handler"
         assert "/api/skills" in html, "cmdSkills must post to /api/skills"
-        assert "your copy left untouched" in html, (
+        assert "/api/skills/status" in html, "Skills panel must load read-only status first"
+        assert "Connected Project only" in html
+        assert "BrainCell will leave your copy untouched" in html, (
             "Conflict rows must explain the never-clobber outcome"
         )
 
@@ -184,8 +186,8 @@ class TestPass2Commands:
         html = _page(tmp_path)
         assert 'id="ar-global"' not in html, "Project MCP connection must not target global memory"
         assert 'id="ar-skills"' not in html
-        assert "Add skills" in html
-        assert "Remove skills" in html
+        assert "Install skills" in html
+        assert "Remove unchanged skills" in html
 
     def test_reflect_model_and_contradictions_threshold_inputs(self, tmp_path):
         html = _page(tmp_path)

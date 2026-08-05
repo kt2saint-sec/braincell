@@ -16,12 +16,37 @@ like the SPA does.
 from __future__ import annotations
 
 import asyncio
+import sys
 import time
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from tests.conftest import fake_vec, make_store
+
+
+def test_ingest_and_maintenance_share_one_mutation_coordinator():
+    from braincell.gui_ingest import IngestManager
+    from braincell.gui_mutation import GuiMutationCoordinator
+    from braincell.gui_ops import OpsJobManager
+
+    coordinator = GuiMutationCoordinator()
+    ingest = IngestManager(coordinator)
+    ops = OpsJobManager(coordinator)
+
+    async def _run():
+        ingest.command_for = lambda _path: [
+            sys.executable,
+            "-c",
+            "import time; time.sleep(0.2)",
+        ]
+        await ingest.start("/tmp/project")
+        with pytest.raises(RuntimeError, match="already running"):
+            await ops.start("reembed-notes", lambda: None)
+        await ingest.wait()
+
+    asyncio.run(_run())
 
 
 def _app(tmp_path: Path, *, allow_writes: bool = True):
@@ -74,6 +99,8 @@ class TestOpsGating:
                 ("/api/ops/reflect", {"project_id": "X"}),
                 ("/api/ops/contradictions", {"project_id": "X"}),
                 ("/api/ops/reembed-notes", {"project_id": "X"}),
+                ("/api/ops/hard-prune/plan", {"project_id": "X"}),
+                ("/api/ops/hard-prune/apply", {"project_id": "X", "approval_digest": "x"}),
                 ("/api/backup", {}),
                 ("/api/memory/undo", {"op_id": 1, "project_id": "X"}),
             ):
@@ -84,8 +111,12 @@ class TestOpsGating:
     def test_unknown_project_404(self, tmp_path):
         with TestClient(_app(tmp_path)) as client:
             for path in ("/api/ops/consolidate", "/api/ops/reflect",
-                         "/api/ops/contradictions", "/api/ops/reembed-notes"):
-                r = client.post(path, json={"project_id": "01NOPE"})
+                         "/api/ops/contradictions", "/api/ops/reembed-notes",
+                         "/api/ops/hard-prune/plan", "/api/ops/hard-prune/apply"):
+                body = {"project_id": "01NOPE"}
+                if path.endswith("/apply"):
+                    body["approval_digest"] = "required-before-scope-check"
+                r = client.post(path, json=body)
                 assert r.status_code == 404, path
             assert client.get("/api/memory?project_id=01NOPE").status_code == 404
             r = client.post("/api/memory/undo", json={"op_id": 1, "project_id": "01NOPE"})
@@ -97,6 +128,20 @@ class TestOpsGating:
             r = client.post("/api/ops/consolidate",
                             json={"project_id": "X", "command": "evil"})
         assert r.status_code == 422
+
+    def test_hard_prune_rejects_caller_supplied_backup_roots(self, tmp_path):
+        """The GUI may never steer retention at arbitrary filesystem roots:
+        hard-prune scans only the BrainCell namespace, so a request naming
+        backup_roots is refused outright rather than silently ignored."""
+        with TestClient(_app(tmp_path)) as client:
+            for path, body in (
+                ("/api/ops/hard-prune/plan",
+                 {"project_id": "X", "backup_roots": ["/anywhere"]}),
+                ("/api/ops/hard-prune/apply",
+                 {"project_id": "X", "approval_digest": "d",
+                  "backup_roots": ["/anywhere"]}),
+            ):
+                assert client.post(path, json=body).status_code == 422, path
 
     def test_busy_409(self, tmp_path, monkeypatch):
         pid = "01OPSBUSYAAAAAAAAAAAAAAAAA"
@@ -112,6 +157,35 @@ class TestOpsGating:
             assert client.post("/api/ops/consolidate",
                                json={"project_id": pid}).status_code == 409
             _wait_op(client)
+
+    def test_hard_prune_plan_and_apply_are_connected_project_scoped(self, tmp_path, monkeypatch):
+        pid = "01OPSHARDPRUNEAAAAAAAAAAAA"
+        _register(tmp_path, pid)
+        from braincell import gui_ops, storage_accounting
+
+        preview = {
+            "approval_digest": "digest",
+            "candidate_count": 1,
+            "selection": {"expired_tombstone_note_ids": [], "expired_operation_ids": [], "unprotected_backup_paths": ["/tmp/a.db"]},
+        }
+        monkeypatch.setattr(storage_accounting, "hard_prune_plan", lambda *_a, **_kw: dict(preview))
+        seen = []
+        monkeypatch.setattr(gui_ops, "run_hard_prune", lambda body: seen.append(body) or {"ok": True})
+        with TestClient(_app(tmp_path)) as client:
+            planned = client.post(
+                "/api/ops/hard-prune/plan", json={"project_id": pid, "keep_backups": 0}
+            )
+            assert planned.status_code == 200
+            assert planned.json()["approval_digest"] == "digest"
+            started = client.post(
+                "/api/ops/hard-prune/apply",
+                json={"project_id": pid, "approval_digest": "digest", "keep_backups": 0},
+            )
+            assert started.status_code == 200
+            job = _wait_op(client)
+        assert job["state"] == "done"
+        assert seen[0].project_id == pid
+        assert seen[0].approval_digest == "digest"
 
 
 # ── consolidate ────────────────────────────────────────────────────────────────

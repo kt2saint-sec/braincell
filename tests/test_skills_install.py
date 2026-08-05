@@ -38,14 +38,14 @@ def _project(tmp_path):
 def test_packaged_skills_are_discoverable():
     """Both skills must be readable from the installed package, not just the repo."""
     names = packaged_skills()
-    assert "braincell-init" in names
-    assert "braincell-sync" in names
+    assert names == ["braincell-init", "braincell-sync"]
 
 
 def test_skills_dirs_are_client_specific_and_project_local(tmp_path):
     project = _project(tmp_path)
     assert project_skills_dir(project, "claude") == project.resolve() / ".claude" / "skills"
     assert project_skills_dir(project, "codex") == project.resolve() / ".agents" / "skills"
+    assert project_skills_dir(project, "opencode") == project.resolve() / ".opencode" / "skills"
 
 
 # ── Placement ──────────────────────────────────────────────────────────────────
@@ -76,6 +76,19 @@ def test_reinstall_is_idempotent(tmp_path):
     assert {r[1] for r in results} == {"current"}, "re-run should report no-op, not rewrite"
     after = {p: p.read_text(encoding="utf-8") for p in target.rglob("SKILL.md")}
     assert after == before, "idempotent re-run modified a file"
+
+
+def test_opencode_install_uses_its_native_project_skill_directory(tmp_path):
+    project = _project(tmp_path)
+
+    results = install_project_skills(project, "opencode")
+
+    init = next(path for name, _status, path in results if name == "braincell-init")
+    assert init == project / ".opencode" / "skills" / "braincell-init" / "SKILL.md"
+    text = init.read_text(encoding="utf-8")
+    assert "--client opencode" in text
+    assert "OpenCode" in text
+    assert "connect BrainCell to Claude" not in text
 
 
 def test_existing_different_skill_is_refused_not_clobbered(tmp_path):
@@ -126,12 +139,71 @@ def test_remove_deletes_only_unchanged_managed_skills(tmp_path):
     assert not next(path for name, _status, path in installed if name == "braincell-sync").exists()
 
 
+def _install_historical_body(tmp_path, monkeypatch, client="claude"):
+    """Plant a fake earlier-release body and register its digest as historical."""
+    import hashlib
+
+    from braincell import install as install_module
+
+    project = _project(tmp_path)
+    old_body = "---\nname: braincell-init\n---\n\nAn earlier BrainCell release wrote this.\n"
+    digest = hashlib.sha256(old_body.encode("utf-8")).hexdigest()
+    monkeypatch.setitem(
+        install_module._HISTORICAL_SKILL_SHA256, "braincell-init", frozenset({digest})
+    )
+    dest = project_skills_dir(project, client) / "braincell-init" / "SKILL.md"
+    dest.parent.mkdir(parents=True)
+    dest.write_text(old_body, encoding="utf-8")
+    return project, dest, old_body
+
+
+def test_outdated_braincell_authored_skill_is_updated_in_place(tmp_path, monkeypatch):
+    """Upgrade path: a body an EARLIER release shipped is ours to replace —
+    leaving it as a permanent conflict stranded every pre-1.0.0 install."""
+    project, dest, old_body = _install_historical_body(tmp_path, monkeypatch)
+
+    by_name = {n: s for n, s, _ in install_project_skills(project, "claude")}
+
+    assert by_name["braincell-init"] == "updated"
+    assert dest.read_text(encoding="utf-8") != old_body
+
+
+def test_outdated_braincell_authored_skill_is_removable(tmp_path, monkeypatch):
+    project, dest, _old_body = _install_historical_body(tmp_path, monkeypatch)
+
+    by_name = {n: s for n, s, _ in remove_project_skills(project, "claude")}
+
+    assert by_name["braincell-init"] == "removed"
+    assert not dest.exists()
+
+
+def test_status_reports_outdated_for_a_historical_body(tmp_path, monkeypatch):
+    from braincell.install import project_skills_status
+
+    project, _dest, _old_body = _install_historical_body(tmp_path, monkeypatch)
+
+    by_name = {n: s for n, s, _ in project_skills_status(project, "claude")}
+
+    assert by_name["braincell-init"] == "outdated"
+
+
+def test_historical_digest_registry_is_well_formed():
+    """Append-only registry of shipped bodies: every entry is a SHA-256 hex."""
+    from braincell.install import _HISTORICAL_SKILL_SHA256
+
+    assert set(_HISTORICAL_SKILL_SHA256) == {"braincell-init", "braincell-sync"}
+    for digests in _HISTORICAL_SKILL_SHA256.values():
+        assert digests, "a shipped skill must list its prior release bodies"
+        for digest in digests:
+            assert len(digest) == 64 and set(digest) <= set("0123456789abcdef")
+
+
 def test_unknown_skill_client_is_rejected(tmp_path):
     project = _project(tmp_path)
     try:
         project_skills_dir(project, "vscode")
     except ValueError as exc:
-        assert "Claude or Codex" in str(exc)
+        assert "Claude, Codex, or OpenCode" in str(exc)
     else:
         raise AssertionError("VS Code must not receive unsupported BrainCell skills")
 

@@ -164,7 +164,7 @@ class TestStartFailureVisibility:
         from braincell.cli import cmd_start
 
         self._patch_launchable_preflight(monkeypatch)
-        monkeypatch.setattr(native_shell, "native_available", lambda: True)
+        monkeypatch.setattr(native_shell, "native_unavailable_reason", lambda: None)
 
         def failing_run_gui(**kwargs):
             raise RuntimeError("GUI server did not start within 20s — busy db")
@@ -187,7 +187,11 @@ class TestStartFailureVisibility:
         """A missing graphical runtime is a visible hard failure, never fallback."""
         from braincell.cli import cmd_start
 
-        monkeypatch.setattr(native_shell, "native_available", lambda: False)
+        monkeypatch.setattr(
+            native_shell,
+            "native_unavailable_reason",
+            lambda: "No graphical display detected. Run BrainCell from a graphical desktop session.",
+        )
         alerts: list = []
         monkeypatch.setattr(
             native_shell, "alert", lambda msg, **k: alerts.append(msg) or True

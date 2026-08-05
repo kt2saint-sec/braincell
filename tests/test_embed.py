@@ -14,8 +14,8 @@ through to the real package.
 
 from __future__ import annotations
 
+import hashlib
 import importlib
-import logging
 import sys
 import types
 from unittest.mock import MagicMock, patch
@@ -23,6 +23,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+from braincell import embed as _embmod
 from braincell import embed_spec
 from braincell.embed import _batched_by_size, embed_query, embed_texts
 
@@ -123,14 +124,13 @@ class TestBatchedBySize:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# SECTION 2: zero-norm vector handling
+# SECTION 2: provider output contract
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestZeroNormVector:
-    """A zero-norm vector emits a warning and preserves index alignment."""
+    """Degenerate provider output fails before it can pollute stored vectors."""
 
-    def test_zero_norm_emits_warning_and_preserves_length(self, caplog):
-        """embed_texts must return a vector for every input even when one is zero-norm."""
+    def test_zero_norm_is_rejected(self):
         good_vec = np.random.default_rng(1).standard_normal(embed_spec.DIM).astype(np.float32)
         zero_vec = np.zeros(embed_spec.DIM, dtype=np.float32)
         raw = [good_vec.tolist(), zero_vec.tolist(), good_vec.tolist()]
@@ -144,18 +144,12 @@ class TestZeroNormVector:
         mock_hx = _mock_httpx_module()
 
         with patch.dict(sys.modules, {"ollama": mock_ol, "httpx": mock_hx}), \
-             caplog.at_level(logging.WARNING, logger="braincell.embed"):
-            result = embed_texts(["text0", "text1", "text2"])
+             pytest.raises(ValueError, match="zero-norm"):
+            embed_texts(["text0", "text1", "text2"])
 
-        assert len(result) == 3, "Index alignment broken: result length must equal input length"
-        assert any("zero norm" in r.message.lower() for r in caplog.records), \
-            "No zero-norm warning emitted"
-
-    def test_zero_norm_counts_correctly_in_warning(self, caplog):
-        """The warning count (X/N) must match the number of zero-norm vectors."""
-        zeros = [np.zeros(embed_spec.DIM, dtype=np.float32).tolist() for _ in range(2)]
-        good = np.random.default_rng(2).standard_normal(embed_spec.DIM).astype(np.float32).tolist()
-        raw = zeros + [good]
+    @pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
+    def test_non_finite_vector_is_rejected(self, bad):
+        raw = [np.full(embed_spec.DIM, bad, dtype=np.float32).tolist()]
 
         mock_resp = MagicMock()
         mock_resp.embeddings = raw
@@ -166,12 +160,24 @@ class TestZeroNormVector:
         mock_hx = _mock_httpx_module()
 
         with patch.dict(sys.modules, {"ollama": mock_ol, "httpx": mock_hx}), \
-             caplog.at_level(logging.WARNING, logger="braincell.embed"):
-            result = embed_texts(["a", "b", "c"])
+             pytest.raises(ValueError, match="non-finite"):
+            embed_texts(["bad"])
 
-        assert len(result) == 3
-        warn_text = " ".join(r.message for r in caplog.records if "zero norm" in r.message.lower())
-        assert "2/3" in warn_text, f"Expected '2/3' in warning, got: {warn_text!r}"
+    def test_provider_cardinality_mismatch_is_rejected(self):
+        good = np.ones(embed_spec.DIM, dtype=np.float32).tolist()
+        mock_resp = MagicMock()
+        mock_resp.embeddings = [good]
+        client = MagicMock()
+        client.embed.return_value = mock_resp
+
+        with patch.dict(
+            sys.modules,
+            {
+                "ollama": _mock_ollama_module(client),
+                "httpx": _mock_httpx_module(),
+            },
+        ), pytest.raises(ValueError, match="1 embeddings for 2 inputs"):
+            embed_texts(["first", "second"])
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -503,12 +509,6 @@ class TestOllamaDimGuardWithConfiguredDim:
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECTION 8: P0-2 asymmetric query/document prefix injection
 # ═══════════════════════════════════════════════════════════════════════════════
-
-# Deliberately mid-file: grouped with the P0-2 section these imports support.
-import hashlib
-
-from braincell import embed as _embmod
-
 
 def _configure(monkeypatch, model: str, dim: int):
     """Reload embed_spec for (model, dim) and clear the query-embed cache."""

@@ -33,40 +33,14 @@ class TestResetEmbeddingSpace:
 
         # Insert one document and one chunk with embedding.
         async def _seed():
-            cf = await store._conn_get()
-            from braincell.store import upsert_chunk, upsert_document
-
-            project_id = "test-proj"
-            doc_key = "doc-1"
-            content_hash = hashlib.sha256(b"test").digest()
-
-            await upsert_document(
-                cf,
-                project_id=project_id,
-                doc_key=doc_key,
+            await store.replace_document(
+                project_id="test-proj",
+                doc_key="doc-1",
                 title="Test Doc",
-                content_hash=content_hash,
+                content_hash=hashlib.sha256(b"test").digest(),
+                content_type="cell",
+                chunks=[("test chunk", fake_vec(0))],
             )
-            await cf.commit()
-
-            # Get the doc id.
-            doc = await (
-                await cf.execute(
-                    "SELECT id FROM bc_documents WHERE doc_key = ?", (doc_key,)
-                )
-            ).fetchone()
-            doc_id = doc[0]
-
-            # Insert a chunk with a fake embedding.
-            embedding_vec = fake_vec(0)
-            await upsert_chunk(
-                cf,
-                document_id=doc_id,
-                chunk_index=0,
-                chunk_text="test chunk",
-                embedding=embedding_vec,
-            )
-            await cf.commit()
 
         asyncio.run(_seed())
 

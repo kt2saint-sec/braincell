@@ -17,6 +17,10 @@ from pathlib import Path
 class ProjectTargetError(ValueError):
     """The requested project target is unsafe or needs acknowledgement."""
 
+    def __init__(self, message: str, *, code: str) -> None:
+        super().__init__(message)
+        self.code = code
+
 
 @dataclass(frozen=True)
 class ProjectTarget:
@@ -49,16 +53,23 @@ def validate_project_target(
     """
     resolved = Path(path).expanduser().resolve()
     if resolved == Path(resolved.anchor):
-        raise ProjectTargetError("BrainCell refuses the filesystem root as a project target.")
+        raise ProjectTargetError(
+            "BrainCell refuses the filesystem root as a project target.",
+            code="filesystem_root_forbidden",
+        )
     if not resolved.is_dir():
-        raise ProjectTargetError(f"Project target is not a directory: {resolved}")
+        raise ProjectTargetError(
+            f"Project target is not a directory: {resolved}",
+            code="target_not_directory",
+        )
 
     warnings: list[str] = []
     if resolved == Path.home().resolve():
         if not acknowledge_home:
             raise ProjectTargetError(
                 f"{resolved} is your home directory. Re-run with --acknowledge-home "
-                "only if you intentionally want it as a BrainCell project."
+                "only if you intentionally want it as a BrainCell project.",
+                code="home_acknowledgement_required",
             )
         warnings.append("Selected project is the home directory.")
 
@@ -66,13 +77,15 @@ def validate_project_target(
     if require_git and not has_project_marker:
         raise ProjectTargetError(
             f"{resolved} is not a Git project. This client requires a Git project "
-            "for its project-local configuration."
+            "for its project-local configuration.",
+            code="git_project_required",
         )
     if not has_project_marker:
         if not acknowledge_non_git:
             raise ProjectTargetError(
                 f"{resolved} has no .git marker. Re-run with --acknowledge-non-git "
-                "to use this non-Git project intentionally."
+                "to use this non-Git project intentionally.",
+                code="non_git_acknowledgement_required",
             )
         warnings.append("Selected project has no Git marker.")
 
@@ -81,7 +94,8 @@ def validate_project_target(
             raise ProjectTargetError(
                 "BrainCell is running as root or through sudo. Re-run with "
                 "--allow-privileged only if you intentionally want configuration "
-                "and project state owned by that account."
+                "and project state owned by that account.",
+                code="privileged_acknowledgement_required",
             )
         warnings.append("BrainCell is running in a privileged account context.")
 

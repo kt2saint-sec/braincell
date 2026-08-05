@@ -129,6 +129,7 @@ async def reflect(
     now: datetime | None = None,
     verbose: bool = False,
     backup_path: str | None = None,
+    backup_factory=None,
 ) -> ReflectResult:
     """Run a reflection pass over clusters of related notes.
 
@@ -168,10 +169,9 @@ async def reflect(
         print("\nRe-run with --apply to synthesize and supersede the sources.")
         return result
 
-    # One operation covers this whole --apply run so `memory undo <n>` reverses
-    # it as a unit. Opened only on the apply path — a dry-run writes nothing at all.
-    op_id = await store.begin_operation("reflect", project_id, backup_path)
-
+    # Complete fallible model work before taking a backup or opening an
+    # operation. A no-op apply therefore creates neither history nor snapshots.
+    prepared: list[tuple[list[int], str, np.ndarray | None]] = []
     for cluster in selected:
         by_id = await _cluster_contents(store, cluster)
         contents = [by_id.get(nid, "") for nid in cluster]
@@ -189,6 +189,20 @@ async def reflect(
             except Exception as exc:  # noqa: BLE001 — embedder down → store FTS-only, still works
                 log.warning("reflect embed failed (%r) — storing note without vector.", exc)
                 embedding = None
+        prepared.append((cluster, text, embedding))
+
+    if not prepared:
+        print(f"Reflection complete: 0 synthesized, {result.skipped} skipped.")
+        return result
+
+    if backup_factory is not None:
+        backup_path = backup_factory()
+
+    # One operation covers this whole --apply run so `memory undo <n>` reverses
+    # it as a unit. Opened only once at least one write is planned.
+    op_id = await store.begin_operation("reflect", project_id, backup_path)
+
+    for cluster, text, embedding in prepared:
 
         # One atomic transaction per cluster — synthesis insert, op-log
         # snapshots, supersession pointers and source tombstones commit together

@@ -65,6 +65,14 @@ def _fake_client(*, available: bool = True, add_error=None, remove_error=None):
     return _Fake, calls
 
 
+def _git_project(tmp_path, name: str = "repo") -> Path:
+    """Create the smallest local Git-shaped Project accepted by the API."""
+    project = tmp_path / name
+    project.mkdir()
+    (project / ".git").mkdir()
+    return project
+
+
 # ── /api/install ────────────────────────────────────────────────────────────────
 
 def test_install_happy_path(tmp_path, monkeypatch):
@@ -72,8 +80,7 @@ def test_install_happy_path(tmp_path, monkeypatch):
     settings_path = _settings(tmp_path, monkeypatch)
     fake_cls, calls = _fake_client()
     monkeypatch.setitem(inst.CLIENTS, "claude", fake_cls)
-    repo = tmp_path / "repo"
-    repo.mkdir()
+    repo = _git_project(tmp_path)
 
     with TestClient(_app(tmp_path)) as client:
         r = client.post("/api/install", json={"path": str(repo)})
@@ -99,8 +106,7 @@ def test_install_rejects_legacy_federation_option(tmp_path, monkeypatch):
     _settings(tmp_path, monkeypatch)
     fake_cls, calls = _fake_client()
     monkeypatch.setitem(inst.CLIENTS, "claude", fake_cls)
-    repo = tmp_path / "repo"
-    repo.mkdir()
+    repo = _git_project(tmp_path)
 
     with TestClient(_app(tmp_path)) as client:
         r = client.post("/api/install", json={"path": str(repo), "federate": True})
@@ -114,8 +120,7 @@ def test_install_missing_client_409_no_mcp_add(tmp_path, monkeypatch):
     _settings(tmp_path, monkeypatch)
     fake_cls, calls = _fake_client(available=False)
     monkeypatch.setitem(inst.CLIENTS, "claude", fake_cls)
-    repo = tmp_path / "repo"
-    repo.mkdir()
+    repo = _git_project(tmp_path)
 
     with TestClient(_app(tmp_path)) as client:
         r = client.post("/api/install", json={"path": str(repo)})
@@ -134,13 +139,34 @@ def test_install_non_dir_400(tmp_path, monkeypatch):
         r = client.post("/api/install", json={"path": str(tmp_path / "nope")})
 
     assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "target_not_directory"
+
+
+def test_install_non_git_requires_explicit_gui_confirmation(tmp_path, monkeypatch):
+    """A valid non-Git directory is a confirmation conflict, not bad input."""
+    _settings(tmp_path, monkeypatch)
+    fake_cls, calls = _fake_client()
+    monkeypatch.setitem(inst.CLIENTS, "claude", fake_cls)
+    project = tmp_path / "plain-project"
+    project.mkdir()
+
+    with TestClient(_app(tmp_path)) as client:
+        blocked = client.post("/api/install", json={"path": str(project)})
+        allowed = client.post(
+            "/api/install",
+            json={"path": str(project), "acknowledge_non_git": True},
+        )
+
+    assert blocked.status_code == 409
+    assert blocked.json()["detail"]["code"] == "non_git_acknowledgement_required"
+    assert allowed.status_code == 200
+    assert len(calls) == 1
 
 
 def test_install_body_smuggling_422(tmp_path, monkeypatch):
     """(t5) SI-3: a smuggled `command` or `env` field is rejected (extra=forbid)."""
     _settings(tmp_path, monkeypatch)
-    repo = tmp_path / "repo"
-    repo.mkdir()
+    repo = _git_project(tmp_path)
 
     with TestClient(_app(tmp_path)) as client:
         r_command = client.post(
@@ -156,8 +182,7 @@ def test_install_body_smuggling_422(tmp_path, monkeypatch):
 
 def test_install_absent_in_read_only_mode(tmp_path, monkeypatch):
     """(t6) SI-1: a read-only launch (allow_writes=False) does not expose the route."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
+    repo = _git_project(tmp_path)
     with TestClient(_app(tmp_path, allow_writes=False)) as client:
         r = client.post("/api/install", json={"path": str(repo)})
     assert r.status_code in (404, 405)
@@ -211,8 +236,7 @@ def test_uninstall_vscode_409_manual_instructions(tmp_path, monkeypatch):
         )
     )
     monkeypatch.setitem(inst.CLIENTS, "vscode", fake_cls)
-    repo = tmp_path / "repo"
-    repo.mkdir()
+    repo = _git_project(tmp_path)
 
     with TestClient(_app(tmp_path)) as client:
         r = client.post("/api/uninstall", json={"path": str(repo), "client": "vscode"})
@@ -226,8 +250,7 @@ def test_uninstall_happy_path_claude_leaves_legacy_hook_state_untouched(tmp_path
     settings_path.write_text('{"hooks":{"UserPromptSubmit":[{"hooks":[{"command":"legacy"}]}]}}', encoding="utf-8")
     fake_cls, calls = _fake_client()
     monkeypatch.setitem(inst.CLIENTS, "claude", fake_cls)
-    repo = tmp_path / "repo"
-    repo.mkdir()
+    repo = _git_project(tmp_path)
 
     with TestClient(_app(tmp_path)) as client:
         r = client.post("/api/uninstall", json={"path": str(repo)})
@@ -241,6 +264,26 @@ def test_uninstall_happy_path_claude_leaves_legacy_hook_state_untouched(tmp_path
     assert '"legacy"' in settings_path.read_text(encoding="utf-8")
 
 
+def test_uninstall_non_git_requires_explicit_gui_confirmation(tmp_path, monkeypatch):
+    _settings(tmp_path, monkeypatch)
+    fake_cls, calls = _fake_client()
+    monkeypatch.setitem(inst.CLIENTS, "claude", fake_cls)
+    project = tmp_path / "plain-project"
+    project.mkdir()
+
+    with TestClient(_app(tmp_path)) as client:
+        blocked = client.post("/api/uninstall", json={"path": str(project)})
+        allowed = client.post(
+            "/api/uninstall",
+            json={"path": str(project), "acknowledge_non_git": True},
+        )
+
+    assert blocked.status_code == 409
+    assert blocked.json()["detail"]["code"] == "non_git_acknowledgement_required"
+    assert allowed.status_code == 200
+    assert calls[-1]["op"] == "remove"
+
+
 # ── /api/hook ─────────────────────────────────────────────────────────────────
 
 def test_global_hook_endpoint_is_absent(tmp_path):
@@ -251,19 +294,30 @@ def test_global_hook_endpoint_is_absent(tmp_path):
 # ── /api/skills ───────────────────────────────────────────────────────────────
 
 def _skills_project(tmp_path) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     project = tmp_path / "skills-project"
     project.mkdir()
     (project / ".git").mkdir()
     return project
 
 
+def _connected_skills_app(tmp_path, *, allow_writes: bool = True):
+    """Return a registered Connected Project and a Memory Map pinned to it."""
+    from braincell.config import get_project_id
+
+    project = _skills_project(tmp_path)
+    return project, _app(
+        tmp_path, allow_writes=allow_writes, seed_project_id=get_project_id(project)
+    )
+
+
 class TestSkillsEndpoint:
     def test_places_packaged_skills_then_current(self, tmp_path, monkeypatch):
         """(t11) First call installs both packaged skills; a rerun is 'current'."""
-        project = _skills_project(tmp_path)
+        _project, app = _connected_skills_app(tmp_path)
 
-        with TestClient(_app(tmp_path)) as client:
-            body = {"path": str(project), "client": "claude", "action": "add"}
+        with TestClient(app) as client:
+            body = {"client": "claude", "action": "add"}
             r = client.post("/api/skills", json=body)
             assert r.status_code == 200
             skills = r.json()["skills"]
@@ -276,13 +330,26 @@ class TestSkillsEndpoint:
             r2 = client.post("/api/skills", json=body)
             assert all(s["status"] == "current" for s in r2.json()["skills"])
 
+    def test_places_opencode_skills_inside_the_selected_project(self, tmp_path):
+        project, app = _connected_skills_app(tmp_path)
+
+        with TestClient(app) as client:
+            r = client.post(
+                "/api/skills",
+                json={"client": "opencode", "action": "add"},
+            )
+
+        assert r.status_code == 200
+        for skill in r.json()["skills"]:
+            assert Path(skill["path"]).is_relative_to(project / ".opencode" / "skills")
+
     def test_conflict_never_clobbers(self, tmp_path, monkeypatch):
         """(t12) A user-authored same-name skill is reported as conflict and its
         content left byte-identical; the other skill still resolves normally."""
-        project = _skills_project(tmp_path)
-        body = {"path": str(project), "client": "claude", "action": "add"}
+        _project, app = _connected_skills_app(tmp_path)
+        body = {"client": "claude", "action": "add"}
 
-        with TestClient(_app(tmp_path)) as client:
+        with TestClient(app) as client:
             first = client.post("/api/skills", json=body).json()["skills"]
             init = next(s for s in first if s["name"] == "braincell-init")
             Path(init["path"]).write_text("MY OWN SKILL\n", encoding="utf-8")
@@ -294,30 +361,33 @@ class TestSkillsEndpoint:
         assert by_name["braincell-sync"] == "current"
         assert Path(init["path"]).read_text(encoding="utf-8") == "MY OWN SKILL\n"
 
-    def test_extra_field_422(self, tmp_path, monkeypatch):
-        project = _skills_project(tmp_path)
-        with TestClient(_app(tmp_path)) as client:
+    def test_client_cannot_supply_a_different_skills_target(self, tmp_path):
+        _project, app = _connected_skills_app(tmp_path)
+        other = tmp_path / "other-project"
+        other.mkdir()
+        with TestClient(app) as client:
             r = client.post(
                 "/api/skills",
                 json={
-                    "path": str(project),
+                    "path": str(other),
                     "client": "claude",
                     "action": "add",
                     "target": "/etc",
                 },
             )
         assert r.status_code == 422
+        assert not list(other.rglob("SKILL.md"))
 
     def test_remove_preserves_edited_skill(self, tmp_path):
-        project = _skills_project(tmp_path)
-        with TestClient(_app(tmp_path)) as client:
-            body = {"path": str(project), "client": "codex", "action": "add"}
+        _project, app = _connected_skills_app(tmp_path)
+        with TestClient(app) as client:
+            body = {"client": "codex", "action": "add"}
             first = client.post("/api/skills", json=body).json()["skills"]
             edited = Path(next(s["path"] for s in first if s["name"] == "braincell-init"))
             edited.write_text("mine\n", encoding="utf-8")
             removed = client.post(
                 "/api/skills",
-                json={"path": str(project), "client": "codex", "action": "remove"},
+                json={"client": "codex", "action": "remove"},
             )
         assert removed.status_code == 200
         by_name = {s["name"]: s["status"] for s in removed.json()["skills"]}
@@ -326,18 +396,43 @@ class TestSkillsEndpoint:
         assert edited.read_text(encoding="utf-8") == "mine\n"
 
     def test_absent_in_read_only_mode(self, tmp_path):
-        with TestClient(_app(tmp_path, allow_writes=False)) as client:
+        _project, app = _connected_skills_app(tmp_path, allow_writes=False)
+        with TestClient(app) as client:
             assert client.post(
                 "/api/skills",
-                json={"path": str(tmp_path), "client": "claude", "action": "add"},
+                json={"client": "claude", "action": "add"},
             ).status_code in (404, 405)
 
     def test_401_without_token(self, tmp_path):
-        with TestClient(_app(tmp_path, auth_token="secret")) as client:
+        from braincell.config import get_project_id
+
+        project = _skills_project(tmp_path)
+        with TestClient(_app(tmp_path, auth_token="secret", seed_project_id=get_project_id(project))) as client:
             assert client.post(
                 "/api/skills",
-                json={"path": str(tmp_path), "client": "claude", "action": "add"},
+                json={"client": "claude", "action": "add"},
             ).status_code == 401
+
+    def test_status_is_read_only_and_reports_not_installed_current_and_modified(self, tmp_path):
+        project, app = _connected_skills_app(tmp_path, allow_writes=False)
+
+        with TestClient(app) as client:
+            before = client.get("/api/skills/status", params={"client": "opencode"})
+
+        assert before.status_code == 200
+        assert {s["status"] for s in before.json()["skills"]} == {"not_installed"}
+        assert not list(project.rglob("SKILL.md"))
+
+        _project, writable_app = _connected_skills_app(tmp_path / "writable")
+        with TestClient(writable_app) as client:
+            assert client.post("/api/skills", json={"client": "opencode", "action": "add"}).status_code == 200
+            current = client.get("/api/skills/status", params={"client": "opencode"})
+            init_path = Path(next(s["path"] for s in current.json()["skills"] if s["name"] == "braincell-init"))
+            init_path.write_text("user edited\n", encoding="utf-8")
+            modified = client.get("/api/skills/status", params={"client": "opencode"})
+
+        assert {s["status"] for s in current.json()["skills"]} == {"current"}
+        assert {s["status"] for s in modified.json()["skills"]} == {"current", "modified"}
 
 
 # ── /api/automatic-pool-recall ───────────────────────────────────────────────

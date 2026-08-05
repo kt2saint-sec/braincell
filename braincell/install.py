@@ -77,7 +77,8 @@ def claude_settings_path() -> Path:
     override = os.environ.get("BRAINCELL_CLAUDE_SETTINGS")
     if override:
         return Path(override)
-    return Path.home() / ".claude" / "settings.json"
+    from .platform import get_claude_config_dir
+    return get_claude_config_dir() / "settings.json"
 
 
 def _load_json(path: Path) -> dict:
@@ -164,6 +165,13 @@ def uninstall_hook() -> int:
 _PROJECT_SKILL_DIRS = {
     "claude": Path(".claude") / "skills",
     "codex": Path(".agents") / "skills",
+    "opencode": Path(".opencode") / "skills",
+}
+
+_SKILL_CLIENT_LABELS = {
+    "claude": "Claude Code",
+    "codex": "Codex",
+    "opencode": "OpenCode",
 }
 
 
@@ -173,7 +181,14 @@ def packaged_skills() -> list[str]:
     root = files("braincell").joinpath("skills")
     if not root.is_dir():
         return []
-    return sorted(e.name for e in root.iterdir() if e.is_dir())
+    # Resource packages can contain Python's ``__pycache__`` alongside the
+    # data directories in a source checkout.  A skill is defined by its
+    # SKILL.md contract, never merely by being a directory.
+    return sorted(
+        entry.name
+        for entry in root.iterdir()
+        if entry.is_dir() and entry.joinpath("SKILL.md").is_file()
+    )
 
 
 def project_skills_dir(project_root: str | Path, client: str) -> Path:
@@ -181,7 +196,9 @@ def project_skills_dir(project_root: str | Path, client: str) -> Path:
     try:
         relative = _PROJECT_SKILL_DIRS[client]
     except KeyError:
-        raise ValueError("Project skills are supported only for Claude or Codex.") from None
+        raise ValueError(
+            "Project skills are supported only for Claude, Codex, or OpenCode."
+        ) from None
     root = Path(project_root).expanduser().resolve()
     target = (root / relative).resolve()
     try:
@@ -193,14 +210,86 @@ def project_skills_dir(project_root: str | Path, client: str) -> Path:
     return target
 
 
-def _packaged_skill_payloads() -> dict[str, str]:
+def _packaged_skill_payloads(client: str) -> dict[str, str]:
+    """Return skill content rendered for one supported project-local client."""
     from importlib.resources import files
 
+    try:
+        client_label = _SKILL_CLIENT_LABELS[client]
+    except KeyError:
+        raise ValueError(
+            "Project skills are supported only for Claude, Codex, or OpenCode."
+        ) from None
+
     root = files("braincell").joinpath("skills")
-    return {
+    payloads = {
         name: root.joinpath(name, "SKILL.md").read_text(encoding="utf-8")
         for name in packaged_skills()
     }
+    payloads["braincell-init"] = (
+        payloads["braincell-init"]
+        .replace("__BRAINCELL_CLIENT_LABEL__", client_label)
+        .replace("__BRAINCELL_CLIENT_KEY__", client)
+    )
+    return payloads
+
+
+# SHA-256 digests of every skill body BrainCell itself shipped in EARLIER
+# releases (raw git blobs; none carried client placeholders, so installed bytes
+# equal blob bytes). A destination matching one of these is BrainCell-authored,
+# not user-edited: install may update it in place and remove may delete it.
+# Anything else stays user-owned and untouchable. Append-only: never remove a
+# digest — an installed copy of that version exists somewhere.
+_HISTORICAL_SKILL_SHA256: dict[str, frozenset[str]] = {
+    "braincell-init": frozenset({
+        "993e51bde9966c2f3a8b1ad2fe916efddd4ea11f11443f8fdce18ff9ed7e20d5",
+        "6ca400ac7ea2f3fbe2470930719d7e75ee8664fc019d3665153e04e99506b3f5",
+    }),
+    "braincell-sync": frozenset({
+        "aec538761928febfe166bd6a364cf900ce14e4cda5faa1d08d5199585e583837",
+        "e26fb9de6836ef8fdf502520631d00dac3cb280f9f982f4d7a52f8b4a79b0563",
+    }),
+}
+
+
+def _is_braincell_authored_skill_body(name: str, content: str) -> bool:
+    """True when *content* is a skill body an earlier BrainCell release wrote."""
+    import hashlib
+
+    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    return digest in _HISTORICAL_SKILL_SHA256.get(name, frozenset())
+
+
+def project_skills_status(
+    project_root: str | Path, client: str
+) -> list[tuple[str, str, Path]]:
+    """Inspect one project's packaged skills without changing its files.
+
+    Each result is ``(name, status, path)`` where status is ``not_installed``,
+    ``current``, ``outdated``, or ``modified``. An outdated skill is a body an
+    earlier BrainCell release wrote — updating it loses no user work. A
+    modified skill is user-owned and must not be overwritten or removed
+    automatically.
+    """
+    dest_root = project_skills_dir(project_root, client)
+    results: list[tuple[str, str, Path]] = []
+    for name, payload in _packaged_skill_payloads(client).items():
+        dest = dest_root / name / "SKILL.md"
+        if not dest.exists():
+            results.append((name, "not_installed", dest))
+            continue
+        try:
+            current = dest.read_text(encoding="utf-8")
+        except OSError:
+            current = None
+        if current == payload:
+            status = "current"
+        elif current is not None and _is_braincell_authored_skill_body(name, current):
+            status = "outdated"
+        else:
+            status = "modified"
+        results.append((name, status, dest))
+    return results
 
 
 def install_project_skills(
@@ -211,30 +300,41 @@ def install_project_skills(
     Returns one ``(name, status, path)`` per skill, where status is:
       ``installed``  — written (destination did not exist)
       ``current``    — destination already byte-identical; nothing written
-      ``conflict``   — destination exists with DIFFERENT content; left untouched
+      ``updated``    — destination was an EARLIER BrainCell release's body;
+                       replaced with the current one (no user work involved)
+      ``conflict``   — destination exists with content BrainCell never shipped;
+                       left untouched
 
-    Never clobbers: a user may have their own skill of the same name, and silently
-    overwriting it would destroy work no backup covers. Conflicts are reported so
-    the caller can print a manual step — the same posture as the VS Code adapter,
-    which refuses to guess when it cannot act safely.
+    Never clobbers user work: a person may have their own skill of the same
+    name (or an edited copy of ours), and silently overwriting it would destroy
+    work no backup covers. Only bodies BrainCell itself wrote are replaced.
+    Conflicts are reported so the caller can print a manual step — the same
+    posture as the VS Code adapter, which refuses to guess when it cannot act
+    safely.
     """
     dest_root = project_skills_dir(project_root, client)
     results: list[tuple[str, str, Path]] = []
 
-    for name, payload in _packaged_skill_payloads().items():
+    for name, payload in _packaged_skill_payloads(client).items():
         dest = dest_root / name / "SKILL.md"
+        status = "installed"
         if dest.exists():
             try:
-                same = dest.read_text(encoding="utf-8") == payload
+                current = dest.read_text(encoding="utf-8")
             except OSError:
-                same = False
-            results.append((name, "current" if same else "conflict", dest))
-            continue
+                current = None
+            if current == payload:
+                results.append((name, "current", dest))
+                continue
+            if current is None or not _is_braincell_authored_skill_body(name, current):
+                results.append((name, "conflict", dest))
+                continue
+            status = "updated"
         dest.parent.mkdir(parents=True, exist_ok=True)
         tmp = dest.with_name(dest.name + ".tmp")
         tmp.write_text(payload, encoding="utf-8")
         tmp.replace(dest)                      # atomic, mirrors _atomic_write_json
-        results.append((name, "installed", dest))
+        results.append((name, status, dest))
 
     return results
 
@@ -242,14 +342,15 @@ def install_project_skills(
 def remove_project_skills(
     project_root: str | Path, client: str
 ) -> list[tuple[str, str, Path]]:
-    """Remove only unchanged packaged skills from one selected project.
+    """Remove only BrainCell-authored packaged skills from one selected project.
 
-    An edited same-name skill is user-managed and remains untouched. Missing
-    files are idempotent no-ops.
+    A body BrainCell shipped — the current one or any earlier release's — is
+    removable; an edited same-name skill is user-managed and remains untouched.
+    Missing files are idempotent no-ops.
     """
     dest_root = project_skills_dir(project_root, client)
     results: list[tuple[str, str, Path]] = []
-    for name, payload in _packaged_skill_payloads().items():
+    for name, payload in _packaged_skill_payloads(client).items():
         dest = dest_root / name / "SKILL.md"
         if not dest.exists():
             results.append((name, "absent", dest))
@@ -258,7 +359,9 @@ def remove_project_skills(
             current = dest.read_text(encoding="utf-8")
         except OSError:
             current = None
-        if current != payload:
+        if current != payload and (
+            current is None or not _is_braincell_authored_skill_body(name, current)
+        ):
             results.append((name, "conflict", dest))
             continue
         dest.unlink()
@@ -713,7 +816,8 @@ def claude_config_path() -> Path:
     override = os.environ.get("BRAINCELL_CLAUDE_JSON")
     if override:
         return Path(override)
-    return Path.home() / ".claude.json"
+    from .platform import get_claude_config_dir
+    return get_claude_config_dir() / ".claude.json"
 
 
 def codex_config_path() -> Path:
@@ -721,7 +825,8 @@ def codex_config_path() -> Path:
     override = os.environ.get("BRAINCELL_CODEX_CONFIG")
     if override:
         return Path(override)
-    return Path.home() / ".codex" / "config.toml"
+    from .platform import get_codex_config_dir
+    return get_codex_config_dir() / "config.toml"
 
 
 def _claude_registration(path: Path) -> dict:
@@ -909,11 +1014,123 @@ def claude_registered_map(paths: list[str]) -> dict[str, bool]:
     return out
 
 
+# ── OpenCode client adapter ────────────────────────────────────────────────
+
+class OpenCodeClient:
+    """Wire BrainCell only into project ``opencode.json`` MCP servers."""
+
+    name = "opencode"
+
+    def __init__(self, opencode_bin: str | None = None):
+        self._opencode = opencode_bin or shutil.which("opencode")
+
+    def available(self) -> bool:
+        return bool(self._opencode)
+
+    def mcp_add(self, name, command, args, env, scope=None, cwd=None) -> None:
+        if name != _MCP_SERVER_NAME or not cwd:
+            raise RuntimeError("OpenCode connection requires a selected project.")
+        manage_opencode_project_registration(cwd, command, args, env)
+
+    def mcp_remove(self, name: str, scope: str | None = None, cwd: str | None = None) -> None:
+        if name != _MCP_SERVER_NAME or not cwd:
+            raise RuntimeError("OpenCode disconnection requires BrainCell's selected project.")
+        from .config import DATA_NAMESPACE, get_project_id
+
+        command, args = resolve_portable_server_command()
+        project_id = get_project_id(Path(cwd), create=False)
+        remove_opencode_project_registration(
+            cwd,
+            command,
+            args,
+            {
+                "BRAINCELL_DATA_NAMESPACE": DATA_NAMESPACE,
+                "BRAINCELL_PROJECT_ID": project_id,
+                "BRAINCELL_STORE": "sqlite",
+            },
+        )
+
+
+def opencode_project_config_path(project_root: str | Path) -> Path:
+    """Return the project-local OpenCode config path."""
+    from .platform import get_opencode_project_config_path
+
+    return get_opencode_project_config_path(Path(project_root))
+
+
+def _canonical_opencode_entry(
+    command: str, args: list[str], env: dict[str, str]
+) -> dict[str, Any]:
+    # OpenCode's local-server schema takes ``command`` as an argv array; the
+    # server arguments ride in the same array, not a separate ``args`` field.
+    return {
+        "type": "local",
+        "command": [command, *args],
+        "enabled": True,
+        "environment": dict(env),
+    }
+
+
+def manage_opencode_project_registration(
+    project_root: str | Path, command: str, args: list[str], env: dict[str, str]
+) -> dict[str, Any]:
+    """Write ``mcp.braincell`` into ``opencode.json`` (idempotent, conflict-safe)."""
+    cfg = opencode_project_config_path(project_root)
+    data, raw = _read_json_object(cfg)
+    mcp = data.get("mcp")
+    if mcp is None:
+        mcp = {}
+        data["mcp"] = mcp
+    elif not isinstance(mcp, dict):
+        raise RuntimeError(f"{cfg} has a non-object 'mcp' field; BrainCell left it unchanged.")
+    canonical = _canonical_opencode_entry(command, args, env)
+    existing = mcp.get(_MCP_SERVER_NAME)
+    if existing is not None:
+        if existing != canonical:
+            raise RuntimeError(
+                f"{cfg} already has a different mcp.braincell entry. "
+                "It is user-managed and was not overwritten."
+            )
+        return {"changed": False, "config_path": str(cfg), "backup_path": None}
+    mcp[_MCP_SERVER_NAME] = canonical
+    mode = cfg.stat().st_mode if cfg.exists() else None
+    rendered = json.dumps(data, indent=2, ensure_ascii=False) + (
+        "\n" if raw is None or raw.endswith("\n") else ""
+    )
+    backup = _atomic_write_text(cfg, rendered, mode)
+    return {"changed": True, "config_path": str(cfg), "backup_path": str(backup) if backup else None}
+
+
+def remove_opencode_project_registration(
+    project_root: str | Path, command: str, args: list[str], env: dict[str, str]
+) -> dict[str, Any]:
+    """Remove ``mcp.braincell`` from ``opencode.json`` (conflict-safe)."""
+    cfg = opencode_project_config_path(project_root)
+    if not cfg.exists():
+        return {"changed": False, "config_path": str(cfg), "backup_path": None}
+    data, raw = _read_json_object(cfg)
+    mcp = data.get("mcp")
+    entry = mcp.get(_MCP_SERVER_NAME) if isinstance(mcp, dict) else None
+    if entry is None:
+        return {"changed": False, "config_path": str(cfg), "backup_path": None}
+    if entry != _canonical_opencode_entry(command, args, env):
+        raise RuntimeError(
+            f"{cfg} has a user-managed BrainCell entry with different settings; it was not removed."
+        )
+    del mcp[_MCP_SERVER_NAME]
+    rendered = json.dumps(data, indent=2, ensure_ascii=False) + (
+        "\n" if raw is None or raw.endswith("\n") else ""
+    )
+    backup = _atomic_write_text(cfg, rendered, cfg.stat().st_mode)
+    return {"changed": True, "config_path": str(cfg), "backup_path": str(backup) if backup else None}
+
+
 # Client registry — maps the CLI --client key to an adapter.
 CLIENTS = {
     "claude": ClaudeCodeClient,
     "codex": CodexClient,
     "vscode": VSCodeClient,
+    "opencode": OpenCodeClient,
 }
 
 

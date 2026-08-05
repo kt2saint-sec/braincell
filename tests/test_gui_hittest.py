@@ -17,7 +17,7 @@ offscreen — no window, no display needed) and asserts that every toolbar +
 header control receives its own center-point hit at 1280 / 1366 / 1440 wide.
 Qt runs in a SUBPROCESS so the pytest process never hosts a QApplication.
 
-Requires the optional ``native`` extra (PySide6); skipped when absent.
+Requires PySide6/QtWebEngine, which is a mandatory BrainCell dependency.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ import pytest
 
 pytest.importorskip(
     "PySide6.QtWebEngineWidgets",
-    reason="hit-testing needs QtWebEngine (pip install 'braincell-mcp[native]')",
+    reason="hit-testing needs the required PySide6/QtWebEngine runtime",
     exc_type=ImportError,
 )
 
@@ -114,7 +114,8 @@ def test_toolbar_and_header_controls_hittable_at_narrow_widths(tmp_path: Path):
         env={
             **__import__("os").environ,
             "QT_QPA_PLATFORM": "offscreen",   # no window, no display needed
-            "QTWEBENGINE_CHROMIUM_FLAGS": "--no-sandbox",  # CI-safe
+            "QTWEBENGINE_CHROMIUM_FLAGS": "--no-sandbox --disable-gpu --disable-gpu-compositing",
+            "LIBGL_ALWAYS_SOFTWARE": "1",
         },
         check=False,
     )
@@ -229,7 +230,8 @@ def chrome_metrics(tmp_path_factory):
         [sys.executable, str(runner), str(page)],
         capture_output=True, text=True, timeout=180,
         env={**os.environ, "QT_QPA_PLATFORM": "offscreen",
-             "QTWEBENGINE_CHROMIUM_FLAGS": "--no-sandbox"},
+             "QTWEBENGINE_CHROMIUM_FLAGS": "--no-sandbox --disable-gpu --disable-gpu-compositing",
+             "LIBGL_ALWAYS_SOFTWARE": "1"},
         check=False,
     )
     assert proc.returncode == 0, f"engine runner failed:\n{proc.stderr[-2000:]}"

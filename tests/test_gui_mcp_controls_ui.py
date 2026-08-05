@@ -59,11 +59,18 @@ class TestDockMcpBlock:
         """One shared POST — the dock modal and the Commands row both land on
         /api/uninstall via mcpDeregister."""
         html = _page(tmp_path)
-        assert 'apiPost("/api/uninstall",{path,client,scope})' in html
+        assert 'apiPost("/api/uninstall",body)' in html
         # dock modal controls
         for needle in ('id="dm-client"', 'id="dm-scope"'):
             assert needle in html, f"Missing deregister modal control {needle}"
         assert 'id="dm-disarm"' not in html
+
+    def test_non_git_target_has_an_explicit_retry_confirmation(self, tmp_path):
+        """The GUI can submit the API's required acknowledgement after consent."""
+        html = _page(tmp_path)
+        assert "function requestNonGitAcknowledgement" in html
+        assert "acknowledge_non_git:true" in html
+        assert "non_git_acknowledgement_required" in html
 
     def test_restart_instruction_sits_in_the_dock(self, tmp_path):
         """The honest answer where a user looks for a restart button: reconnect

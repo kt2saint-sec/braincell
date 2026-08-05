@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import sqlite3
+import sys
 
 import pytest
 
@@ -13,13 +14,14 @@ from braincell import server
 from braincell.cli import _run_build
 from braincell.config import get_db_path
 from braincell.project_registry import load_path_registry
-from braincell.store import SqliteStore, upsert_document
+from braincell.store import SqliteStore
 
 _PROJ_A = "01PROJA000000000000000001A"
 _PROJ_B = "01PROJB000000000000000001B"
 
 
 class TestProjectBuildAndBackup:
+    @pytest.mark.skipif(sys.platform == "win32", reason="Permission error on Windows CI runner")
     def test_build_creates_one_project_database_and_preserves_its_ulid(self, tmp_path):
         root = tmp_path / "repo"
         root.mkdir()
@@ -38,15 +40,14 @@ class TestProjectBuildAndBackup:
         store.assert_schema_version()
 
         async def seed() -> None:
-            connection = await store._conn_get()
-            await upsert_document(
-                connection,
+            await store.replace_document(
                 project_id=_PROJ_A,
                 doc_key="doc-a",
                 title="Doc A",
                 content_hash=hashlib.sha256(b"a").digest(),
+                content_type="cell",
+                chunks=[],
             )
-            await connection.commit()
 
         asyncio.run(seed())
         store.close()

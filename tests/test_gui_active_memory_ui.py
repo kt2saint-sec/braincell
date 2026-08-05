@@ -2,10 +2,10 @@
 # Copyright (c) 2026 Karl Toussaint (kt2saint)
 """
 test_gui_active_memory_ui.py — Served-HTML regression tests for the SPA side of
-active-project memory (plan Phase C):
+selected-project catalog state (plan Phase C):
 
-- C1: activeProjectId state (?active= → seed → null), isLaunch(), scopeParams()
-  following the active project and re-seeding family federation.
+- C1: activeProjectId state (?active= → seed → null), isLaunch(), and
+  connected-Project-only ordinary reads.
 - C2: header active-project chip + dropdown (⌂ launch marker, RO sibling tag,
   global-mode "All projects").
 - C3: map ACTIVE treatment (persistent emerald ring + ACTIVE label; click =
@@ -122,8 +122,8 @@ class TestActiveChip:
         assert "${esc(n.path)}" in html
         assert "esc(n.id)" in html, "Project ULIDs in onclick must be escaped"
 
-    def test_switch_reruns_the_open_drawer(self, tmp_path):
-        """setActiveProject repaints the chip and re-runs the open drawer view."""
+    def test_switch_updates_the_catalog_drawer_without_requerying_memory(self, tmp_path):
+        """Map selection changes catalog focus, never the ordinary memory query."""
         html = _page(tmp_path)
         m = re.search(
             r"function setActiveProject\(pid\)\{(.*?)\n\}", html, re.DOTALL
@@ -131,8 +131,9 @@ class TestActiveChip:
         assert m, "setActiveProject not found"
         body = m.group(1)
         assert "renderActiveChip()" in body
-        assert "loadDrawerNotes()" in body
-        assert "drawerSearch()" in body
+        assert "openDock(nd)" in body
+        assert "loadDrawerNotes()" not in body
+        assert "drawerSearch()" not in body
         assert "draw()" in body, "setActiveProject must repaint the map"
 
 
@@ -172,9 +173,10 @@ class TestInspectorReadOnly:
         html = _page(tmp_path)
         assert "paintInspectorRo" in html, "Missing the RO repaint helper"
         assert (
-            "read-only view — launch braincell gui on this folder to manage it"
+            "Selected Project is catalog-only. Memory panels show the Connected Project. "
+            "Use an explicit Pool query for live read-only cross-Project memory."
             in html
-        ), "RO controls must explain WHY they are unavailable"
+        ), "RO controls must explain the selected-versus-connected boundary"
         m = re.search(
             r"function paintInspectorRo\(\)\{(.*?)\n\}", html, re.DOTALL
         )
@@ -183,6 +185,12 @@ class TestInspectorReadOnly:
         assert "isLaunch()" in body, "RO state must key on isLaunch()"
         assert "dr-sched-sel" in body, "Auto-build select must be disabled too"
         assert "b.disabled=ro" in body, "Buttons must be disabled, not hidden"
+
+    def test_drawer_labels_the_connected_memory_source(self, tmp_path):
+        """A selected sibling cannot be mistaken for the ordinary query source."""
+        html = _page(tmp_path)
+        assert ">Search Connected Project memory<" in html
+        assert ">Recent Connected Project notes<" in html
 
     def test_per_note_forget_disabled_on_sibling_view(self, tmp_path):
         """The per-note ✕ renders disabled (cursor:not-allowed + title) off-launch."""
