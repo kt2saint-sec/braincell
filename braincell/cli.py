@@ -165,6 +165,38 @@ def _gui_safety_kwargs(args: argparse.Namespace) -> dict[str, bool]:
     }
 
 
+def _require_ready_embedder(*, offer_pull: bool, context: str) -> None:
+    """Fail closed on an unready embedder instead of building NULL embeddings.
+
+    With *offer_pull* on an interactive terminal, a missing model becomes a
+    consented download through the local Ollama daemon; every other unready
+    state (and a declined or failed download) exits with the exact remediation
+    detail. Callers gate only paths that will actually embed.
+    """
+    from .embed import embedder_status, ensure_embed_model
+
+    status = embedder_status()
+    if status["ok"]:
+        return
+    if (
+        offer_pull
+        and status["reachable"]
+        and not status["model_present"]
+        and sys.stdin.isatty()
+    ):
+        answer = input(
+            f"Embedding model {status['model']} is not downloaded yet "
+            "(several GB). Download it now? [Y/n] "
+        ).strip().lower()
+        if answer in {"", "y", "yes"}:
+            status = ensure_embed_model(
+                pull=True, on_progress=lambda line: print(f"  {line}")
+            )
+            if status["ok"]:
+                return
+    raise SystemExit(f"braincell {context}: embedder not ready — {status['detail']}")
+
+
 def _run_build(
     root: Path,
     *,
@@ -174,6 +206,11 @@ def _run_build(
     mode: str | None = None,
     no_backup: bool = False,
 ) -> None:
+    if not skip_transcripts:
+        # Gate BEFORE minting/registering anything: a refused or impossible
+        # embedder must leave no side effects, and the download must never
+        # run while holding the destination mutation lock.
+        _require_ready_embedder(offer_pull=True, context="build")
     root = root.resolve()
     project_id = get_project_id(root)  # resolves via path-registry; mints + registers a new ULID if absent
     print(f"BrainCell build for project {project_id} ({root})")
@@ -1585,9 +1622,29 @@ def cmd_setup(args: argparse.Namespace) -> None:
         print(f"  - {args.client} project-local BrainCell skills")
     if args.automatic_pool_recall:
         print(f"  - Automatic Pool recall for named Pool: {args.automatic_pool_recall}")
+    from .embed import embedder_status, ensure_embed_model
+
+    embedder = embedder_status() if not args.skip_transcripts else None
+    if embedder is not None and not embedder["ok"]:
+        if embedder["reachable"] and not embedder["model_present"]:
+            print(
+                f"  - Download embedding model {embedder['model']} "
+                "(several GB; not downloaded yet)"
+            )
+        else:
+            print(f"WARNING: {embedder['detail']}", file=sys.stderr)
     if args.dry_run or not args.yes:
         print("No changes applied. Re-run with --yes to apply this plan.")
         return
+
+    if embedder is not None and not embedder["ok"]:
+        embedder = ensure_embed_model(
+            pull=True, on_progress=lambda line: print(f"  {line}")
+        )
+        if not embedder["ok"]:
+            raise SystemExit(
+                f"braincell setup: embedder not ready — {embedder['detail']}"
+            )
 
     build_args = argparse.Namespace(
         path=str(target.path), skip_transcripts=args.skip_transcripts,

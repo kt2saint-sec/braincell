@@ -37,16 +37,18 @@ no supported headless or server-only BrainCell installation.
 
 ### Install with pipx
 
-BrainCell uses Ollama locally with the verified default embedding model `qwen3-embedding:4b`.
+One copy-paste block per platform installs BrainCell and Ollama. The verified
+default embedding model (`qwen3-embedding:4b`, several GB) is **downloaded by
+BrainCell itself, with your consent, the first time you run `braincell setup`
+or `braincell build`** — there is no separate model step.
 
 #### Debian/Ubuntu
 
 ```bash
-sudo apt update
-sudo apt install -y pipx python3-venv
-pipx ensurepath
-source ~/.bashrc
+sudo apt update && sudo apt install -y pipx python3-venv
+pipx ensurepath && source ~/.bashrc
 pipx install braincell-mcp
+curl -fsSL https://ollama.com/install.sh | sh   # Ollama's official installer
 ```
 
 Desktop installs already have the system libraries Qt needs. On a minimal or
@@ -64,9 +66,9 @@ sudo apt install -y --no-install-recommends \
 
 ```bash
 brew install pipx ollama
-pipx ensurepath
-source ~/.zshrc
+pipx ensurepath && source ~/.zshrc
 pipx install braincell-mcp
+brew services start ollama   # or run `ollama serve` in a spare terminal
 ```
 
 #### Windows PowerShell
@@ -76,18 +78,12 @@ py -m pip install --user pipx
 pipx ensurepath
 pipx install braincell-mcp
 ```
-Install and start Ollama:
 
-- **Debian/Ubuntu:** install from [ollama.com](https://ollama.com/download/linux), then run `ollama serve` if it is not already running.
-- **macOS:** `brew install ollama`, then run `ollama serve`.
-- **Windows:** install Ollama from [ollama.com](https://ollama.com/download/windows); the Ollama application starts the service.
+Then install Ollama from [ollama.com](https://ollama.com/download/windows) —
+the Ollama application starts its service automatically.
 
-Then download the verified embedding model:
-
-
-```bash
-ollama pull qwen3-embedding:4b
-```
+If you prefer to download the model yourself (or need it before a
+non-interactive run), the manual command is `ollama pull qwen3-embedding:4b`.
 
 Verify:
 
@@ -140,7 +136,7 @@ braincell setup . --dry-run --client codex
 braincell setup . --client codex --yes
 ```
 
-The first command resolves the path and displays every planned database, registry, client-configuration, skills, and optional Pool-recall write without applying it. `--yes` applies the plan. Use `--with-skills` for project-local skills and `--automatic-pool-recall "Pool name"` only for an existing named Pool with Claude.
+The first command resolves the path and displays every planned database, registry, client-configuration, skills, optional Pool-recall write — and, when the embedding model is not downloaded yet, the model download — without applying any of it. `--yes` applies the plan. Use `--with-skills` for project-local skills and `--automatic-pool-recall "Pool name"` only for an existing named Pool with Claude.
 
 ```bash
 braincell build .
@@ -176,7 +172,7 @@ braincell search "throttle"
 braincell start .
 ```
 
-`braincell start`, `braincell gui`, and `braincell-map` open the native **Memory Map** for the selected Project. The embedded localhost server is an implementation detail of that desktop app, not a browser product or an always-on service.
+`braincell start`, `braincell gui`, and `braincell-map` open the native **Memory Map** for the selected Project. The embedded localhost server is an implementation detail of that desktop app, not a browser product or an always-on service. `braincell gui . --install-launcher` adds a desktop launcher for the Project (Linux application menu, macOS `~/Applications`, Windows Start Menu).
 
 Build reads supported documents and transcripts into that Project's database. `braincell sync` is the incremental compatibility alias for Build. Remember, Forget, and Correct memory are MCP actions; normal Recall and Search are always limited to the connected Project.
 
