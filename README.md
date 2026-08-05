@@ -24,6 +24,13 @@ Connection management preserves unrelated client configuration. It writes only B
 
 ## Install
 
+BrainCell supports Linux, macOS, and Windows — every release is tested on all
+three (Python 3.11–3.13). You need:
+
+- **Python 3.11 or newer**
+- **[Ollama](https://ollama.com)** running locally for the default embedding
+  model (or the optional OpenAI extra for hosted embeddings)
+
 The native Memory Map desktop GUI (PySide6/QtWebEngine) is a required BrainCell
 runtime dependency and is installed with every supported installation. There is
 no supported headless or server-only BrainCell installation.
@@ -40,6 +47,17 @@ sudo apt install -y pipx python3-venv
 pipx ensurepath
 source ~/.bashrc
 pipx install braincell-mcp
+```
+
+Desktop installs already have the system libraries Qt needs. On a minimal or
+container Ubuntu/Debian (no desktop session), also install them:
+
+```bash
+sudo apt install -y --no-install-recommends \
+  libegl1 libgl1 libopengl0 libxkbcommon0 libxcb-cursor0 libnss3 \
+  libasound2t64 libxcomposite1 libxdamage1 libxrandr2 libxtst6 \
+  libgbm1 libxkbfile1 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+  libxcb-render-util0 libxcb-shape0 libxcb-xkb1
 ```
 
 #### macOS

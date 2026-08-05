@@ -6,8 +6,9 @@ package does not enable it for unrelated Projects. The terminology contract is
 
 ## Install BrainCell
 
-Two commands: install the package from PyPI, then fetch the default local
-embedding model ([Ollama](https://ollama.com) must be installed and running).
+Two commands: install the package from PyPI (Python 3.11+ required), then
+fetch the default local embedding model ([Ollama](https://ollama.com) must be
+installed and running).
 
 ```bash
 pipx install braincell-mcp
