@@ -20,34 +20,58 @@ the current `braincell-public` working tree.
 preview-first, WAL-aware `legacy_recovery.py`; only its add-repo-runbook revision is worth cherry-picking. (Verdict recorded
 2026-07-31.)
 
-## Resolved in Unreleased
+## Resolved in 1.0.0
+
+- **High — hard-prune recovery snapshot was itself prunable:** the same-host
+  snapshot written before a hard-prune (`braincell-hard-prune-backup-*.db`)
+  was categorized as an ordinary backup, so a later `braincell storage
+  --apply --keep-backups N` or a second hard-prune could delete the only
+  recovery copy of the previous prune, and the snapshot consumed a
+  keep-newest-N backup slot. Resolved: `_category()`
+  (`braincell/storage_accounting.py:43`) classifies these snapshots as
+  `recovery_snapshots`, never a retention or hard-prune candidate; the
+  delete-time category re-check (`braincell/storage_accounting.py:677`)
+  fails closed for any pre-fix plan naming one. Regression:
+  `tests/test_storage_accounting.py`
+  (`test_hard_prune_recovery_snapshot_is_never_a_retention_candidate`).
+
+- **High — GUI hard-prune accepted arbitrary filesystem roots:**
+  `/api/ops/hard-prune/plan|apply` accepted a caller-supplied `backup_roots`
+  path list that reached `storage_report()`'s recursive scan without
+  `validate_project_target`, so a token-bearing localhost caller could aim
+  backup deletion at any writable directory. The shipped interface never sent
+  the field. Resolved: the request bodies no longer carry `backup_roots`
+  (`braincell/gui_ops.py:99`); `extra="forbid"` turns a smuggled value into
+  HTTP 422 and the GUI always scans only the BrainCell namespace. The CLI's
+  explicit `--backup-root` flag is unchanged. Regression:
+  `tests/test_gui_ops.py` (`test_hard_prune_rejects_caller_supplied_backup_roots`).
 
 - **High — Memory Map skill actions could trust a renderer-supplied directory:**
   the embedded UI could previously describe or operate on skills without a
   backend-enforced Connected Project boundary. Resolved:
   `mount_skill_status_api()` (`braincell/gui_install.py:154`) and
-  `api_skills()` (`:249`) resolve the launch session's Connected Project from
+  `api_skills()` (`:250`) resolve the launch session's Connected Project from
   the local registry; requests contain only the client and add/remove action.
   Project skill destinations are constrained below the selected root
-  (`braincell/install.py:187`), and edited same-name skills are protected from
-  overwrite and automatic removal (`:230`, `:290`). Regressions:
+  (`braincell/install.py:194`), and edited same-name skills are protected from
+  overwrite and automatic removal (`:286`, `:317`). Regressions:
   `tests/test_gui_install.py`, `tests/test_gui_layout.py`,
   `tests/test_install.py`, and `tests/test_skills_install.py`.
 
 - **Medium — SQLite compaction/hard-prune workflow:** permanent cleanup had no
   authorized execution path: the product could only warn about WAL starvation.
   Resolved: `hard_prune_plan()` creates a deterministic review selection and
-  approval digest (`braincell/storage_accounting.py:459`); `execute_hard_prune()`
+  approval digest (`braincell/storage_accounting.py:549`); `execute_hard_prune()`
   recomputes that selection under the destination lock, requires the exact
   final confirmation, records durable started/completed/failed audit events,
   optionally makes a same-host recovery copy, then verifies SQLite integrity
-  (`:787`). Only expired tombstones, old operation history, and unprotected
+  (`:877`). Only expired tombstones, old operation history, and unprotected
   backups are eligible. Active/superseded memory, indexed documents/chunks,
   semantic similarity, and LLM judgments are never deletion authority.
   `VACUUM` follows WAL TRUNCATE; a live reader is reported for retry rather
   than forced closed. The CLI preview/apply path is `braincell storage
   --hard-prune` (`braincell/cli.py:630`) and the Connected Project Memory Map
-  uses the same plan/apply endpoints (`braincell/gui_ops.py:445`). Regressions:
+  uses the same plan/apply endpoints (`braincell/gui_ops.py:444`). Regressions:
   `tests/test_storage_accounting.py`, `tests/test_storage_cli.py`,
   `tests/test_gui_ops.py`, and `tests/test_gui_maintenance_panel.py`.
 
@@ -164,7 +188,7 @@ preview-first, WAL-aware `legacy_recovery.py`; only its add-repo-runbook revisio
   doesn't exist yet), and deletes the migrated rows from source only after
   that verification and the destination's commit — never before. CLI:
   `braincell reconcile-foreign-documents <path> preview|apply`
-  (`braincell/cli.py:cmd_reconcile_foreign` at `:1750`, parser at `:2138`).
+  (`braincell/cli.py:cmd_reconcile_foreign` at `:1780`, parser at `:2169`).
   Regressions in `tests/test_foreign_document_reconciliation.py`
   (owner classification, destination-conflict detection, stale-digest /
   unattributable / conflicted-owner refusal with adversarial byte-identical
@@ -203,16 +227,16 @@ preview-first, WAL-aware `legacy_recovery.py`; only its add-repo-runbook revisio
   coverage for every Job Object failure point, and an end-to-end check that
   the guard is installed/released around a real ingest job).
 - **High — native launcher platforms:** installation was Linux/XDG-only.
-  Resolved: `install_launcher()` (`braincell/gui.py:1232`) now dispatches by
-  `sys.platform` — Linux keeps its existing XDG `.desktop` + hicolor-icon
-  behaviour unchanged (`_install_launcher_linux`, `:1012`); macOS gets a
-  minimal `.app` WRAPPER under `~/Applications`
-  (`_install_launcher_macos`, `:1119` — a plain `+x` shell script at
+  Resolved: `install_launcher()` (`braincell/platform.py:355`) now dispatches
+  by `sys.platform` — Linux keeps its existing XDG `.desktop` + hicolor-icon
+  behaviour unchanged (`_install_launcher_linux`, `braincell/platform.py:154`);
+  macOS gets a minimal `.app` WRAPPER under `~/Applications`
+  (`_install_launcher_macos`, `braincell/platform.py:236` — a plain `+x` shell script at
   `Contents/MacOS/braincell-launch`, not a compiled binary; no `.icns` is
   generated since `iconutil`/`sips` are macOS-only tools this repo's Linux
   hosts can neither run nor verify, so the bundle shows Finder's generic
   icon); Windows gets a Start Menu `.lnk` authored via PowerShell's
-  `WScript.Shell` COM object (`_install_launcher_windows`, `:1190` — the
+  `WScript.Shell` COM object (`_install_launcher_windows`, `braincell/platform.py:322` — the
   `.lnk` format has no stdlib writer, and `powershell.exe` ships with every
   supported Windows release, so this stays dependency-free). All three
   launch the SAME one-command `braincell start "<project_path>"`, so every
@@ -225,7 +249,7 @@ preview-first, WAL-aware `legacy_recovery.py`; only its add-repo-runbook revisio
 - **Medium — token ACL parity:** token creation applied POSIX mode `0600`,
   but on Windows `os.chmod` only toggles the read-only bit — no real ACL
   restriction. Resolved: `_windows_restrict_token_acl()`
-  (`braincell/gui.py:775`), wired into `_resolve_gui_token()` (`:820`),
+  (`braincell/gui.py:857`), wired into `_resolve_gui_token()` (`:902`),
   invokes `icacls <path> /inheritance:r /grant:r <user>:F` via subprocess
   (stdlib-only) to remove inherited permissions and grant only the current
   user. Fail-closed as a warning: a missing `USERNAME`, a non-NTFS volume, or
@@ -248,15 +272,16 @@ preview-first, WAL-aware `legacy_recovery.py`; only its add-repo-runbook revisio
   branches merge.**
 - **Medium — platform data roots:** default storage was Linux-oriented
   `~/.local/share` unconditionally, on every platform. Resolved:
-  `_xdg_data_home()` (`braincell/config.py:71`) now resolves a
-  platform-appropriate default via `_platform_data_home_default()` (`:57`)
+  `_xdg_data_home()` (`braincell/config.py:51`) now resolves a
+  platform-appropriate default via `_platform_data_home_default()`
+  (`braincell/platform.py:32`)
   — macOS `~/Library/Application Support`, Windows `%LOCALAPPDATA%`
   (`~/AppData/Local` if unset) — while `XDG_DATA_HOME` still overrides
   unconditionally on every platform as before. Backward compatible by
   construction, no silent migration: a pre-fix install's data can already
   live at the legacy `~/.local/share/<namespace>` path on macOS/Windows, so
   an EXISTING populated legacy root always wins over the new platform
-  default (`_legacy_linux_style_data_home()`, `:48`); if both a legacy and a
+  default (`_legacy_linux_style_data_home()`, `braincell/platform.py:59`); if both a legacy and a
   platform-default root are populated, the legacy (already-in-use) root
   still wins and a once-per-process warning is logged — nothing is ever
   copied, moved, or deleted by this function. Linux itself is unchanged
@@ -270,15 +295,15 @@ preview-first, WAL-aware `legacy_recovery.py`; only its add-repo-runbook revisio
 - **High — safety-backup coverage:** consolidate/reflect required a successful
   backup but reembed and clear did not. Resolved: `build --reembed`
   (`braincell/cli.py:_execute_build`, backup call at `braincell/cli.py:230`)
-  and the GUI's `clear_project` (`braincell/gui_ingest.py:433`) now require the
+  and the GUI's `clear_project` (`braincell/gui_ingest.py:625`) now require the
   same `_required_auto_backup` snapshot before their destructive wipe,
   fail-closed (`RuntimeError`, surfaced as HTTP 409 from `/api/clear`) if the
   backup cannot be made. Both wipes still run through the CLI (`braincell
   build --reembed` is what the GUI's ingest subprocess shells out to), so one
   fix covers CLI and GUI reembed; clear only ever existed as a GUI path.
   Each got an explicit, off-by-default override with a loud warning:
-  `--no-backup` on `build` (`braincell/cli.py:1760`) and `skip_backup` on
-  `POST /api/clear` (`braincell/gui_ingest.py:65`). Regressions in
+  `--no-backup` on `build` (`braincell/cli.py:1826`) and `skip_backup` on
+  `POST /api/clear` (`braincell/gui_ingest.py:68`). Regressions in
   `tests/test_reembed_backup_coverage.py` (fault-injects `_vacuum_into`
   failure; proves the wipe never ran) and `tests/test_gui_ingest.py:298`
   (`TestClear` additions, same fault-injection + skip_backup bypass).
@@ -291,9 +316,9 @@ preview-first, WAL-aware `legacy_recovery.py`; only its add-repo-runbook revisio
   Project stays the existing `reassociate_project_path` workflow,
   `braincell/cli.py:318`, parser at `:1785`). Surfaced through the new
   `"orphans"` key in `storage_report()`
-  (`braincell/storage_accounting.py:315`) and a standalone
+  (`braincell/storage_accounting.py:490`) and a standalone
   `braincell storage --list-orphans` listing that needs no registered project
-  (`braincell/cli.py:639`, parser at `braincell/cli.py:2284`). Regressions in
+  (`braincell/cli.py:639`, parser at `braincell/cli.py:2314`). Regressions in
   `tests/test_project_orphans.py` (stale path, orphaned database, reassociate
   clearing the orphan, non-mutation adversarial check) and
   `tests/test_storage_cli.py`.
@@ -301,13 +326,13 @@ preview-first, WAL-aware `legacy_recovery.py`; only its add-repo-runbook revisio
   WAL/SHM, Project row counts, and backup retention but not freelist,
   embedding, foreign-document, or orphan-database detail; `braincell stats`
   surfaced none of it. Resolved: `storage_report()` now includes
-  `"database_diagnostics"` (`braincell/storage_accounting.py:99`) —
+  `"database_diagnostics"` (`braincell/storage_accounting.py:482`) —
   `PRAGMA freelist_count`/`page_count`/`page_size`, embedded/null-embedding
   chunk counts plus total vector bytes, and a count of `bc_documents` rows
   owned by a different project — and a WAL-starvation warning (WAL file past
   both a byte floor and a ratio against the database's own size; constants
   `_WAL_STARVATION_MIN_BYTES` / `_WAL_STARVATION_RATIO`), printed by
-  `braincell storage` (`braincell/cli.py:695`). Orphan-database detail is the
+  `braincell storage` (`braincell/cli.py:630`). Orphan-database detail is the
   same `find_orphans()` from the orphan-reconciliation entry above, built once
   and reused rather than duplicated. Hard-prune and `VACUUM` execution are
   covered by the resolved workflow entry above. Regressions in
@@ -332,7 +357,7 @@ preview-first, WAL-aware `legacy_recovery.py`; only its add-repo-runbook revisio
   regressions in `tests/test_transcript_ingest.py:450`.
 - **Medium — retention policy:** Disappeared transcripts, tombstones, and
   operation history had no expiry mechanism. Resolved: explicit, opt-in
-  retention apply (`braincell/storage_accounting.py:605`, CLI
+  retention apply (`braincell/storage_accounting.py:695`, CLI
   `braincell storage --apply`) covering backup pruning, operation-history
   expiry, and tombstone purge — dry-run plan first, executed only under the
   destination mutation lock, every axis disabled by default and an
@@ -342,7 +367,7 @@ preview-first, WAL-aware `legacy_recovery.py`; only its add-repo-runbook revisio
   `tests/test_storage_accounting.py:187`.
 - **Medium — future pruning safety:** The retention plan did not identify
   snapshots referenced by undo history as protected. Resolved: undo-referenced
-  snapshots are planned as protected (`braincell/storage_accounting.py:222`),
+  snapshots are planned as protected (`braincell/storage_accounting.py:298`),
   re-verified at delete time, and unreadable operation history fails the whole
   apply closed; a tombstoned note referenced by recorded undo history is
   likewise never purged. Regressions in
@@ -351,7 +376,7 @@ preview-first, WAL-aware `legacy_recovery.py`; only its add-repo-runbook revisio
   helpers committed caller-owned SQLite connections outside `SqliteStore`
   transaction ownership; production ingest no longer called them. Resolved:
   removed outright — tests and `scripts/pool_bench.py` now seed through the
-  owned atomic path (`braincell/store.py:2984` `replace_document`), and a
+  owned atomic path (`braincell/store.py:2986` `replace_document`), and a
   retirement regression keeps the helpers gone
   (`tests/test_store.py:911`).
 
@@ -360,7 +385,7 @@ preview-first, WAL-aware `legacy_recovery.py`; only its add-repo-runbook revisio
   (`braincell/store.py:1167`)
 - **Critical — transcript split state:** Hash/checkpoint updates could survive
   failed embeddings or disagree with chunks and FTS rows.
-  (`braincell/transcript_ingest.py:346`, `braincell/store.py:2984`)
+  (`braincell/transcript_ingest.py:346`, `braincell/store.py:2986`)
 - **Critical — Project identity/catalog safety:** Concurrent minting and unsafe
   registry values could create conflicting identities or redirect state outside
   the BrainCell namespace. (`braincell/project_registry.py:37`)

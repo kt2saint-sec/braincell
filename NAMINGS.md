@@ -33,6 +33,10 @@ and code identifiers.
 - **Connect BrainCell** — configure BrainCell for a selected client in one
   Project. Prefer **Connect to Codex**, **Connect to Claude**, **Connect to
   OpenCode**, or **Connect to VS Code**.
+- **OpenCode** — a supported connection client alongside Claude, Codex, and
+  VS Code. Write “OpenCode” exactly (capital O, capital C). Its project-local
+  configuration file is `opencode.json` and its Project skills live in
+  `.opencode/skills`.
 - **Disconnect BrainCell** — remove one Project's client connection without
   deleting its memory. Prefer client-specific labels.
 - **Memory Map** — the BrainCell desktop application. “Native GUI” belongs only

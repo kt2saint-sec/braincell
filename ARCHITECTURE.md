@@ -1,6 +1,6 @@
 # BrainCell architecture
 
-`last_verified: 2026-08-02` against the current
+`last_verified: 2026-08-05` against the current
 `~/braincell-public` integration working tree and the confirmed
 remote `v0.4.0` tag (`e92aaf0`). This tree carries the v1 integration work,
 including cross-platform lifecycle/launcher hardening and the required native
@@ -35,10 +35,10 @@ embeddings) and `dev` (pytest, ruff) are the functional optional extras.
 
 | Module | Holds |
 |---|---|
-| `store.py` (the largest module) | The `Store` protocol and `SqliteStore`. One coroutine owns a write transaction from `BEGIN` through commit via `_write_transaction` (`store.py:1167`). Document replacement is atomic across hash, chunks, and FTS (`replace_document`, `store.py:2984`). |
+| `store.py` (the largest module) | The `Store` protocol and `SqliteStore`. One coroutine owns a write transaction from `BEGIN` through commit via `_write_transaction` (`store.py:1167`). Document replacement is atomic across hash, chunks, and FTS (`replace_document`, `store.py:2986`). |
 | `schema.py` | Raw DDL only. |
 | `compaction.py` | Pure transcript-page compaction; no I/O. |
-| `storage_accounting.py` | `storage_report` (`:386`) — read-only file/row accounting, warning-only Project/disk pressure, and retention planning. `hard_prune_plan` (`:544`) creates a deterministic eligible selection and approval digest; `execute_hard_prune` (`:872`) re-plans under `mutation_lock`, records durable audit events, optionally snapshots, performs eligible retention, then verifies integrity and attempts WAL TRUNCATE + `VACUUM`. |
+| `storage_accounting.py` | `storage_report` (`:391`) — read-only file/row accounting, warning-only Project/disk pressure, and retention planning. `hard_prune_plan` (`:549`) creates a deterministic eligible selection and approval digest; `execute_hard_prune` (`:877`) re-plans under `mutation_lock`, records durable audit events, optionally snapshots, performs eligible retention, then verifies integrity and attempts WAL TRUNCATE + `VACUUM`. Hard-prune recovery snapshots are their own protected category, never deletion candidates. |
 
 Tables created by `schema.py`: `bc_documents`, `bc_chunks`, `bc_chunks_fts`
 (FTS5 virtual), `bc_note_links`, `bc_operations`, `bc_operation_notes`,
@@ -85,6 +85,7 @@ virtual). Everything for one Project lives in that Project's single
 | `gui_ingest.py` | Build subprocess management, schedules, and `clear_project`; ties a child build to the GUI with Linux `PR_SET_PDEATHSIG`, a Windows Job Object, or a macOS watchdog. |
 | `gui_ops.py` | Maintenance endpoints, including Connected-Project hard-prune preview/apply workers. |
 | `gui_install.py` | Client connect/disconnect from the GUI. |
+| `maintenance_preferences.py` | Per-Project maintenance preference storage — holds the deliberately narrow Trust verified maintenance setting that bypasses the typed hard-prune confirmation. |
 
 The Memory Map is window-owned: closing the window stops the server. There is
 deliberately no headless fallback and no always-on service — see
@@ -101,10 +102,10 @@ or misattributing memory context.
 
 | Module | Holds |
 |---|---|
-| `install.py` | Project-local client connections and Project skills. `_atomic_write_text` (`:408-428`) backs up, then writes via `mkstemp` + `os.replace`. Skill destinations: Claude `.claude/skills`, Codex `.agents/skills`, OpenCode `.opencode/skills` (`:165`). The Memory Map locally resolves skill status and mutations from its Connected Project identity, never a renderer-supplied path. |
+| `install.py` | Project-local client connections and Project skills. `_atomic_write_text` (`:464`) backs up, then writes via `mkstemp` + `os.replace`. Skill destinations: Claude `.claude/skills`, Codex `.agents/skills`, OpenCode `.opencode/skills` (`:165`). The Memory Map locally resolves skill status and mutations from its Connected Project identity, never a renderer-supplied path. |
 | `launch.py` | `braincell start` preflight — single-instance probe and pre-launch report. |
 | `automatic_pool_recall.py` | The opt-in Claude hook, project-local and disabled by default. |
-| `log.py` | Rotating file handler with a plain-handler fallback (`:68`). |
+| `log.py` | Rotating file handler with a plain-handler fallback (`:80`). |
 
 ### Retired surfaces retained as code
 
@@ -143,7 +144,8 @@ add|remove`.
 
 **Maintenance** — `consolidate`, `reflect`, `contradictions`, `reembed-notes`,
 `memory log|undo`, `backup`, `stats`, `storage`, `legacy-service`,
-`legacy-recovery preview|apply`.
+`legacy-recovery preview|apply`,
+`reconcile-foreign-documents preview|apply` (`cli.py:1780`, parser `:2169`).
 
 `storage` is read-only unless `--apply` is passed. Ordinary retention apply is
 refused unless at least one of `--keep-backups`, `--expire-operations-days`,

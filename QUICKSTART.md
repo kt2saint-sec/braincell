@@ -14,10 +14,13 @@ cd braincell
 
 The installer creates a local environment with the required native Memory Map
 GUI and, when available, fetches the default Ollama embedding model. There is
-no supported `--server-only` installation. With an existing environment, use:
+no supported `--server-only` installation. Without the installer, use pipx
+(recommended, as in the README) or an existing virtual environment:
 
 ```bash
-python3 -m pip install "braincell-mcp @ git+https://github.com/kt2saint-sec/braincell.git"
+pipx install braincell-mcp
+# or, inside an activated virtual environment:
+python3 -m pip install braincell-mcp
 ollama pull qwen3-embedding:4b
 ```
 

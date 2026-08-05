@@ -4,7 +4,7 @@ Release-facing notes for the public BrainCell project. This file records
 verified product changes only; private engineering history and machine-specific
 details are intentionally excluded.
 
-## Unreleased
+## 1.0.0 - 2026-08-05
 
 ### Added
 
@@ -42,22 +42,6 @@ details are intentionally excluded.
   the local NVMe release gate. It cleans its isolated workspace unless a
   maintainer explicitly requests retention and records observations rather than
   machine-specific pass/fail latency promises.
-
-### Fixed
-
-- Resolved the missing authorized SQLite compaction/hard-prune execution
-  workflow. Active/superseded notes, indexed documents/chunks, semantic
-  similarity, and LLM judgments remain outside permanent cleanup authority.
-- Cleared the remaining configured Ruff findings and prevented the Linux local
-  CI mirror from starting an uncaged package/test workload.
-- Declared shipped `braincell.assets` and `braincell.skills` resource namespaces
-  explicitly to setuptools, clearing package-discovery ambiguity. Skill
-  discovery now requires a real `SKILL.md`, so source-checkout bytecode folders
-  cannot be mistaken for installable skills.
-
-## 1.0.0 - 2026-08-01
-
-### Added
 
 - **Cross-platform SSoT module** (`braincell/platform.py`) — single source of
   truth for data/config paths, desktop launchers, and legacy-service removal
@@ -105,6 +89,22 @@ details are intentionally excluded.
 
 ### Fixed
 
+- A hard-prune local recovery snapshot is now categorized as a protected
+  recovery snapshot rather than an ordinary backup, so later retention or
+  hard-prune runs can never select it for deletion and it no longer consumes
+  a kept-backup slot.
+- The Memory Map hard-prune endpoints no longer accept a caller-supplied
+  backup-roots path list; the embedded interface always scans only BrainCell's
+  own state. The CLI's explicit `--backup-root` flag is unchanged.
+- Resolved the missing authorized SQLite compaction/hard-prune execution
+  workflow. Active/superseded notes, indexed documents/chunks, semantic
+  similarity, and LLM judgments remain outside permanent cleanup authority.
+- Cleared the remaining configured Ruff findings and prevented the Linux local
+  CI mirror from starting an uncaged package/test workload.
+- Declared shipped `braincell.assets` and `braincell.skills` resource namespaces
+  explicitly to setuptools, clearing package-discovery ambiguity. Skill
+  discovery now requires a real `SKILL.md`, so source-checkout bytecode folders
+  cannot be mistaken for installable skills.
 - Configuration files are now written atomically on Windows. The previous
   implementation used a POSIX-only call unavailable before Python 3.13, left the
   temporary file's handle open when that call failed, and then reported the
