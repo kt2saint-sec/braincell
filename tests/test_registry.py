@@ -183,23 +183,27 @@ class TestListProjectsTool:
         result = asyncio.run(list_projects())
         assert result == []
 
-    def test_registered_projects_returned(self):
+    def test_registered_projects_returned(self, tmp_path):
         from braincell.server import list_projects
 
-        register_path("/home/user/proj-a", "01PROJA000000000000000001A")
-        register_path("/home/user/proj-b", "01PROJB000000000000000001B")
+        # Native absolute paths: POSIX literals like "/home/user/proj-a" are
+        # not absolute on Windows and fail registry validation there.
+        proj_a = str(tmp_path / "proj-a")
+        proj_b = str(tmp_path / "proj-b")
+        register_path(proj_a, "01PROJA000000000000000001A")
+        register_path(proj_b, "01PROJB000000000000000001B")
         result = asyncio.run(list_projects())
         ids = {r.project_id for r in result}
         paths = {r.path for r in result}
         assert "01PROJA000000000000000001A" in ids
         assert "01PROJB000000000000000001B" in ids
-        assert normalize_path("/home/user/proj-a") in paths
+        assert normalize_path(proj_a) in paths
 
-    def test_results_sorted_by_path(self):
+    def test_results_sorted_by_path(self, tmp_path):
         from braincell.server import list_projects
 
-        register_path("/z/z", "01ZZZZZ000000000000000001Z")
-        register_path("/a/a", "01AAAAA000000000000000001A")
+        register_path(str(tmp_path / "z" / "z"), "01ZZZZZ000000000000000001Z")
+        register_path(str(tmp_path / "a" / "a"), "01AAAAA000000000000000001A")
         result = asyncio.run(list_projects())
         paths = [r.path for r in result]
         assert paths == sorted(paths)
@@ -220,13 +224,13 @@ class TestListPoolsTool:
 
         assert asyncio.run(list_pools()) == []
 
-    def test_registered_and_unregistered_ulid_status(self):
+    def test_registered_and_unregistered_ulid_status(self, tmp_path):
         from braincell.project_registry import add_to_pool, create_pool
         from braincell.server import list_pools
 
         registered = "01PROJA000000000000000001A"
         unregistered = "01MISSING0000000000000001Z"
-        register_path("/home/user/proj-a", registered)
+        register_path(str(tmp_path / "proj-a"), registered)
         create_pool("my-pool")
         add_to_pool("my-pool", [registered, unregistered])
 

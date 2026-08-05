@@ -89,6 +89,14 @@ details are intentionally excluded.
 
 ### Fixed
 
+- Windows: the per-database mutation lock now releases correctly — the lock
+  metadata rewrite previously invalidated the locked byte, failing every
+  locked operation (build, re-embed, maintenance, retention, hard-prune) at
+  completion on Windows; lock metadata also no longer accumulates across
+  acquisitions.
+- Windows: legacy recovery closes its read-only snapshot connections, so
+  refused-preview snapshot cleanup and backup retention work on Windows,
+  where files with open handles cannot be deleted.
 - Project skills installed by an earlier BrainCell release are now updated in
   place on connect/install (Memory Map status: **Update available**) instead
   of being stranded as permanent conflicts; skills you edited yourself remain

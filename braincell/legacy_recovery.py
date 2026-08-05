@@ -13,8 +13,8 @@ import hashlib
 import json
 import os
 import sqlite3
-from collections.abc import Iterable
-from contextlib import contextmanager, nullcontext
+from collections.abc import Iterable, Iterator
+from contextlib import closing, contextmanager, nullcontext
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -85,12 +85,18 @@ def _connection_state_digest(connection: sqlite3.Connection) -> str:
     return digest.hexdigest()
 
 
-def _read_only(path: Path, *, purpose: str) -> sqlite3.Connection:
+@contextmanager
+def _read_only(path: Path, *, purpose: str) -> Iterator[sqlite3.Connection]:
     """Open a stable read-only snapshot without hiding committed WAL frames.
 
     SQLite needs an existing WAL shared-memory index to read a WAL database
     without writing one.  Refuse rather than create that sidecar during preview,
     or silently omit the WAL by using ``immutable=1``.
+
+    Yields a connection that is CLOSED on exit. A bare ``sqlite3.Connection``
+    used as a context manager only ends its transaction and keeps the file
+    handle open — on Windows that open handle made every later unlink of the
+    snapshot fail with WinError 32.
     """
     wal, shm = _wal_path(path), _shm_path(path)
     if wal.exists() and not shm.exists():
@@ -103,10 +109,13 @@ def _read_only(path: Path, *, purpose: str) -> sqlite3.Connection:
     connection = sqlite3.connect(
         f"file:{path.resolve().as_posix()}?{query}", uri=True, timeout=0
     )
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA query_only=ON")
-    connection.execute("PRAGMA foreign_keys=ON")
-    return connection
+    try:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only=ON")
+        connection.execute("PRAGMA foreign_keys=ON")
+        yield connection
+    finally:
+        connection.close()
 
 
 @contextmanager
@@ -243,8 +252,12 @@ def _backup_database(source: Path, kind: str, backup_dir: Path | None = None) ->
     while destination.exists():
         destination = directory / f"{source.stem}.{kind}-backup-{timestamp}-{serial}.db"
         serial += 1
-    with _read_only(source, purpose="Backup") as original, sqlite3.connect(destination) as backup:
+    with (
+        _read_only(source, purpose="Backup") as original,
+        closing(sqlite3.connect(destination)) as backup,
+    ):
         original.backup(backup)
+        backup.commit()
     return destination
 
 

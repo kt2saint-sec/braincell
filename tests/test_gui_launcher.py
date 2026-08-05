@@ -254,9 +254,12 @@ class TestInstallLauncherMacOS:
         assert "start" in content
         assert str(proj.resolve()) in content
         # Executable bit set — Finder/LaunchServices exec this file directly.
-        import stat
-        mode = script.stat().st_mode
-        assert mode & stat.S_IXUSR
+        # Windows chmod cannot express the +x bit; the macOS bundle never
+        # installs there, so the POSIX-mode assertion is POSIX-scoped.
+        if sys.platform != "win32":
+            import stat
+            mode = script.stat().st_mode
+            assert mode & stat.S_IXUSR
 
     def test_default_project_path_is_cwd(self, tmp_path, monkeypatch):
         home = tmp_path / "home"

@@ -51,7 +51,11 @@ def mutation_lock(destination: Path, *, operation: str) -> Iterator[None]:
     """
     destination.parent.mkdir(parents=True, exist_ok=True)
     lock_path = destination.with_name(f"{destination.name}.mutation.lock")
-    with lock_path.open("a+b") as lock_file:
+    # r+b, not a+b: append mode silently redirects every positioned write to
+    # EOF, so the metadata rewrite below would accumulate one stale line per
+    # acquisition instead of replacing the previous owner's line.
+    lock_path.touch(exist_ok=True)
+    with lock_path.open("r+b") as lock_file:
         try:
             if os.name == "nt":
                 import msvcrt
@@ -72,9 +76,14 @@ def mutation_lock(destination: Path, *, operation: str) -> Iterator[None]:
                 f"{operation} refused: another mutation already owns {destination}"
             ) from exc
 
+        # Write-then-truncate, never truncate-then-write: msvcrt's lock covers
+        # byte 0, and truncating the file to zero length first destroys that
+        # locked region — the LK_UNLCK below then fails with EACCES (observed
+        # failing every Windows mutation_lock exit in CI). Truncating at the
+        # end of the freshly written line always leaves byte 0 in place.
         lock_file.seek(0)
-        lock_file.truncate()
         lock_file.write(f"pid={os.getpid()} operation={operation}\n".encode())
+        lock_file.truncate()
         lock_file.flush()
         try:
             yield

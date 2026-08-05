@@ -22,6 +22,40 @@ preview-first, WAL-aware `legacy_recovery.py`; only its add-repo-runbook revisio
 
 ## Resolved in 1.0.0
 
+- **High — every Windows `mutation_lock` exit failed with EACCES:** the
+  Windows branch locks byte 0 of the lockfile via `msvcrt.locking`, then the
+  metadata rewrite truncated the file to zero length — destroying the locked
+  region — before writing the new owner line; the `LK_UNLCK` at exit then
+  raised `PermissionError`, failing every locked mutation (build/reembed,
+  consolidate, retention, hard-prune) on Windows CI the first time the full
+  suite ever ran there. The file was also opened in append mode, so
+  positioned writes silently landed at EOF and metadata accumulated across
+  acquisitions. Resolved: the lockfile is opened `r+b` after an explicit
+  `touch`, and the rewrite is write-then-truncate so byte 0 always survives
+  (`braincell/catalog_io.py:47`). Regression:
+  `tests/test_catalog_concurrency.py`
+  (`test_windows_mutation_lock_never_truncates_the_locked_byte`, mocked
+  msvcrt + spy file, plus a reacquisition no-growth check).
+
+- **High — legacy-recovery snapshots were undeletable on Windows:**
+  `_read_only()` returned a bare `sqlite3.Connection` that call sites used as
+  a context manager — which only ends the transaction and leaves the file
+  handle open, so `source_backup.unlink()` after a refused preview failed
+  with `WinError 32` (POSIX allows unlink-while-open; Windows refuses).
+  Resolved: `_read_only` is now a real context manager that closes its
+  connection on exit (`braincell/legacy_recovery.py:88`), and
+  `_backup_database` closes its destination connection via
+  `contextlib.closing` with an explicit commit.
+
+- **Low — Windows test-scoping in the newly reachable suite tail:**
+  `tests/test_registry.py` registered POSIX literals (`/home/user/proj-a`)
+  that are not absolute paths on Windows and failed registry validation, and
+  the macOS launcher-bundle test asserted a POSIX exec bit Windows `chmod`
+  cannot express. Resolved: the registry tests build native absolute paths
+  from `tmp_path`, and the exec-bit assertion is POSIX-scoped. (These tests
+  had never previously RUN on Windows — the console-interrupt fault above
+  aborted every session before reaching them.)
+
 - **High — `os.kill(pid, 0)` interrupted the whole console on Windows:** the
   parent-death watchdog's `_pid_alive` probe assumed POSIX signal-0 semantics,
   but CPython maps signal 0 on Windows to

@@ -165,3 +165,75 @@ def test_destination_mutation_lock_has_one_owner_and_deterministic_busy_result(
         process.join(timeout=20)
     assert process.exitcode == 0
     assert destination.with_name("braincell.db.mutation.lock").exists()
+
+
+def test_windows_mutation_lock_never_truncates_the_locked_byte(tmp_path, monkeypatch):
+    """msvcrt's non-blocking lock covers byte 0. Truncating the lockfile to
+    zero length while that byte is locked destroys the locked region, and the
+    later LK_UNLCK fails with EACCES — observed failing every Windows
+    mutation_lock exit in CI. The metadata rewrite must therefore write first
+    and truncate at the end of the new line, never truncate-then-write."""
+    import sys
+
+    from braincell import catalog_io
+
+    lock_calls: list[int] = []
+    zero_length_truncations: list[int] = []
+
+    class _FakeMsvcrt:
+        LK_NBLCK = 2
+        LK_UNLCK = 0
+
+        @staticmethod
+        def locking(fd, mode, nbytes):
+            lock_calls.append(mode)
+
+    class _SpyFile:
+        def __init__(self, handle):
+            self._handle = handle
+
+        def truncate(self, size=None):
+            result = self._handle.truncate(size)
+            self._handle.flush()
+            if os.fstat(self._handle.fileno()).st_size == 0 and _FakeMsvcrt.LK_NBLCK in lock_calls:
+                zero_length_truncations.append(1)
+            return result
+
+        def __getattr__(self, name):
+            return getattr(self._handle, name)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return self._handle.__exit__(*exc)
+
+    real_open = Path.open
+
+    def _spy_open(self, *args, **kwargs):
+        handle = real_open(self, *args, **kwargs)
+        if self.name.endswith(".mutation.lock"):
+            return _SpyFile(handle)
+        return handle
+
+    monkeypatch.setattr(catalog_io.os, "name", "nt")
+    monkeypatch.setitem(sys.modules, "msvcrt", _FakeMsvcrt())
+    monkeypatch.setattr(Path, "open", _spy_open)
+
+    destination = tmp_path / "project" / "braincell.db"
+    with catalog_io.mutation_lock(destination, operation="win-lock-check"):
+        pass
+
+    assert lock_calls == [_FakeMsvcrt.LK_NBLCK, _FakeMsvcrt.LK_UNLCK]
+    assert not zero_length_truncations, (
+        "the lockfile was truncated to zero length while byte 0 was locked"
+    )
+    lock_path = destination.with_name("braincell.db.mutation.lock")
+    assert lock_path.read_bytes().startswith(b"pid=")
+
+    # Reacquisition must REPLACE the metadata line, not append to it — append
+    # mode ("a+b") silently sent positioned writes to EOF and grew the file.
+    with catalog_io.mutation_lock(destination, operation="win-lock-check"):
+        pass
+    content = lock_path.read_bytes()
+    assert content.startswith(b"pid=") and content.count(b"pid=") == 1
