@@ -50,6 +50,12 @@ def isolate_xdg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BRAINCELL_DATA_NAMESPACE", "braincell_test")
     # Ensure the env-var-driven embed_spec does NOT default to openai
     monkeypatch.setenv("BRAINCELL_EMBED_PROVIDER", "ollama")
+    # Hermetic connected-Project identity: cli.py exports BRAINCELL_PROJECT_ID
+    # into os.environ on some code paths, which silently leaked a connected
+    # Project into every LATER test in a full-suite run (tests then passed in
+    # the suite but failed alone). Each test starts disconnected; tests that
+    # need a connected Project set the variable themselves.
+    monkeypatch.delenv("BRAINCELL_PROJECT_ID", raising=False)
 
 
 # ── Store lifecycle ───────────────────────────────────────────────────────────

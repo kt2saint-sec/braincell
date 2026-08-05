@@ -25,8 +25,10 @@ baseline, then builds and checks the wheel and sdist inside a separate
 NVMe-backed systemd cgroup. Packaging and clean-install smoke tests never use
 the regular GUI-test virtualenv.
 
-The default sandbox is /mnt/nvme-fast/braincell-release-sandbox. The runner
-refuses another filesystem, insufficient free NVMe space, or a missing user
+The default sandbox is /mnt/nvme-fast/braincell-release-sandbox; set
+BRAINCELL_RELEASE_CHECK_ROOT to a dedicated absolute directory on a fast disk
+to run elsewhere. The runner refuses the filesystem root, $HOME itself, a
+sandbox inside the checkout, insufficient free space, or a missing user
 systemd cgroup. Failed runs are retained with artifacts and resource logs; set
 BRAINCELL_RELEASE_CHECK_KEEP=1 to retain successful runs too.
 EOF
@@ -101,7 +103,10 @@ monitor_scope() {
                 printf '%s memory-events=%s\n' "$timestamp" "$events" >> "$run_dir/resource-events.log"
                 last_events="$events"
             fi
-            if [ "${high:-0}" -gt 0 ] || [ "${max:-0}" -gt 0 ] || [ "${oom:-0}" -gt 0 ] || [ "${oom_kill:-0}" -gt 0 ]; then
+            # `high` is MemoryHigh's normal soft-throttle counter, not a fault:
+            # a PySide6 install plus wheel build can trip it on a healthy run.
+            # It stays visible in resource-events.log; only hard events fail.
+            if [ "${max:-0}" -gt 0 ] || [ "${oom:-0}" -gt 0 ] || [ "${oom_kill:-0}" -gt 0 ]; then
                 touch "$run_dir/memory-pressure"
             fi
             if [ -n "$max_bytes" ] && [ "$max_bytes" != "max" ] \
@@ -124,6 +129,7 @@ run_inside_scope() {
 
     local release_venv="$sandbox_root/venv"
     local smoke_venv artifact
+    cd "$PROJECT_ROOT"
     export HOME="$run_dir/home"
     export TMPDIR="$run_dir/tmp"
     export TMP="$run_dir/tmp"
@@ -180,9 +186,18 @@ run_inside_scope() {
 }
 
 run_release_check() {
+    # The default sandbox is this project's dedicated NVMe mount. Contributors
+    # without that mount point BRAINCELL_RELEASE_CHECK_ROOT at any dedicated
+    # absolute directory on a fast disk; the cgroup, lock, free-space, and
+    # isolated HOME/XDG/tmp guarantees below apply identically there.
     case "$SANDBOX_ROOT" in
-        /mnt/nvme-fast/*) ;;
-        *) die "release-check-safe requires a dedicated directory under /mnt/nvme-fast" ;;
+        /) die "release-check-safe refuses the filesystem root as a sandbox" ;;
+        /*) ;;
+        *) die "BRAINCELL_RELEASE_CHECK_ROOT must be an absolute path" ;;
+    esac
+    [ "$SANDBOX_ROOT" != "$HOME" ] || die "release-check-safe refuses \$HOME itself as a sandbox"
+    case "$SANDBOX_ROOT" in
+        "$PROJECT_ROOT"|"$PROJECT_ROOT"/*) die "release-check-safe refuses a sandbox inside the checkout" ;;
     esac
     command -v systemd-run >/dev/null || die "systemd-run is required; refusing uncaged release validation"
     command -v systemctl >/dev/null || die "systemctl is required; refusing uncaged release validation"
@@ -192,12 +207,7 @@ run_release_check() {
     [[ "$POLL_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "BRAINCELL_RELEASE_POLL_SECONDS must be positive"
 
     mkdir -p "$SANDBOX_ROOT"
-    local mount_target available_kib minimum_kib
-    mount_target=$(findmnt -n -o TARGET --target "$SANDBOX_ROOT" 2>/dev/null || true)
-    case "$mount_target" in
-        /mnt/nvme-fast|/mnt/nvme-fast/*) ;;
-        *) die "release-check-safe requires $SANDBOX_ROOT to be mounted from /mnt/nvme-fast" ;;
-    esac
+    local available_kib minimum_kib
     available_kib=$(df -Pk "$SANDBOX_ROOT" | awk 'END { print $4 }')
     minimum_kib=$((MIN_FREE_GIB * 1024 * 1024))
     [ "$available_kib" -ge "$minimum_kib" ] || die "need at least ${MIN_FREE_GIB} GiB free under $SANDBOX_ROOT"

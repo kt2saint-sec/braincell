@@ -203,6 +203,16 @@ _WATCHDOG_POLL_S = 2.0  # coarse on purpose — see _run_parent_death_watchdog
 
 def _pid_alive(pid: int) -> bool:
     """POSIX liveness probe: True unless the kernel confirms the pid is gone."""
+    if os.name != "posix":
+        # os.kill(pid, 0) is NOT a probe on Windows: CPython maps signal 0 to
+        # GenerateConsoleCtrlEvent(CTRL_C_EVENT, ...), which interrupts every
+        # process sharing the console — observed aborting an entire pytest run
+        # with KeyboardInterrupt in CI. Windows parent-death protection uses a
+        # Job Object (_win32_job_kill_on_close); this probe must never run there.
+        raise RuntimeError(
+            "_pid_alive is POSIX-only; Windows parent-death protection uses a "
+            "Job Object"
+        )
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

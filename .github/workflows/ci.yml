@@ -30,7 +30,21 @@ jobs:
         env:
           LINT_BASE_REF: ${{ github.base_ref || 'main' }}
         run: python scripts/lint_changed_python.py --base "origin/${LINT_BASE_REF}"
+      - name: Qt runtime system libraries (Linux)
+        # The native Memory Map is mandatory product surface; the suite's real
+        # QtWebEngine import probe needs the system libraries Qt links against.
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libgl1 libopengl0 libxkbcommon0 libxcb-cursor0 libnss3 \
+            libasound2t64 libxcomposite1 libxdamage1 libxrandr2 libxtst6 \
+            libgbm1 libxkbfile1 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-render-util0 libxcb-shape0 libxcb-xkb1
       - run: pytest -q
+        # A hang must fail fast with output, not idle for the 6-hour job limit
+        # (observed: a Windows console-wide CTRL_C_EVENT wedged pytest for 6 h).
+        timeout-minutes: 30
       - run: python -m pip install build twine
       - run: python -m build
       - run: python -m twine check dist/*

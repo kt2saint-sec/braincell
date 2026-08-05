@@ -22,6 +22,58 @@ preview-first, WAL-aware `legacy_recovery.py`; only its add-repo-runbook revisio
 
 ## Resolved in 1.0.0
 
+- **High — `os.kill(pid, 0)` interrupted the whole console on Windows:** the
+  parent-death watchdog's `_pid_alive` probe assumed POSIX signal-0 semantics,
+  but CPython maps signal 0 on Windows to
+  `GenerateConsoleCtrlEvent(CTRL_C_EVENT, ...)`, delivering Ctrl+C to every
+  process sharing the console. Exercising the probe in tests aborted the whole
+  Windows pytest session with `KeyboardInterrupt` (and earlier wedged Windows
+  CI jobs until the 6-hour limit). The watchdog never runs on Windows in
+  production (Windows uses a Job Object). Resolved: `_pid_alive`
+  (`braincell/gui_ingest.py:204`) now refuses non-POSIX platforms outright;
+  the real-subprocess watchdog tests are `skipif(win32)`-gated; the CI pytest
+  step carries `timeout-minutes: 30` so any future hang fails fast with
+  output. Regression:
+  `tests/test_gui_ingest_parent_death_guard.py`
+  (`test_refuses_to_probe_on_a_non_posix_platform`).
+
+- **High — upgraders' Project skills were stranded as permanent conflicts:**
+  skill bodies changed for 1.0.0 (client placeholders, removed `triggers:`),
+  so a copy installed by an earlier release no longer byte-matched and was
+  treated as user-edited — never updated, never removable. Resolved:
+  `_HISTORICAL_SKILL_SHA256` (`braincell/install.py:243`) is an append-only
+  registry of every skill body BrainCell itself shipped; a destination
+  matching a historical digest is BrainCell-authored, so install replaces it
+  (`updated`), remove deletes it, and status reports `outdated`
+  (Memory Map label: **Update available**). Genuinely edited copies still
+  conflict and are never touched. Regressions in
+  `tests/test_skills_install.py` (update-in-place, removable, status,
+  registry shape).
+
+- **Medium — release gate failed healthy runs on soft memory events:**
+  `scripts/release-check-safe.sh` treated any cgroup `memory.events` counter,
+  including `MemoryHigh`'s normal `high` throttle, as a failure — a PySide6
+  install plus wheel build could fail a healthy run. Resolved: only hard
+  `max`/`oom`/`oom_kill` events (or the 90 % hard-ceiling stop) fail the
+  check; `high` stays recorded in `resource-events.log` as evidence.
+
+- **Low — release sandbox was hard-bound to one machine's mount:** the
+  runner refused any sandbox outside `/mnt/nvme-fast`, so public contributors
+  could not run the documented release gate at all. Resolved:
+  `BRAINCELL_RELEASE_CHECK_ROOT` now accepts any dedicated absolute directory
+  (the filesystem root, `$HOME` itself, and paths inside the checkout are
+  refused); the default and every cgroup/lock/isolation guarantee are
+  unchanged. `run_inside_scope` also pins its cwd to the project root.
+
+- **Medium — suite-order dependence hid disconnected-server failures:**
+  `braincell/cli.py` exports `BRAINCELL_PROJECT_ID` into `os.environ` on some
+  code paths, so earlier CLI tests silently connected every later test in a
+  full-suite run — `tests/test_registry.py`'s catalog-tool tests passed in
+  the suite but failed alone. Resolved: the autouse `isolate_xdg` fixture
+  deletes the variable before every test, and the catalog-tool test classes
+  set their own connected Project explicitly. Verified by a full per-file
+  isolated run (80/80 files green) plus a single-process full-suite run.
+
 - **High — hard-prune recovery snapshot was itself prunable:** the same-host
   snapshot written before a hard-prune (`braincell-hard-prune-backup-*.db`)
   was categorized as an ordinary backup, so a later `braincell storage

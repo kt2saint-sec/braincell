@@ -2146,7 +2146,7 @@ async function cmdLivePool(kind){
   }catch(err){toast(`Pool ${kind} failed: ${err.message}`,"err");}
 }
 function skillStatusLabel(status){
-  return ({not_installed:"Not installed",current:"Up to date",modified:"Edited by you"})[status]||status;
+  return ({not_installed:"Not installed",current:"Up to date",outdated:"Update available",modified:"Edited by you"})[status]||status;
 }
 function renderSkills(rows){
   const el=document.getElementById("cmd-skills-list");
@@ -2175,7 +2175,7 @@ async function cmdSkills(action){
     if(el){
       renderSkills(rows.map(s=>({
         ...s,
-        status:s.status==="installed"?"current":s.status==="conflict"?"modified":s.status,
+        status:(s.status==="installed"||s.status==="updated")?"current":s.status==="conflict"?"modified":s.status,
       })));
     }
     const conflicts=rows.filter(s=>s.status==="conflict").length;

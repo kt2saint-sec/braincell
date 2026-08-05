@@ -234,14 +234,42 @@ def _packaged_skill_payloads(client: str) -> dict[str, str]:
     return payloads
 
 
+# SHA-256 digests of every skill body BrainCell itself shipped in EARLIER
+# releases (raw git blobs; none carried client placeholders, so installed bytes
+# equal blob bytes). A destination matching one of these is BrainCell-authored,
+# not user-edited: install may update it in place and remove may delete it.
+# Anything else stays user-owned and untouchable. Append-only: never remove a
+# digest — an installed copy of that version exists somewhere.
+_HISTORICAL_SKILL_SHA256: dict[str, frozenset[str]] = {
+    "braincell-init": frozenset({
+        "993e51bde9966c2f3a8b1ad2fe916efddd4ea11f11443f8fdce18ff9ed7e20d5",
+        "6ca400ac7ea2f3fbe2470930719d7e75ee8664fc019d3665153e04e99506b3f5",
+    }),
+    "braincell-sync": frozenset({
+        "aec538761928febfe166bd6a364cf900ce14e4cda5faa1d08d5199585e583837",
+        "e26fb9de6836ef8fdf502520631d00dac3cb280f9f982f4d7a52f8b4a79b0563",
+    }),
+}
+
+
+def _is_braincell_authored_skill_body(name: str, content: str) -> bool:
+    """True when *content* is a skill body an earlier BrainCell release wrote."""
+    import hashlib
+
+    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    return digest in _HISTORICAL_SKILL_SHA256.get(name, frozenset())
+
+
 def project_skills_status(
     project_root: str | Path, client: str
 ) -> list[tuple[str, str, Path]]:
     """Inspect one project's packaged skills without changing its files.
 
     Each result is ``(name, status, path)`` where status is ``not_installed``,
-    ``current``, or ``modified``. A modified skill is user-owned and must not
-    be overwritten or removed automatically.
+    ``current``, ``outdated``, or ``modified``. An outdated skill is a body an
+    earlier BrainCell release wrote — updating it loses no user work. A
+    modified skill is user-owned and must not be overwritten or removed
+    automatically.
     """
     dest_root = project_skills_dir(project_root, client)
     results: list[tuple[str, str, Path]] = []
@@ -254,7 +282,13 @@ def project_skills_status(
             current = dest.read_text(encoding="utf-8")
         except OSError:
             current = None
-        results.append((name, "current" if current == payload else "modified", dest))
+        if current == payload:
+            status = "current"
+        elif current is not None and _is_braincell_authored_skill_body(name, current):
+            status = "outdated"
+        else:
+            status = "modified"
+        results.append((name, status, dest))
     return results
 
 
@@ -266,30 +300,41 @@ def install_project_skills(
     Returns one ``(name, status, path)`` per skill, where status is:
       ``installed``  — written (destination did not exist)
       ``current``    — destination already byte-identical; nothing written
-      ``conflict``   — destination exists with DIFFERENT content; left untouched
+      ``updated``    — destination was an EARLIER BrainCell release's body;
+                       replaced with the current one (no user work involved)
+      ``conflict``   — destination exists with content BrainCell never shipped;
+                       left untouched
 
-    Never clobbers: a user may have their own skill of the same name, and silently
-    overwriting it would destroy work no backup covers. Conflicts are reported so
-    the caller can print a manual step — the same posture as the VS Code adapter,
-    which refuses to guess when it cannot act safely.
+    Never clobbers user work: a person may have their own skill of the same
+    name (or an edited copy of ours), and silently overwriting it would destroy
+    work no backup covers. Only bodies BrainCell itself wrote are replaced.
+    Conflicts are reported so the caller can print a manual step — the same
+    posture as the VS Code adapter, which refuses to guess when it cannot act
+    safely.
     """
     dest_root = project_skills_dir(project_root, client)
     results: list[tuple[str, str, Path]] = []
 
     for name, payload in _packaged_skill_payloads(client).items():
         dest = dest_root / name / "SKILL.md"
+        status = "installed"
         if dest.exists():
             try:
-                same = dest.read_text(encoding="utf-8") == payload
+                current = dest.read_text(encoding="utf-8")
             except OSError:
-                same = False
-            results.append((name, "current" if same else "conflict", dest))
-            continue
+                current = None
+            if current == payload:
+                results.append((name, "current", dest))
+                continue
+            if current is None or not _is_braincell_authored_skill_body(name, current):
+                results.append((name, "conflict", dest))
+                continue
+            status = "updated"
         dest.parent.mkdir(parents=True, exist_ok=True)
         tmp = dest.with_name(dest.name + ".tmp")
         tmp.write_text(payload, encoding="utf-8")
         tmp.replace(dest)                      # atomic, mirrors _atomic_write_json
-        results.append((name, "installed", dest))
+        results.append((name, status, dest))
 
     return results
 
@@ -297,10 +342,11 @@ def install_project_skills(
 def remove_project_skills(
     project_root: str | Path, client: str
 ) -> list[tuple[str, str, Path]]:
-    """Remove only unchanged packaged skills from one selected project.
+    """Remove only BrainCell-authored packaged skills from one selected project.
 
-    An edited same-name skill is user-managed and remains untouched. Missing
-    files are idempotent no-ops.
+    A body BrainCell shipped — the current one or any earlier release's — is
+    removable; an edited same-name skill is user-managed and remains untouched.
+    Missing files are idempotent no-ops.
     """
     dest_root = project_skills_dir(project_root, client)
     results: list[tuple[str, str, Path]] = []
@@ -313,7 +359,9 @@ def remove_project_skills(
             current = dest.read_text(encoding="utf-8")
         except OSError:
             current = None
-        if current != payload:
+        if current != payload and (
+            current is None or not _is_braincell_authored_skill_body(name, current)
+        ):
             results.append((name, "conflict", dest))
             continue
         dest.unlink()

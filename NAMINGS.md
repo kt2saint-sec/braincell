@@ -88,8 +88,10 @@ for display.
   Memory Map, it belongs only to the **Connected Project**; the UI never asks
   for or accepts another directory. In the CLI, the person explicitly supplies
   the Project path.
-- **Skill status** — use **Not installed**, **Up to date**, or **Edited by
-  you**. “Edited by you” means BrainCell protects that copy from overwrite and
+- **Skill status** — use **Not installed**, **Up to date**, **Update
+  available**, or **Edited by you**. “Update available” means the installed
+  copy is one an earlier BrainCell release wrote; installing skills replaces
+  it. “Edited by you” means BrainCell protects that copy from overwrite and
   automatic removal.
 - In the Memory Map, use **Install skills** and **Remove unchanged skills**.
   In CLI help, use `braincell skills add` and `braincell skills remove`.

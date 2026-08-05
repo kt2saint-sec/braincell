@@ -54,7 +54,14 @@ class TestNativeAvailable:
             [
                 sys.executable,
                 "-c",
-                "from braincell.native_shell import native_available; raise SystemExit(0 if native_available() else 1)",
+                (
+                    "import sys\n"
+                    "from braincell.native_shell import native_unavailable_reason\n"
+                    "reason = native_unavailable_reason()\n"
+                    "if reason is not None:\n"
+                    "    print(reason, file=sys.stderr)\n"
+                    "raise SystemExit(0 if reason is None else 1)"
+                ),
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

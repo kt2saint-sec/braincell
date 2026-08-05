@@ -172,6 +172,11 @@ class TestRemoveFamily:
 class TestListProjectsTool:
     """list_projects() enumerates the path registry offline."""
 
+    @pytest.fixture(autouse=True)
+    def _connected_project(self, monkeypatch):
+        """Catalog tools serve only a connected MCP process; connect one."""
+        monkeypatch.setenv("BRAINCELL_PROJECT_ID", "01TESTCONNECTEDPROJECT001A")
+
     def test_empty_registry_returns_empty_list(self):
         from braincell.server import list_projects
 
@@ -204,6 +209,11 @@ class TestListProjectsTool:
 
 class TestListPoolsTool:
     """Pool catalog reads membership metadata only; members are stable ULIDs."""
+
+    @pytest.fixture(autouse=True)
+    def _connected_project(self, monkeypatch):
+        """Catalog tools serve only a connected MCP process; connect one."""
+        monkeypatch.setenv("BRAINCELL_PROJECT_ID", "01TESTCONNECTEDPROJECT001A")
 
     def test_empty_pools_returns_empty_list(self):
         from braincell.server import list_pools

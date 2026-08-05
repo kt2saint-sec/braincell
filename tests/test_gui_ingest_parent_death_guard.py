@@ -41,6 +41,17 @@ def _reap_in_background(proc: subprocess.Popen) -> threading.Thread:
 # ── _pid_alive / _run_parent_death_watchdog (real subprocesses) ────────────────
 
 class TestPidAlive:
+    def test_refuses_to_probe_on_a_non_posix_platform(self, monkeypatch):
+        """os.kill(pid, 0) on Windows is GenerateConsoleCtrlEvent(CTRL_C_EVENT),
+        which interrupts the whole console (it aborted entire pytest runs in
+        CI) — the probe must refuse rather than ever issuing it."""
+        from braincell import gui_ingest
+
+        monkeypatch.setattr(gui_ingest.os, "name", "nt")
+        with pytest.raises(RuntimeError, match="POSIX-only"):
+            gui_ingest._pid_alive(12345)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="_pid_alive is POSIX-only; Windows uses Job Objects")
     def test_true_for_a_live_process(self):
         from braincell.gui_ingest import _pid_alive
 
@@ -60,6 +71,11 @@ class TestPidAlive:
         assert _pid_alive(proc.pid) is False
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the watchdog is POSIX-only product surface; its _pid_alive probe "
+    "(os.kill(pid, 0)) sends CTRL_C_EVENT to the whole console on Windows",
+)
 class TestRunParentDeathWatchdog:
     def test_kills_child_once_parent_exits(self):
         """The exact scenario this closes: an orphaned build must not survive
@@ -115,6 +131,10 @@ class TestWatchdogMain:
         assert _watchdog_main(["111", "222"]) == 0
         assert calls == [(111, 222)]
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="spawns the real POSIX-only watchdog loop; see TestRunParentDeathWatchdog",
+    )
     def test_invocable_as_a_module(self):
         """`_spawn_macos_watchdog` shells out to exactly this — prove it works
         end to end as a real detached subprocess, not just as a function call."""

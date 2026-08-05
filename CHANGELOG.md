@@ -89,6 +89,18 @@ details are intentionally excluded.
 
 ### Fixed
 
+- Project skills installed by an earlier BrainCell release are now updated in
+  place on connect/install (Memory Map status: **Update available**) instead
+  of being stranded as permanent conflicts; skills you edited yourself remain
+  protected and are never overwritten or removed.
+- The parent-death liveness probe now refuses non-POSIX platforms: on Windows
+  `os.kill(pid, 0)` sends a console-wide Ctrl+C rather than probing, which
+  could interrupt unrelated processes sharing the console. Windows builds are
+  protected by a Job Object and were never affected at runtime.
+- The local release gate no longer fails healthy runs on soft memory-throttle
+  events (only hard `max`/`oom` events fail), and its sandbox root can be
+  pointed at any dedicated fast-disk directory via
+  `BRAINCELL_RELEASE_CHECK_ROOT` instead of requiring one specific mount.
 - A hard-prune local recovery snapshot is now categorized as a protected
   recovery snapshot rather than an ordinary backup, so later retention or
   hard-prune runs can never select it for deletion and it no longer consumes

@@ -142,9 +142,13 @@ baseline for Connected Project and Pool reads plus native Map startup, then
 builds and checks the wheel and sdist in a separate no-swap cgroup. The baseline
 is an observation, not a hardware-specific latency promise. Its per-run
 directory records memory peak, process count, cgroup pressure events, and the
-baseline JSON; any pressure event fails the release check and retains the
-artifacts for inspection. It refuses an uncaged invocation, a non-NVMe
-workspace, or insufficient free disk space.
+baseline JSON. Soft `high` throttle events are recorded as evidence only — they
+are `MemoryHigh`'s normal operation; a hard `max`, `oom`, or `oom_kill` event
+fails the release check and retains the artifacts for inspection. It refuses an
+uncaged invocation or insufficient free disk space. The default workspace is
+`/mnt/nvme-fast/braincell-release-sandbox`; without that mount, point
+`BRAINCELL_RELEASE_CHECK_ROOT` (and `BRAINCELL_GUI_TEST_ROOT` for
+`test-gui-safe.sh`) at a dedicated absolute directory on a fast local disk.
 
 SQLite changes must preserve one transaction owner from `BEGIN` through
 commit/rollback. Any multi-statement mutation needs a fault-injection regression

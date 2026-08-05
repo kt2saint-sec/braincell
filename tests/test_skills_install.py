@@ -139,6 +139,65 @@ def test_remove_deletes_only_unchanged_managed_skills(tmp_path):
     assert not next(path for name, _status, path in installed if name == "braincell-sync").exists()
 
 
+def _install_historical_body(tmp_path, monkeypatch, client="claude"):
+    """Plant a fake earlier-release body and register its digest as historical."""
+    import hashlib
+
+    from braincell import install as install_module
+
+    project = _project(tmp_path)
+    old_body = "---\nname: braincell-init\n---\n\nAn earlier BrainCell release wrote this.\n"
+    digest = hashlib.sha256(old_body.encode("utf-8")).hexdigest()
+    monkeypatch.setitem(
+        install_module._HISTORICAL_SKILL_SHA256, "braincell-init", frozenset({digest})
+    )
+    dest = project_skills_dir(project, client) / "braincell-init" / "SKILL.md"
+    dest.parent.mkdir(parents=True)
+    dest.write_text(old_body, encoding="utf-8")
+    return project, dest, old_body
+
+
+def test_outdated_braincell_authored_skill_is_updated_in_place(tmp_path, monkeypatch):
+    """Upgrade path: a body an EARLIER release shipped is ours to replace —
+    leaving it as a permanent conflict stranded every pre-1.0.0 install."""
+    project, dest, old_body = _install_historical_body(tmp_path, monkeypatch)
+
+    by_name = {n: s for n, s, _ in install_project_skills(project, "claude")}
+
+    assert by_name["braincell-init"] == "updated"
+    assert dest.read_text(encoding="utf-8") != old_body
+
+
+def test_outdated_braincell_authored_skill_is_removable(tmp_path, monkeypatch):
+    project, dest, _old_body = _install_historical_body(tmp_path, monkeypatch)
+
+    by_name = {n: s for n, s, _ in remove_project_skills(project, "claude")}
+
+    assert by_name["braincell-init"] == "removed"
+    assert not dest.exists()
+
+
+def test_status_reports_outdated_for_a_historical_body(tmp_path, monkeypatch):
+    from braincell.install import project_skills_status
+
+    project, _dest, _old_body = _install_historical_body(tmp_path, monkeypatch)
+
+    by_name = {n: s for n, s, _ in project_skills_status(project, "claude")}
+
+    assert by_name["braincell-init"] == "outdated"
+
+
+def test_historical_digest_registry_is_well_formed():
+    """Append-only registry of shipped bodies: every entry is a SHA-256 hex."""
+    from braincell.install import _HISTORICAL_SKILL_SHA256
+
+    assert set(_HISTORICAL_SKILL_SHA256) == {"braincell-init", "braincell-sync"}
+    for digests in _HISTORICAL_SKILL_SHA256.values():
+        assert digests, "a shipped skill must list its prior release bodies"
+        for digest in digests:
+            assert len(digest) == 64 and set(digest) <= set("0123456789abcdef")
+
+
 def test_unknown_skill_client_is_rejected(tmp_path):
     project = _project(tmp_path)
     try:
