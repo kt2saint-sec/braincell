@@ -3,7 +3,7 @@ name: Publish package
 on:
   workflow_dispatch:
   push:
-    tags: ['v*']
+    tags: ["v*"]
 
 permissions:
   contents: read
@@ -20,12 +20,23 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
       - run: python -m pip install --upgrade pip
       - run: python -m pip install '.[dev]' build twine
       - name: Ruff fatal correctness rules
         run: ruff check --select E9,F63,F7,F82 braincell tests
+      - name: Qt runtime system libraries
+        # Mirrors ci.yml: the suite's real QtWebEngine import probe validates
+        # the mandatory native Memory Map and needs Qt's system libraries.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libgl1 libopengl0 libxkbcommon0 libxcb-cursor0 libnss3 \
+            libasound2t64 libxcomposite1 libxdamage1 libxrandr2 libxtst6 \
+            libgbm1 libxkbfile1 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-render-util0 libxcb-shape0 libxcb-xkb1
       - run: pytest -q
+        timeout-minutes: 30
       - run: python -m build
       - run: python -m twine check dist/*
       - run: python scripts/inspect_release_artifacts.py dist
