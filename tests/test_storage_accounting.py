@@ -119,6 +119,41 @@ def test_storage_report_includes_auto_and_external_recovery_snapshots(tmp_path):
     assert {str(item.resolve()) for item in snapshots} <= candidates
 
 
+def test_hard_prune_recovery_snapshot_is_never_a_retention_candidate(tmp_path):
+    """A prior hard-prune's recovery snapshot is the mitigation for an
+    irreversible deletion: even the most aggressive backup policy must not
+    select it, and it must not occupy a keep-newest-N backup slot."""
+    from braincell.config import get_db_path, get_project_id
+    from braincell.storage_accounting import storage_report
+    from braincell.store import SqliteStore
+
+    project = tmp_path / "project"
+    project.mkdir()
+    project_id = get_project_id(project)
+    database = get_db_path(project_id)
+    SqliteStore(database).assert_schema_version()
+    snapshot = database.parent / "braincell-hard-prune-backup-deadbeef.db"
+    ordinary = database.parent / "braincell-backup-20260101.db"
+    snapshot.write_bytes(b"snapshot")
+    ordinary.write_bytes(b"backup")
+    os.utime(ordinary, ns=(1, 1))
+    os.utime(snapshot, ns=(2, 2))
+
+    aggressive = storage_report(project_id, keep_backups=0)
+
+    assert aggressive["categories"]["recovery_snapshots"] == {"files": 1, "bytes": 8}
+    candidates = {item["path"] for item in aggressive["retention_plan"]["candidates"]}
+    assert str(ordinary) in candidates
+    assert str(snapshot) not in candidates
+
+    keep_one = storage_report(project_id, keep_backups=1)
+
+    # The newer snapshot must not consume the single kept slot: the ordinary
+    # backup is the newest *backup* and therefore survives the plan.
+    assert keep_one["retention_plan"]["candidates"] == []
+    assert snapshot.exists() and ordinary.exists()
+
+
 class TestUndoReferencedSnapshotProtection:
     """BC-23: snapshots referenced by undo history are never deletion candidates."""
 

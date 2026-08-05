@@ -129,6 +129,20 @@ class TestOpsGating:
                             json={"project_id": "X", "command": "evil"})
         assert r.status_code == 422
 
+    def test_hard_prune_rejects_caller_supplied_backup_roots(self, tmp_path):
+        """The GUI may never steer retention at arbitrary filesystem roots:
+        hard-prune scans only the BrainCell namespace, so a request naming
+        backup_roots is refused outright rather than silently ignored."""
+        with TestClient(_app(tmp_path)) as client:
+            for path, body in (
+                ("/api/ops/hard-prune/plan",
+                 {"project_id": "X", "backup_roots": ["/anywhere"]}),
+                ("/api/ops/hard-prune/apply",
+                 {"project_id": "X", "approval_digest": "d",
+                  "backup_roots": ["/anywhere"]}),
+            ):
+                assert client.post(path, json=body).status_code == 422, path
+
     def test_busy_409(self, tmp_path, monkeypatch):
         pid = "01OPSBUSYAAAAAAAAAAAAAAAAA"
         _register(tmp_path, pid)

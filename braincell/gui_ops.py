@@ -100,7 +100,6 @@ class HardPrunePlanBody(BaseModel):
 
     project_id: str
     keep_backups: int | None = None
-    backup_roots: list[str] = []
     expire_operations_days: int | None = None
     expire_tombstones_days: int | None = None
 
@@ -327,7 +326,6 @@ def run_hard_prune(body: HardPruneApplyBody) -> dict[str, object]:
         confirmation_phrase=body.confirmation_phrase,
         create_local_snapshot=body.create_local_snapshot,
         keep_backups=body.keep_backups,
-        backup_roots=[Path(item) for item in body.backup_roots],
         expire_operations_days=body.expire_operations_days,
         expire_tombstones_days=body.expire_tombstones_days,
         wait_for_readers_seconds=15.0,
@@ -454,7 +452,6 @@ def mount_ops_api(
             plan = hard_prune_plan(
                 body.project_id,
                 keep_backups=body.keep_backups,
-                backup_roots=[Path(item) for item in body.backup_roots],
                 expire_operations_days=body.expire_operations_days,
                 expire_tombstones_days=body.expire_tombstones_days,
             )

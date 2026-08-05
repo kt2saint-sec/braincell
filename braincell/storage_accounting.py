@@ -42,6 +42,11 @@ _HARD_PRUNE_AUDIT_VERSION = 1
 
 def _category(path: Path) -> str:
     name = path.name
+    if name.endswith(".db") and name.startswith("braincell-hard-prune-backup-"):
+        # A hard-prune recovery snapshot is the stated mitigation for an
+        # irreversible deletion: it must never itself become a retention or
+        # hard-prune candidate, and must not occupy a keep-newest-N backup slot.
+        return "recovery_snapshots"
     if name.endswith(".db") and (
         "backup" in name
         or name.startswith((
