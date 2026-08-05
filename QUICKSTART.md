@@ -6,22 +6,26 @@ package does not enable it for unrelated Projects. The terminology contract is
 
 ## Install BrainCell
 
+Two commands: install the package from PyPI, then fetch the default local
+embedding model ([Ollama](https://ollama.com) must be installed and running).
+
+```bash
+pipx install braincell-mcp
+ollama pull qwen3-embedding:4b
+```
+
+Everything ships in the package — including the required native Memory Map
+desktop GUI. There is no supported `--server-only` installation, and nothing
+else to configure before connecting a Project. Platform-specific pipx setup
+lives in the [README](README.md); inside an activated virtual environment,
+`python3 -m pip install braincell-mcp` works the same.
+
+Developing BrainCell itself? A source checkout has its own installer:
+
 ```bash
 git clone https://github.com/kt2saint-sec/braincell.git
 cd braincell
 ./scripts/install.sh
-```
-
-The installer creates a local environment with the required native Memory Map
-GUI and, when available, fetches the default Ollama embedding model. There is
-no supported `--server-only` installation. Without the installer, use pipx
-(recommended, as in the README) or an existing virtual environment:
-
-```bash
-pipx install braincell-mcp
-# or, inside an activated virtual environment:
-python3 -m pip install braincell-mcp
-ollama pull qwen3-embedding:4b
 ```
 
 ## Build and connect a Project
@@ -31,6 +35,10 @@ cd /path/to/project
 braincell build .
 braincell connect . --client codex
 ```
+
+Prefer one reviewed step? `braincell setup . --client codex --dry-run` shows
+every planned write (database, registry, client configuration, optional
+skills), and repeating it with `--yes` applies the plan.
 
 The path is the Project selection; it is unrelated to where BrainCell is
 installed. `connect` shows the selected Project and client before it changes
