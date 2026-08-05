@@ -1,5 +1,7 @@
 # BrainCell
 
+[![PyPI](https://img.shields.io/pypi/v/braincell-mcp)](https://pypi.org/project/braincell-mcp/)
+
 Created by [Karl Toussaint (kt2saint)](https://github.com/kt2saint-sec).
 
 BrainCell is a local-first memory platform for your projects. Each **Project** gets its own private memory — one database with hybrid semantic + keyword recall and a native **Memory Map** desktop app — and your AI coding tools (Claude Code, Codex, VS Code, OpenCode) connect to it over MCP. Everything runs on your machine.
