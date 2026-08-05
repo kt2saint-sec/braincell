@@ -42,6 +42,20 @@ preview-first, WAL-aware `legacy_recovery.py`; only its add-repo-runbook revisio
   msvcrt + spy file: no writes while locked, no growth across
   reacquisition, unlock-failure tolerance).
 
+- **Medium — Windows catalog lock gave up under contention:** `catalog_lock`
+  used `msvcrt.locking(LK_LOCK)`, which is not a blocking acquire — it
+  retries ten times a second apart and then raises EDEADLK ("Resource
+  deadlock avoided"); a 16-writer Pool-catalog contention test hit exactly
+  that on a slow Windows CI runner, so a real concurrent catalog write could
+  spuriously fail. The append-mode seed also grew the lockfile by one byte
+  per acquisition. Resolved (`braincell/catalog_io.py:19`): the Windows
+  acquire polls `LK_NBLCK` until the lock frees (matching `flock`'s
+  block-indefinitely contract), the lockfile is `r+b` after `touch` with a
+  single pre-lock seed byte, and unlock failures are tolerated because the
+  handle close releases the OS lock. Regression:
+  `tests/test_catalog_concurrency.py`
+  (`test_windows_catalog_lock_blocks_until_free_instead_of_deadlk`).
+
 - **High — legacy-recovery snapshots were undeletable on Windows:**
   `_read_only()` returned a bare `sqlite3.Connection` that call sites used as
   a context manager — which only ends the transaction and leaves the file
