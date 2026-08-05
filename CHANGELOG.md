@@ -4,6 +4,25 @@ Release-facing notes for the public BrainCell project. This file records
 verified product changes only; private engineering history and machine-specific
 details are intentionally excluded.
 
+## 1.0.1 - 2026-08-05
+
+### Added
+
+- Guided embedding-model download. `braincell setup` now lists the model
+  download as a planned step in its preview and performs it on `--yes`;
+  an interactive `braincell build` offers a one-keystroke download when the
+  model is missing. The download always runs through the local Ollama daemon
+  with explicit consent, and the manual `ollama pull` path still works.
+
+### Fixed
+
+- `braincell build` no longer proceeds into silent NULL embeddings when the
+  embedder is unavailable: non-interactive builds now fail fast with the
+  exact remediation instead of ingesting unsearchable content that needed a
+  later `--reembed`.
+- `scripts/install.sh` reads the default embedding model from the installed
+  package instead of a second hardcoded copy.
+
 ## 1.0.0 - 2026-08-05
 
 ### Added

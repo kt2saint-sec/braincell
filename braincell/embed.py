@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from collections.abc import Callable
 from functools import lru_cache
 
 import numpy as np
@@ -293,6 +294,66 @@ def unload_embed_model() -> bool:
     except Exception as exc:  # noqa: BLE001 - cleanup is best-effort after build.
         log.warning("BrainCell embed model unload failed (non-fatal): %s", exc)
         return False
+
+
+def ensure_embed_model(
+    *,
+    pull: bool,
+    on_progress: Callable[[str], None] | None = None,
+    timeout: float = 2.0,
+) -> dict:
+    """Return :func:`embedder_status`, first downloading the default model when
+    *pull* is True, Ollama is reachable, and only the model is missing.
+
+    This is the consent-carrying half of the first-run story: callers decide
+    (planned setup step, interactive Y/n) and pass ``pull=True``; this function
+    only ever downloads the already-configured default model through the local
+    Ollama daemon. It never installs or starts Ollama, is a no-op for the
+    openai provider, and never raises — a failed download is reported through
+    the returned status ``detail`` exactly like any other unready state.
+    """
+    status = embedder_status(timeout=timeout)
+    if (
+        status["ok"]
+        or not pull
+        or not status["reachable"]
+        or embed_spec.PROVIDER != "ollama"
+    ):
+        return status
+    emit = on_progress or (lambda _line: None)
+    try:
+        import ollama  # lazy import mirrors _embed_ollama
+
+        # No short probe timeout here: a multi-gigabyte download legitimately
+        # outlives it. Progress lines are deduplicated stage/percent updates.
+        client = ollama.Client()
+        emit(f"Downloading embedding model {embed_spec.MODEL} — this can take a while.")
+        last_line = ""
+        for part in client.pull(embed_spec.MODEL, stream=True):
+            if isinstance(part, dict):
+                stage, completed, total = (
+                    part.get("status"), part.get("completed"), part.get("total"),
+                )
+            else:
+                stage = getattr(part, "status", None)
+                completed = getattr(part, "completed", None)
+                total = getattr(part, "total", None)
+            if total and completed is not None:
+                line = f"{stage} {int(completed * 100 / total)}%"
+            else:
+                line = str(stage or "")
+            if line and line != last_line:
+                emit(line)
+                last_line = line
+    except Exception as exc:  # noqa: BLE001 — consent path reports, never crashes a build
+        failed = embedder_status(timeout=timeout)
+        if not failed["ok"]:
+            failed["detail"] = (
+                f"Embedding model download failed ({exc}) — "
+                f"retry, or run manually: ollama pull {embed_spec.MODEL}"
+            )
+        return failed
+    return embedder_status(timeout=timeout)
 
 
 def embedder_status(timeout: float = 2.0) -> dict:

@@ -6,19 +6,18 @@ package does not enable it for unrelated Projects. The terminology contract is
 
 ## Install BrainCell
 
-Two commands: install the package from PyPI (Python 3.11+ required), then
-fetch the default local embedding model ([Ollama](https://ollama.com) must be
-installed and running).
+Three steps (Python 3.11+ required):
 
-```bash
-pipx install braincell-mcp
-ollama pull qwen3-embedding:4b
-```
+1. Install [Ollama](https://ollama.com) and make sure it is running.
+2. `pipx install braincell-mcp`
+3. In your project: `braincell setup . --client <claude|codex|vscode|opencode> --yes`
 
-Everything ships in the package — including the required native Memory Map
-desktop GUI. There is no supported `--server-only` installation, and nothing
-else to configure before connecting a Project. Platform-specific pipx setup
-lives in the [README](README.md); inside an activated virtual environment,
+Setup previews every planned write first (add `--dry-run` to only preview) and
+offers to download the default embedding model if it is not on your machine
+yet — there is no separate model step. Everything else ships in the package,
+including the required native Memory Map desktop GUI; there is no supported
+`--server-only` installation. Platform-specific one-block installs live in the
+[README](README.md); inside an activated virtual environment,
 `python3 -m pip install braincell-mcp` works the same.
 
 Developing BrainCell itself? A source checkout has its own installer:

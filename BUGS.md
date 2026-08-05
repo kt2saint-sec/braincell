@@ -20,6 +20,25 @@ the current `braincell-public` working tree.
 preview-first, WAL-aware `legacy_recovery.py`; only its add-repo-runbook revision is worth cherry-picking. (Verdict recorded
 2026-07-31.)
 
+## Resolved in 1.0.1
+
+- **Medium — first-run builds silently produced NULL embeddings:** nothing in
+  the CLI ever downloaded or gated on the embedding model, so a first
+  `braincell build` with Ollama present but the model absent ingested
+  everything with NULL embeddings and only warned afterward
+  (`_warn_null_embeddings`, `braincell/cli.py:98`) that a `--reembed` was
+  needed; the Memory Map already refused Build in that state. Resolved:
+  `_require_ready_embedder()` (`braincell/cli.py:168`) gates embedding builds
+  before any mint/register/lock side effect — offering a consented download
+  on an interactive terminal via `ensure_embed_model()`
+  (`braincell/embed.py:299`) and failing fast with the exact remediation
+  otherwise — and `braincell setup` plans the download in its preview and
+  performs it on `--yes`. Regressions: `tests/test_embed.py`
+  (ensure/pull consent matrix), `tests/test_build_embedder_gate.py`
+  (prompt consent, non-TTY fail-fast with no ingest, skip-transcripts
+  unaffected), `tests/test_setup.py` (planned line, apply pull, refusal
+  fails closed).
+
 ## Resolved in 1.0.0
 
 - **High — every Windows `mutation_lock` exit failed with EACCES:** the

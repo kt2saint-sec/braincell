@@ -694,3 +694,123 @@ class TestPrefixApplicationInEmbedPath:
         finally:
             monkeypatch.undo()
             _reload_embed_spec()
+
+
+class TestEnsureEmbedModel:
+    """Consent-carrying model download: pull only when asked, reachable, and
+    missing; report failure through status detail; never raise."""
+
+    @staticmethod
+    def _status(**overrides):
+        base = {
+            "provider": "ollama", "model": "test-model:1b", "dim": 1024,
+            "reachable": True, "model_present": True, "ok": True, "detail": "",
+        }
+        base.update(overrides)
+        if "ok" not in overrides:
+            base["ok"] = base["reachable"] and base["model_present"]
+        return base
+
+    def _fake_ollama(self, monkeypatch, pulls, parts=()):
+        import sys as _sys
+        import types
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            def pull(self, model, stream=True):
+                pulls.append(model)
+                yield from parts
+
+        monkeypatch.setitem(
+            _sys.modules, "ollama", types.SimpleNamespace(Client=_Client)
+        )
+
+    def test_already_ready_never_pulls(self, monkeypatch):
+        from braincell import embed as embed_module
+
+        pulls = []
+        self._fake_ollama(monkeypatch, pulls)
+        monkeypatch.setattr(
+            embed_module, "embedder_status", lambda **_k: self._status()
+        )
+        status = embed_module.ensure_embed_model(pull=True)
+        assert status["ok"] is True
+        assert pulls == []
+
+    def test_pull_false_reports_without_downloading(self, monkeypatch):
+        from braincell import embed as embed_module
+
+        pulls = []
+        self._fake_ollama(monkeypatch, pulls)
+        monkeypatch.setattr(
+            embed_module, "embedder_status",
+            lambda **_k: self._status(model_present=False, detail="pull it"),
+        )
+        status = embed_module.ensure_embed_model(pull=False)
+        assert status["ok"] is False and pulls == []
+
+    def test_unreachable_never_pulls(self, monkeypatch):
+        from braincell import embed as embed_module
+
+        pulls = []
+        self._fake_ollama(monkeypatch, pulls)
+        monkeypatch.setattr(
+            embed_module, "embedder_status",
+            lambda **_k: self._status(reachable=False, model_present=False),
+        )
+        status = embed_module.ensure_embed_model(pull=True)
+        assert status["ok"] is False and pulls == []
+
+    def test_missing_model_pulls_with_progress_then_reprobes(self, monkeypatch):
+        from braincell import embed as embed_module
+
+        pulls = []
+        self._fake_ollama(
+            monkeypatch, pulls,
+            parts=(
+                {"status": "pulling manifest"},
+                {"status": "downloading", "completed": 50, "total": 100},
+                {"status": "success"},
+            ),
+        )
+        states = iter((
+            self._status(model_present=False),
+            self._status(),  # re-probe after the pull
+        ))
+        monkeypatch.setattr(
+            embed_module, "embedder_status", lambda **_k: next(states)
+        )
+        lines = []
+        status = embed_module.ensure_embed_model(
+            pull=True, on_progress=lines.append
+        )
+        assert pulls == [embed_module.embed_spec.MODEL]
+        assert status["ok"] is True
+        assert any("downloading 50%" in line for line in lines)
+
+    def test_failed_pull_reports_remediation_never_raises(self, monkeypatch):
+        import sys as _sys
+        import types
+
+        from braincell import embed as embed_module
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            def pull(self, model, stream=True):
+                raise RuntimeError("network gone")
+
+        monkeypatch.setitem(
+            _sys.modules, "ollama", types.SimpleNamespace(Client=_Client)
+        )
+        monkeypatch.setattr(
+            embed_module, "embedder_status",
+            lambda **_k: self._status(model_present=False, detail="pull it"),
+        )
+        status = embed_module.ensure_embed_model(pull=True)
+        assert status["ok"] is False
+        assert "download failed" in status["detail"]
+        assert "ollama pull" in status["detail"]

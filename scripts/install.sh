@@ -86,7 +86,11 @@ echo "BrainCell installed: $VENV_DIR/bin/braincell"
 if [ "$SKIP_MODEL" -eq 1 ] || [ "${BRAINCELL_EMBED_PROVIDER:-ollama}" != "ollama" ]; then
     echo "Skipping local model provisioning."
 elif command -v ollama >/dev/null 2>&1; then
-    MODEL="${BRAINCELL_EMBED_MODEL:-$DEFAULT_MODEL}"
+    # The installed package's embed_spec is the single source of truth for the
+    # default model; the DEFAULT_MODEL literal above is only the fallback for
+    # a broken import.
+    PACKAGE_MODEL="$("$VENV_DIR/bin/python" -c 'from braincell.embed_spec import MODEL; print(MODEL)' 2>/dev/null || echo "$DEFAULT_MODEL")"
+    MODEL="${BRAINCELL_EMBED_MODEL:-$PACKAGE_MODEL}"
     echo "Pulling local embedding model: $MODEL"
     if ! ollama pull "$MODEL"; then
         cat <<EOF >&2
