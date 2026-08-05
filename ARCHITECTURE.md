@@ -102,7 +102,7 @@ or misattributing memory context.
 
 | Module | Holds |
 |---|---|
-| `install.py` | Project-local client connections and Project skills. `_atomic_write_text` (`:464`) backs up, then writes via `mkstemp` + `os.replace`. Skill destinations: Claude `.claude/skills`, Codex `.agents/skills`, OpenCode `.opencode/skills` (`:165`). The Memory Map locally resolves skill status and mutations from its Connected Project identity, never a renderer-supplied path. |
+| `install.py` | Project-local client connections and Project skills. `_atomic_write_text` (`:464`) backs up, then writes via `mkstemp` + `os.replace`. Skill destinations: Claude `.claude/skills`, Codex `.agents/skills`, OpenCode `.opencode/skills` (`:165`). The Memory Map locally resolves skill status and mutations from its Connected Project identity, never a renderer-supplied path. `_HISTORICAL_SKILL_SHA256` (`:243`) recognizes bodies earlier releases shipped so upgrades replace them while user-edited copies stay protected. |
 | `launch.py` | `braincell start` preflight — single-instance probe and pre-launch report. |
 | `automatic_pool_recall.py` | The opt-in Claude hook, project-local and disabled by default. |
 | `log.py` | Rotating file handler with a plain-handler fallback (`:80`). |

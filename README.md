@@ -141,7 +141,9 @@ braincell skills remove . --client claude
 ```
 
 BrainCell never installs these skills machine-wide. Installing and removing
-skills preserves an edited same-name skill and reports it as protected.
+skills preserves an edited same-name skill and reports it as protected;
+a skill an earlier BrainCell release installed is recognized and updated in
+place.
 In the Memory Map, **Install skills** and **Remove unchanged skills** apply
 only to the Connected Project. They never change Pool membership or widen
 memory access.

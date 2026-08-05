@@ -69,7 +69,9 @@ skills are reported as conflicts and left untouched.
 The Memory Map offers the same skills for the Connected Project only. Its
 **Install skills** and **Remove unchanged skills** controls never accept a
 directory, change Pool membership, or widen memory access. It reports each
-skill as **Not installed**, **Up to date**, or **Edited by you**.
+skill as **Not installed**, **Up to date**, **Update available**, or
+**Edited by you**. Update available means an earlier BrainCell release wrote
+the installed copy; installing skills brings it current.
 
 ## Recall and Search
 
