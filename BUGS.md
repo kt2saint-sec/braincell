@@ -30,12 +30,17 @@ preview-first, WAL-aware `legacy_recovery.py`; only its add-repo-runbook revisio
   consolidate, retention, hard-prune) on Windows CI the first time the full
   suite ever ran there. The file was also opened in append mode, so
   positioned writes silently landed at EOF and metadata accumulated across
-  acquisitions. Resolved: the lockfile is opened `r+b` after an explicit
-  `touch`, and the rewrite is write-then-truncate so byte 0 always survives
-  (`braincell/catalog_io.py:47`). Regression:
+  acquisitions. Resolved (`braincell/catalog_io.py:47`): the lockfile is
+  opened `r+b` after an explicit `touch`; on Windows it is written only to
+  seed its single byte BEFORE locking and never while the lock is held
+  (owner metadata is POSIX-only, where `flock` is position-independent);
+  and a CRT-level `LK_UNLCK` failure is tolerated because closing the
+  handle releases the OS region lock regardless — a completed mutation is
+  never converted into an error by its own unlock. Regression:
   `tests/test_catalog_concurrency.py`
-  (`test_windows_mutation_lock_never_truncates_the_locked_byte`, mocked
-  msvcrt + spy file, plus a reacquisition no-growth check).
+  (`test_windows_mutation_lock_never_writes_the_locked_region`, mocked
+  msvcrt + spy file: no writes while locked, no growth across
+  reacquisition, unlock-failure tolerance).
 
 - **High — legacy-recovery snapshots were undeletable on Windows:**
   `_read_only()` returned a bare `sqlite3.Connection` that call sites used as

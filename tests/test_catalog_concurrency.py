@@ -167,37 +167,50 @@ def test_destination_mutation_lock_has_one_owner_and_deterministic_busy_result(
     assert destination.with_name("braincell.db.mutation.lock").exists()
 
 
-def test_windows_mutation_lock_never_truncates_the_locked_byte(tmp_path, monkeypatch):
-    """msvcrt's non-blocking lock covers byte 0. Truncating the lockfile to
-    zero length while that byte is locked destroys the locked region, and the
-    later LK_UNLCK fails with EACCES — observed failing every Windows
-    mutation_lock exit in CI. The metadata rewrite must therefore write first
-    and truncate at the end of the new line, never truncate-then-write."""
+def test_windows_mutation_lock_never_writes_the_locked_region(tmp_path, monkeypatch):
+    """msvcrt's non-blocking lock covers byte 0, and rewriting or truncating
+    that byte while locked breaks the CRT's region bookkeeping — LK_UNLCK then
+    fails with EACCES, which failed every locked mutation exit in Windows CI.
+    Contract: the lockfile is written only to seed its single byte BEFORE the
+    lock is taken, never while it is held, and a CRT-level unlock failure is
+    tolerated because closing the handle releases the OS lock regardless."""
     import sys
 
     from braincell import catalog_io
 
     lock_calls: list[int] = []
-    zero_length_truncations: list[int] = []
+    writes_while_locked: list[str] = []
 
     class _FakeMsvcrt:
         LK_NBLCK = 2
         LK_UNLCK = 0
+        fail_unlock = False
 
-        @staticmethod
-        def locking(fd, mode, nbytes):
+        @classmethod
+        def locking(cls, fd, mode, nbytes):
             lock_calls.append(mode)
+            if mode == cls.LK_UNLCK and cls.fail_unlock:
+                raise OSError(13, "Permission denied")
+
+    def _locked() -> bool:
+        return (
+            lock_calls.count(_FakeMsvcrt.LK_NBLCK)
+            > lock_calls.count(_FakeMsvcrt.LK_UNLCK)
+        )
 
     class _SpyFile:
         def __init__(self, handle):
             self._handle = handle
 
+        def write(self, data):
+            if _locked():
+                writes_while_locked.append(f"write:{data!r}")
+            return self._handle.write(data)
+
         def truncate(self, size=None):
-            result = self._handle.truncate(size)
-            self._handle.flush()
-            if os.fstat(self._handle.fileno()).st_size == 0 and _FakeMsvcrt.LK_NBLCK in lock_calls:
-                zero_length_truncations.append(1)
-            return result
+            if _locked():
+                writes_while_locked.append("truncate")
+            return self._handle.truncate(size)
 
         def __getattr__(self, name):
             return getattr(self._handle, name)
@@ -225,15 +238,20 @@ def test_windows_mutation_lock_never_truncates_the_locked_byte(tmp_path, monkeyp
         pass
 
     assert lock_calls == [_FakeMsvcrt.LK_NBLCK, _FakeMsvcrt.LK_UNLCK]
-    assert not zero_length_truncations, (
-        "the lockfile was truncated to zero length while byte 0 was locked"
+    assert not writes_while_locked, (
+        f"the locked lockfile region was written while held: {writes_while_locked}"
     )
     lock_path = destination.with_name("braincell.db.mutation.lock")
-    assert lock_path.read_bytes().startswith(b"pid=")
+    assert lock_path.read_bytes() == b"\0"
 
-    # Reacquisition must REPLACE the metadata line, not append to it — append
-    # mode ("a+b") silently sent positioned writes to EOF and grew the file.
+    # Reacquisition neither rewrites nor grows the already-seeded lockfile.
     with catalog_io.mutation_lock(destination, operation="win-lock-check"):
         pass
-    content = lock_path.read_bytes()
-    assert content.startswith(b"pid=") and content.count(b"pid=") == 1
+    assert lock_path.read_bytes() == b"\0"
+    assert not writes_while_locked
+
+    # A CRT-level unlock failure never converts a completed mutation into an
+    # error — the handle close releases the OS region lock regardless.
+    _FakeMsvcrt.fail_unlock = True
+    with catalog_io.mutation_lock(destination, operation="win-lock-check"):
+        pass

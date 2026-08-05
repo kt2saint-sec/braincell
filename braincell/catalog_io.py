@@ -60,6 +60,12 @@ def mutation_lock(destination: Path, *, operation: str) -> Iterator[None]:
             if os.name == "nt":
                 import msvcrt
 
+                # Seed exactly one byte BEFORE locking so a region exists to
+                # lock. The file is never written again while byte 0 is
+                # locked: rewriting or truncating the locked region breaks
+                # the CRT's region bookkeeping and LK_UNLCK then fails with
+                # EACCES (observed failing every locked mutation exit in
+                # Windows CI). Owner metadata is therefore POSIX-only.
                 lock_file.seek(0)
                 if lock_file.read(1) == b"":
                     lock_file.seek(0)
@@ -76,21 +82,26 @@ def mutation_lock(destination: Path, *, operation: str) -> Iterator[None]:
                 f"{operation} refused: another mutation already owns {destination}"
             ) from exc
 
-        # Write-then-truncate, never truncate-then-write: msvcrt's lock covers
-        # byte 0, and truncating the file to zero length first destroys that
-        # locked region — the LK_UNLCK below then fails with EACCES (observed
-        # failing every Windows mutation_lock exit in CI). Truncating at the
-        # end of the freshly written line always leaves byte 0 in place.
-        lock_file.seek(0)
-        lock_file.write(f"pid={os.getpid()} operation={operation}\n".encode())
-        lock_file.truncate()
-        lock_file.flush()
+        if os.name != "nt":
+            # flock is whole-file and position-independent, so the owner line
+            # can be rewritten safely while held. Write-then-truncate keeps
+            # the file one line long across acquisitions.
+            lock_file.seek(0)
+            lock_file.write(f"pid={os.getpid()} operation={operation}\n".encode())
+            lock_file.truncate()
+            lock_file.flush()
         try:
             yield
         finally:
             if os.name == "nt":
-                lock_file.seek(0)
-                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                try:
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    # Closing the handle (the with-block, next) releases the
+                    # OS region lock regardless; a CRT-level unlock failure
+                    # must not convert a completed mutation into an error.
+                    pass
             else:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
