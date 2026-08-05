@@ -2,7 +2,9 @@
 
 Created by [Karl Toussaint (kt2saint)](https://github.com/kt2saint-sec).
 
-BrainCell is local-first project memory for MCP clients. Each **Project** has one database and a stable project ULID. Connecting BrainCell to Project A never starts it for, or exposes it to, Project B.
+BrainCell is a local-first memory platform for your projects. Each **Project** gets its own private memory — one database with hybrid semantic + keyword recall and a native **Memory Map** desktop app — and your AI coding tools (Claude Code, Codex, VS Code, OpenCode) connect to it over MCP. Everything runs on your machine.
+
+Isolation is the core contract: each Project has one database and a stable project ULID, and connecting BrainCell to Project A never starts it for, or exposes it to, Project B.
 
 See [CHANGELOG.md](CHANGELOG.md) for verified public release notes.
 
