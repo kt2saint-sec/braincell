@@ -298,3 +298,69 @@ def test_windows_catalog_lock_blocks_until_free_instead_of_deadlk(tmp_path, monk
     with catalog_io.catalog_lock(catalog):
         pass
     assert lock_path.read_bytes() == b"\0", "reacquisition grew the lockfile"
+
+
+def test_windows_catalog_lock_tolerates_mandatory_read_lock_on_seed(tmp_path, monkeypatch):
+    """Windows region locks are mandatory: while a contender holds byte 0 of
+    the lockfile, even the pre-lock seed read(1) raises EACCES — observed
+    failing 16-writer catalog contention in CI. An unreadable byte proves the
+    byte exists, so the acquire must continue to the polling lock instead of
+    propagating the read error."""
+    import sys
+
+    from braincell import catalog_io
+
+    class _FakeMsvcrt:
+        LK_NBLCK = 2
+        LK_UNLCK = 0
+        contended_rounds = 2
+        nblck_calls = 0
+
+        @classmethod
+        def locking(cls, fd, mode, nbytes):
+            if mode == cls.LK_NBLCK:
+                cls.nblck_calls += 1
+                if cls.nblck_calls <= cls.contended_rounds:
+                    raise OSError(13, "Permission denied")
+
+    class _MandatoryLockedFile:
+        def __init__(self, handle):
+            self._handle = handle
+            self.reads_refused = 0
+
+        def read(self, size=-1):
+            if _FakeMsvcrt.nblck_calls == 0:
+                self.reads_refused += 1
+                raise OSError(13, "Permission denied")
+            return self._handle.read(size)
+
+        def __getattr__(self, name):
+            return getattr(self._handle, name)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return self._handle.__exit__(*exc)
+
+    spies = []
+    real_open = Path.open
+
+    def _spy_open(self, *args, **kwargs):
+        handle = real_open(self, *args, **kwargs)
+        if self.name.endswith(".lock"):
+            spy = _MandatoryLockedFile(handle)
+            spies.append(spy)
+            return spy
+        return handle
+
+    monkeypatch.setattr(catalog_io.os, "name", "nt")
+    monkeypatch.setitem(sys.modules, "msvcrt", _FakeMsvcrt())
+    monkeypatch.setattr(catalog_io.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(Path, "open", _spy_open)
+
+    with catalog_io.catalog_lock(tmp_path / "pools.json"):
+        pass
+
+    assert spies and spies[0].reads_refused == 1
+    assert _FakeMsvcrt.nblck_calls == _FakeMsvcrt.contended_rounds + 1

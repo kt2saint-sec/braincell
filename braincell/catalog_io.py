@@ -30,11 +30,19 @@ def catalog_lock(catalog_path: Path) -> Iterator[None]:
 
             # Seed exactly one byte BEFORE locking, never write while locked
             # (same CRT region-bookkeeping constraint as mutation_lock).
-            lock_file.seek(0)
-            if lock_file.read(1) == b"":
+            # Windows region locks are MANDATORY: while a contender holds
+            # byte 0, even reading it raises EACCES — which itself proves the
+            # byte exists, so treat any OSError here as already-seeded. The
+            # same race can hit the seed write; a failed seed means another
+            # process seeded and locked first, which is equally fine.
+            try:
                 lock_file.seek(0)
-                lock_file.write(b"\0")
-                lock_file.flush()
+                if lock_file.read(1) == b"":
+                    lock_file.seek(0)
+                    lock_file.write(b"\0")
+                    lock_file.flush()
+            except OSError:
+                pass
             # A real blocking acquire. msvcrt's LK_LOCK is NOT one: it retries
             # ten times a second apart, then raises EDEADLK ("Resource
             # deadlock avoided") — observed in CI with 16 contending catalog
